@@ -1,292 +1,365 @@
 import express from "express";
 import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
+import twilio from "twilio";
+import crypto from "crypto";
+
+const {
+  OPENAI_API_KEY,
+  PUBLIC_BASE_URL,
+  TWILIO_ACCOUNT_SID,
+  TWILIO_AUTH_TOKEN,
+  PORT = 3000,
+  OPENAI_REALTIME_MODEL = "gpt-realtime-2025-08-28",
+  OPENAI_VOICE = "marin",
+} = process.env;
+
+if (!OPENAI_API_KEY) {
+  console.error("Falta OPENAI_API_KEY en variables de entorno.");
+  process.exit(1);
+}
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+  console.error("Faltan TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN en variables de entorno.");
+  process.exit(1);
+}
+
+const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-const {
-  OPENAI_API_KEY,
-  OPENAI_REALTIME_MODEL = "gpt-realtime",
-  OPENAI_VOICE = "marin",
-  PUBLIC_BASE_URL,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  PORT = 3000,
-} = process.env;
-
-if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
-
+/**
+ * Nota: Para Twilio Media Streams, el output debe ser PCMU (mulaw).
+ * En Realtime API, configuramos audio.output.format = audio/pcmu.  [oai_citation:2‡OpenAI Platform](https://platform.openai.com/docs/guides/realtime-conversations)
+ */
 const SYSTEM_MESSAGE = `
-Eres “Mariana”, asistente virtual del equipo de selección de New Campo Argentino.
-Objetivo: hacer una pre-entrevista breve, cálida y conversacional (no robótica).
-Idioma: español neutro (LatAm/Miami). Usa “tú” o “usted”, pero NO uses voseo (“vivís”, “laburás”) ni slang argentino (“laburo”, “che”, etc).
-Si el candidato habla en inglés, cambia a inglés sin drama.
+Sos una entrevistadora telefónica cálida, profesional y eficiente del equipo de contratación de New Campo Argentino (Miami).
+NO digas que sos una IA. NO digas "modelo", "bot" ni "inteligencia artificial".
+Hablá en español neutro (sin jerga regional). Si la persona habla en inglés, respondé en inglés.
 
-TRANSPARENCIA:
-- Al inicio preséntate como “asistente virtual automatizado del equipo de selección”.
-- NO digas “IA” o “inteligencia artificial” salvo que el candidato pregunte.
+OBJETIVO:
+Hacer una entrevista inicial breve (3-5 minutos), 1 pregunta por vez, estilo conversacional.
+Regla de oro: cuando hacés una pregunta, TERMINÁS tu turno ahí y esperás la respuesta. No encadenes preguntas.
 
-ESTILO:
-- 1 pregunta por vez.
-- Reconoce la respuesta (1 frase) y avanza.
-- Si no entiendes, repregunta SOLO una vez con otras palabras.
-- No repitas en loop la misma pregunta.
-- No traduzcas nombres propios/barrios (ej: “North Beach” se repite tal cual).
+GATE DE INICIO (CRÍTICO):
+- En el primer turno SOLO: saludo + contexto + pregunta de permiso:
+  "¿Te viene bien hablar 3 minutos ahora?"
+- No avances con nada más hasta escuchar un "sí" claro.
 
-PREGUNTAS CLAVE (screening):
-1) Zona donde vive / qué tan cerca le queda el local.
-2) ¿Está viviendo en Miami ahora? ¿Es temporada o se quedará? ¿Hasta cuándo?
-3) Disponibilidad horaria (días y rangos).
+SI DICE QUE NO / ESTÁ OCUPADO:
+- Decí algo corto, amable, sin insistir, y cerrá:
+  "Perfecto, gracias. Te dejamos este contacto y coordinamos por mensaje. Buen día."
+- Luego despedite y finalizá la llamada.
+
+PREGUNTAS NO NEGOCIABLES (cuando ya aceptó hablar):
+1) Zona donde vive / cercanía al local.
+2) Si está viviendo en Miami o es por temporada (y por cuánto tiempo).
+3) Disponibilidad horaria (días y horarios).
 4) Expectativa salarial (por hora).
-5) Experiencia previa relevante (1-2 preguntas cortas).
-6) Si es rol de atención al público: nivel de inglés conversacional.
-7) Pregunta de autorización laboral (forma neutral):
-   “Para cumplir con el proceso de contratación: ¿estás autorizado/a para trabajar en Estados Unidos?”
-   NO pedir documentos, NO preguntar nacionalidad.
+5) Inglés conversacional si aplica a atención al público.
+6) Experiencia previa en el rubro (rol similar, cuánto tiempo, último lugar).
 
-CIERRE:
-- Si el candidato dice “chau / bye / tengo que cortar / no puedo ahora”: responde breve, agradece y termina.
-- No te quedes colgado esperando indefinidamente.
+PREGUNTA “LEGAL” (sin pedir papeles):
+- En vez de "¿tenés papeles?", preguntá:
+  "¿Estás autorizado/a para trabajar en Estados Unidos para cualquier empleador?"
+  y opcional:
+  "¿Vas a necesitar patrocinio (sponsorship) ahora o en el futuro?"
+
+CALIDAD:
+- Si entendés algo razonable, seguí. No repreguntes en loop.
+- Solo pedí repetición si realmente no se entendió, y máximo 1 vez por pregunta.
+- Si la persona dice "chau", "adiós", "bye", "no me llames", agradecé y cerrá la llamada.
 `.trim();
 
-// Health check
-app.get("/", (req, res) => res.send("ok"));
-
-// Twilio Voice webhook -> connect stream to our WS
+/**
+ * Twilio webhook: cuando llaman al número, Twilio pega acá y le devolvemos TwiML
+ */
 app.post("/voice", (req, res) => {
-  const host =
-    (PUBLIC_BASE_URL ? PUBLIC_BASE_URL.replace(/^https?:\/\//, "") : req.headers.host) || req.headers.host;
+  const wsUrl = getWebSocketUrl(req);
+  const twiml = new twilio.twiml.VoiceResponse();
 
-  const wsUrl = `wss://${host}/media-stream`;
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${wsUrl}" />
-  </Connect>
-</Response>`.trim();
+  // Conecta el audio de la llamada a nuestro WebSocket
+  const connect = twiml.connect();
+  connect.stream({ url: wsUrl });
 
-  res.type("text/xml").send(twiml);
+  res.type("text/xml").send(twiml.toString());
 });
+
+app.get("/health", (req, res) => res.json({ ok: true }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/media-stream" });
 
-function looksLikeGoodbye(text) {
-  const t = (text || "").toLowerCase();
-  if (!t) return false;
-
-  const patterns = [
-    /\bchau\b/,
-    /\badios\b/,
-    /\badiós\b/,
-    /\bhasta luego\b/,
-    /\bhasta mañana\b/,
-    /\bbye\b/,
-    /\bgoodbye\b/,
-    /\bme voy\b/,
-    /\btengo que cortar\b/,
-    /\bcorto\b/,
-    /\bcuelgo\b/,
-    /\bno puedo ahora\b/,
-    /\bno puedo hablar\b/,
-  ];
-  return patterns.some((p) => p.test(t));
-}
-
-async function hangupViaTwilio(callSid) {
-  if (!callSid) return;
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-    console.error("Missing TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN (can't hang up programmatically).");
-    return;
-  }
-
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
-  const body = new URLSearchParams({ Status: "completed" });
-
-  const r = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-
-  if (!r.ok) {
-    const txt = await r.text();
-    console.error("Twilio hangup failed:", r.status, txt);
-  }
-}
-
-wss.on("connection", (twilioWs) => {
+wss.on("connection", (twilioWs, req) => {
   let streamSid = null;
   let callSid = null;
 
+  // Estado de turnos
+  let greeted = false;
+  let phase = "consent"; // "consent" -> "interview" -> "ending"
+  let lastTranscriptItemId = null;
+
+  // Control de respuestas (porque create_response = false)
+  let aiBusy = false;
+  let queuedResponse = null;
+
+  // Para cortar audio cuando el usuario interrumpe (barge-in)
+  let lastAssistantAudioAt = 0;
+
+  // Para colgar correctamente
   let pendingHangup = false;
   let hangupMarkSent = false;
+  let hangupTimer = null;
 
   const openAiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`,
     {
       headers: {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "OpenAI-Beta": "realtime=v1",
       },
     }
   );
 
-  const sendToOpenAI = (obj) => {
-    if (openAiWs.readyState === WebSocket.OPEN) openAiWs.send(JSON.stringify(obj));
-  };
+  function sendToOpenAI(payload) {
+    if (openAiWs.readyState === WebSocket.OPEN) {
+      openAiWs.send(JSON.stringify(payload));
+    }
+  }
 
-  const sendToTwilio = (obj) => {
-    if (twilioWs.readyState === WebSocket.OPEN) twilioWs.send(JSON.stringify(obj));
-  };
+  function requestResponse(instructionsOverride = null) {
+    const payload =
+      instructionsOverride && instructionsOverride.trim().length
+        ? {
+            type: "response.create",
+            response: {
+              instructions: instructionsOverride,
+            },
+          }
+        : { type: "response.create" };
 
-  const configureSession = () => {
+    if (aiBusy) {
+      queuedResponse = payload;
+      return;
+    }
+    aiBusy = true;
+    sendToOpenAI(payload);
+  }
+
+  function flushQueuedResponseIfAny() {
+    if (!queuedResponse) return;
+    const payload = queuedResponse;
+    queuedResponse = null;
+    aiBusy = true;
+    sendToOpenAI(payload);
+  }
+
+  function normalize(s) {
+    return (s || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+  }
+
+  function isGoodbye(text) {
+    const t = normalize(text);
+    return (
+      t.includes("chau") ||
+      t.includes("chao") ||
+      t.includes("adios") ||
+      t.includes("nos vemos") ||
+      t === "bye" ||
+      t.includes("bye ") ||
+      t.includes("goodbye") ||
+      t.includes("hasta luego") ||
+      t.includes("hasta la proxima") ||
+      t.includes("me tengo que ir") ||
+      t.includes("corto") ||
+      t.includes("cuelgo") ||
+      t.includes("no me llames")
+    );
+  }
+
+  function classifyConsent(text) {
+    const t = normalize(text);
+
+    // NO / ocupado / después
+    if (
+      t.includes("ahora no") ||
+      t.includes("no puedo") ||
+      t.includes("ocupad") ||
+      t.includes("despues") ||
+      t.includes("mas tarde") ||
+      t.includes("luego") ||
+      t.includes("otro momento") ||
+      t.includes("cant") ||
+      t.includes("can't") ||
+      t.includes("later") ||
+      t === "no"
+    ) {
+      return "no";
+    }
+
+    // SI / ok / dale
+    if (
+      t === "si" ||
+      t === "sí" ||
+      t.includes("si ") ||
+      t.includes("dale") ||
+      t.includes("ok") ||
+      t.includes("okay") ||
+      t.includes("claro") ||
+      t.includes("perfecto") ||
+      t.includes("yes") ||
+      t.includes("sure") ||
+      t.includes("i can") ||
+      t.includes("go ahead") ||
+      t.includes("tengo tiempo") ||
+      t.includes("puedo")
+    ) {
+      return "yes";
+    }
+
+    return "unknown";
+  }
+
+  function scheduleHangupFallback() {
+    // Si por algún motivo no llega el mark de Twilio, cortamos igual.
+    if (hangupTimer) clearTimeout(hangupTimer);
+    hangupTimer = setTimeout(async () => {
+      if (!callSid) return;
+      try {
+        await twilioClient.calls(callSid).update({ status: "completed" });
+      } catch (e) {
+        // no-op
+      }
+    }, 6000);
+  }
+
+  function hangupNow() {
+    if (!callSid) return;
+    twilioClient.calls(callSid).update({ status: "completed" }).catch(() => {});
+  }
+
+  function configureSession() {
     sendToOpenAI({
       type: "session.update",
       session: {
         type: "realtime",
-        model: OPENAI_REALTIME_MODEL,
         output_modalities: ["audio"],
-
-        // Enables user-audio transcript events for logic like hangup detection.
-        // Note: transcription is "rough guidance", not perfect.  [oai_citation:6‡OpenAI](https://platform.openai.com/docs/api-reference/realtime-beta-sessions)
-        input_audio_transcription: {
-          model: "whisper-1",
-          language: "es",
-          prompt:
-            "Spanish (Latin America). Keep proper nouns as-is (e.g., North Beach, South Beach). No Argentine voseo.",
-        },
-
+        instructions: SYSTEM_MESSAGE,
+        max_output_tokens: 300,
         audio: {
           input: {
-            format: { type: "audio/pcmu" },
+            format: { type: "audio/pcmu" }, // Twilio inbound
+            transcription: {
+              // Para detectar "sí/no/chau" con buena calidad en ES/EN
+              model: "gpt-4o-mini-transcribe",
+              language: "es",
+            },
             turn_detection: {
-              type: "semantic_vad",
-              create_response: true,
+              type: "server_vad",
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 450,
+              idle_timeout_ms: null,
+              create_response: false, // CLAVE: el modelo NO responde solo.  [oai_citation:3‡OpenAI Platform](https://platform.openai.com/docs/api-reference/realtime-server-events)
               interrupt_response: true,
             },
           },
           output: {
-            format: { type: "audio/pcmu" },
+            format: { type: "audio/pcmu" }, // Twilio outbound  [oai_citation:4‡OpenAI Platform](https://platform.openai.com/docs/guides/realtime-conversations)
             voice: OPENAI_VOICE,
-            speed: 1.0,
           },
         },
-        instructions: SYSTEM_MESSAGE,
       },
     });
+  }
 
-    // Force a warm first turn (otherwise it waits for user speech)
-    sendToOpenAI({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text:
-              "Start now with a short warm greeting in neutral Spanish. Present as an automated virtual hiring assistant (do NOT say 'IA' unless asked). Say you're calling because they applied to New Campo Argentino, and ask if they have 2-3 minutes right now.",
-          },
-        ],
-      },
-    });
-    sendToOpenAI({ type: "response.create" });
-  };
+  function startConsentGreeting() {
+    // Turno 1: SOLO pedir permiso y callarse.
+    requestResponse(
+      `Decí un saludo corto y profesional y pedí permiso para hablar 3 minutos.
+NO hagas ninguna otra pregunta.
+Frase sugerida: "Hola, te llamo de New Campo Argentino por tu solicitud. ¿Te viene bien hablar 3 minutos ahora?"`
+    );
+  }
 
-  openAiWs.on("open", () => configureSession());
+  function handleConsentTranscript(transcript) {
+    if (isGoodbye(transcript)) {
+      phase = "ending";
+      pendingHangup = true;
+      requestResponse(`Decí: "Perfecto, gracias. Que tengas un buen día." y terminá.`);
+      return;
+    }
 
-  openAiWs.on("message", (raw) => {
-    let evt;
+    const c = classifyConsent(transcript);
+    if (c === "yes") {
+      phase = "interview";
+      requestResponse(
+        `Agradecé en una frase y hacé SOLO la primera pregunta del screening:
+"Gracias. Para empezar: ¿en qué zona vivís en Miami?"`
+      );
+      return;
+    }
+
+    if (c === "no") {
+      phase = "ending";
+      pendingHangup = true;
+      requestResponse(
+        `Decí algo corto y amable, sin insistir, y cerrá:
+"Perfecto, gracias. Coordinamos por mensaje. Buen día."`
+      );
+      return;
+    }
+
+    // unknown
+    requestResponse(
+      `Repetí SOLO la pregunta de permiso, muy clara:
+"¿Te viene bien hablar 3 minutos ahora? Podés decir sí o no."`
+    );
+  }
+
+  // ---- Twilio WS inbound ----
+  twilioWs.on("message", (msg) => {
+    let data;
     try {
-      evt = JSON.parse(raw.toString());
+      data = JSON.parse(msg);
     } catch {
       return;
     }
 
-    // Barge-in: if user starts talking, cut assistant audio buffer
-    if (evt.type === "input_audio_buffer.speech_started" && streamSid) {
-      sendToTwilio({ event: "clear", streamSid }); // clears buffered audio  [oai_citation:7‡Twilio](https://www.twilio.com/docs/voice/media-streams/websocket-messages)
-      sendToOpenAI({ type: "response.cancel" });
-      hangupMarkSent = false; // reset in case we were ending
-    }
-
-    // User transcript event -> detect goodbye
-    if (evt.type === "conversation.item.input_audio_transcription.completed") {
-      if (looksLikeGoodbye(evt.transcript)) {
-        pendingHangup = true;
-      }
-    }
-
-    // Forward model audio to Twilio
-    if (evt.type === "response.output_audio.delta" && evt.delta && streamSid) {
-      sendToTwilio({
-        event: "media",
-        streamSid,
-        media: { payload: evt.delta },
-      });
-    }
-
-    // When the model finishes speaking AND we want to end, send a mark.
-    // When Twilio returns that mark, we hang up.
-    if (evt.type === "response.output_audio.done" && pendingHangup && streamSid && !hangupMarkSent) {
-      hangupMarkSent = true;
-      sendToTwilio({
-        event: "mark",
-        streamSid,
-        mark: { name: "hangup" },
-      });
-    }
-
-    if (evt.type === "error") {
-      console.error("OpenAI error:", evt);
-    }
-  });
-
-  twilioWs.on("message", (raw) => {
-    let msg;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
+    if (data.event === "start") {
+      streamSid = data.start?.streamSid;
+      callSid = data.start?.callSid;
       return;
     }
 
-    if (msg.event === "start") {
-      streamSid = msg.start?.streamSid;
-      callSid = msg.start?.callSid;
-      return;
-    }
-
-    if (msg.event === "media") {
-      if (msg.media?.payload && openAiWs.readyState === WebSocket.OPEN) {
-        sendToOpenAI({ type: "input_audio_buffer.append", audio: msg.media.payload });
+    if (data.event === "media") {
+      // Inbound audio base64 (mulaw)
+      const audio = data.media?.payload;
+      if (audio) {
+        sendToOpenAI({ type: "input_audio_buffer.append", audio });
       }
       return;
     }
 
-    if (msg.event === "mark" && msg.mark?.name === "hangup") {
-      hangupViaTwilio(callSid)
-        .catch((e) => console.error("Hangup error:", e))
-        .finally(() => {
-          try {
-            twilioWs.close();
-          } catch {}
-          try {
-            openAiWs.close();
-          } catch {}
-        });
+    if (data.event === "mark") {
+      // Mark del stream: útil para colgar "post-audio"
+      if (data.mark?.name === "hangup") {
+        hangupNow();
+      }
       return;
     }
 
-    if (msg.event === "stop") {
+    if (data.event === "stop") {
+      // El caller cortó
       try {
         openAiWs.close();
       } catch {}
+      return;
     }
   });
 
@@ -294,7 +367,130 @@ wss.on("connection", (twilioWs) => {
     try {
       openAiWs.close();
     } catch {}
+    if (hangupTimer) clearTimeout(hangupTimer);
+  });
+
+  // ---- OpenAI WS ----
+  openAiWs.on("open", () => {
+    configureSession();
+  });
+
+  openAiWs.on("message", (raw) => {
+    let ev;
+    try {
+      ev = JSON.parse(raw.toString());
+    } catch {
+      return;
+    }
+
+    // Cuando la sesión está lista, saludamos una sola vez
+    if (ev.type === "session.updated" && !greeted) {
+      greeted = true;
+      startConsentGreeting();
+      return;
+    }
+
+    // Estado de respuesta
+    if (ev.type === "response.created") {
+      aiBusy = true;
+    }
+    if (ev.type === "response.done") {
+      aiBusy = false;
+      flushQueuedResponseIfAny();
+    }
+
+    // Barge-in: si el usuario empieza a hablar, cortamos el audio del bot
+    if (ev.type === "input_audio_buffer.speech_started") {
+      // Cortar playback en Twilio (clear) + cancelar respuesta en OpenAI
+      sendToOpenAI({ type: "response.cancel" }); //  [oai_citation:5‡OpenAI Platform](https://platform.openai.com/docs/api-reference/realtime-client-events)
+      if (streamSid) {
+        twilioWs.send(JSON.stringify({ event: "clear", streamSid })); //  [oai_citation:6‡Twilio](https://www.twilio.com/docs/voice/media-streams/websocket-messages?utm_source=chatgpt.com)
+      }
+      return;
+    }
+
+    // Transcripción final del usuario (la usamos como trigger para responder)
+    if (ev.type === "conversation.item.input_audio_transcription.completed") {
+      // Dedupe por item_id
+      if (ev.item_id && ev.item_id === lastTranscriptItemId) return;
+      lastTranscriptItemId = ev.item_id;
+
+      const transcript = (ev.transcript || "").trim();
+      if (!transcript) return;
+
+      // Si el usuario se despide en cualquier momento, cerramos.
+      if (isGoodbye(transcript)) {
+        phase = "ending";
+        pendingHangup = true;
+        requestResponse(`Decí: "Perfecto, gracias. Que tengas un buen día." y terminá.`);
+        return;
+      }
+
+      // Gate de consentimiento
+      if (phase === "consent") {
+        handleConsentTranscript(transcript);
+        return;
+      }
+
+      // Ya en entrevista: dejamos que el modelo maneje conversacionalmente,
+      // pero como create_response=false, nosotros disparamos la respuesta en cada turno.
+      requestResponse(null);
+      return;
+    }
+
+    // Audio de salida hacia Twilio
+    if (ev.type === "response.output_audio.delta" && ev.delta && streamSid) {
+      lastAssistantAudioAt = Date.now();
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          streamSid,
+          media: { payload: ev.delta },
+        })
+      );
+      return;
+    }
+
+    if (ev.type === "response.output_audio.done") {
+      // Si estamos cerrando, mandamos mark para colgar cuando termine de sonar.
+      if (pendingHangup && streamSid && !hangupMarkSent) {
+        hangupMarkSent = true;
+        twilioWs.send(JSON.stringify({ event: "mark", streamSid, mark: { name: "hangup" } })); //  [oai_citation:7‡Twilio](https://www.twilio.com/docs/voice/media-streams/websocket-messages?utm_source=chatgpt.com)
+        scheduleHangupFallback();
+      }
+      return;
+    }
+
+    // Log de errores
+    if (ev.type === "error") {
+      console.error("OpenAI error event:", ev);
+      // Liberar aiBusy por si quedó trabado
+      aiBusy = false;
+      flushQueuedResponseIfAny();
+      return;
+    }
+  });
+
+  openAiWs.on("close", () => {
+    // no-op
+  });
+
+  openAiWs.on("error", (err) => {
+    console.error("OpenAI WS error:", err);
   });
 });
 
-server.listen(PORT, () => console.log(`Server listening on ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Servidor listo en http://localhost:${PORT}`);
+});
+
+function getWebSocketUrl(req) {
+  // Si estás en producción, seteá PUBLIC_BASE_URL=https://TU-DOMINIO
+  // Si no, intentamos inferir del request (a veces Twilio manda host correcto).
+  const base =
+    PUBLIC_BASE_URL ||
+    `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`;
+
+  // Twilio necesita wss://
+  return base.replace(/^http/, "ws") + "/media-stream";
+}
