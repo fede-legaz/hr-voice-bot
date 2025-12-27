@@ -1,0 +1,10 @@
+{
+  "name": "hr-voice-bot",
+  "type": "module",
+  "private": true,
+  "scripts": { "start": "node server.js" },
+  "dependencies": {
+    "express": "^4.19.2",
+    "body-parser": "^1.20.2"
+  }
+}
