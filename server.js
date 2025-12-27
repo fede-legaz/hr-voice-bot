@@ -230,7 +230,7 @@ app.post("/voice", async (req, res) => {
     if (!session.last_bot) {
       const intro =
         "Hola, ¿cómo estás? Soy Mariana. Te llamo porque aplicaste para trabajar en New Campo Argentino. " +
-        "¿Te viene bien hablar dos minutitos ahora? Si no, lo hacemos más tarde, cero problema.";
+        "¿Tenes dos minutitos para hablar ahora?";
       session.last_bot = intro;
       session.asked.push("intro");
 
