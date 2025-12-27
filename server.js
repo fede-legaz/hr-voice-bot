@@ -117,7 +117,7 @@ Reglas:
 - Máximo 2 preguntas cortas por turno.
 - Si el candidato es vago ("depende", "cuando pueda"), repreguntá para concretar.
 - Confirmá datos con frases humanas ("ok, entonces...").
-- Tono cálido y humano. Cero robot. Frases cortas.
+- Tono cálido y humano. Frases cortas.
 
 Salida: respondé SOLO JSON válido con esta forma:
 {
@@ -125,19 +125,10 @@ Salida: respondé SOLO JSON válido con esta forma:
   "update": { "zona": string|null, "residencia": string|null, "disponibilidad": string|null, "salario": string|null },
   "done": boolean
 }
-No inventes datos. Si no hay algo, dejalo null.
+No inventes datos.
 `.trim();
 
-  const payload = {
-    model: OPENAI_MODEL,
-    input: [
-      { role: "system", content: [{ type: "text", text: sys }] },
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
+  const userPrompt =
 `Contexto:
 - Marca: ${session.brand}
 - Datos actuales: ${JSON.stringify(session.data)}
@@ -147,12 +138,22 @@ No inventes datos. Si no hay algo, dejalo null.
 Texto del candidato (transcripción):
 ${userText || ""}
 
-Decidí el próximo paso.`
-          }
-        ]
+Decidí el próximo paso.`;
+
+  const payload = {
+    model: OPENAI_MODEL,
+    // ✅ formato compatible: input_text
+    input: [
+      {
+        role: "system",
+        content: [{ type: "input_text", text: sys }]
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: userPrompt }]
       }
     ],
-    // ✅ formato correcto para Responses API
+    // ✅ pedir salida JSON dura
     text: { format: { type: "json_object" } }
   };
 
@@ -171,6 +172,8 @@ Decidí el próximo paso.`
   }
 
   const data = await resp.json();
+
+  // La salida “completa” viene en output_text
   const out = data.output_text || "";
 
   let obj;
@@ -184,7 +187,6 @@ Decidí el próximo paso.`
     };
   }
 
-  // sanitize
   obj.say = String(obj.say || "").slice(0, 900);
   obj.update = obj.update || {};
   obj.done = Boolean(obj.done);
