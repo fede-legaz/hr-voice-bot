@@ -50,6 +50,24 @@ function autodetectBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+function getResponsesOutputText(respJson) {
+  // Compatible con distintas variantes de Responses API
+  if (respJson?.output_text) return respJson.output_text;
+
+  const out = respJson?.output;
+  if (!Array.isArray(out)) return "";
+
+  let s = "";
+  for (const item of out) {
+    const content = item?.content;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) {
+      if (c?.type === "output_text" && typeof c?.text === "string") s += c.text;
+    }
+  }
+  return s;
+}
+
 function twimlPlayAndGather(playUrl, actionUrl, lang = "es-US") {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -102,94 +120,97 @@ async function ttsToMp3(text) {
 }
 
 // --- OpenAI "brain": returns JSON with say/update/done ---
+const FALLBACK_LINE = "Perdón, se me cortó un segundo. ¿Me repetís dónde vivís y qué disponibilidad tenés?";
+const MAX_AI_FAILS = 2;
+
+function scriptedNext(session) {
+  // Fallback por estado: pregunta lo que falta, 1-2 preguntas cortas
+  const d = session.data;
+  if (!d.zona) {
+    return { say: "Dale. ¿En qué zona vivís? ¿Vivís cerca del local?", update: {}, done: false };
+  }
+  if (!d.residencia) {
+    return { say: "Perfecto. ¿Estás viviendo en Miami permanente o por temporada?", update: {}, done: false };
+  }
+  if (!d.disponibilidad) {
+    return { say: "Bien. ¿Qué días y horarios podés trabajar?", update: {}, done: false };
+  }
+  if (!d.salario) {
+    return { say: "Última: ¿cuál es tu expectativa salarial por hora? Decime un número.", update: {}, done: false };
+  }
+  return { say: "Listo, gracias. Con esta info seguimos el proceso y te contactamos.", update: {}, done: true };
+}
+
 async function decideNext(session, userText) {
   if (!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
+  session.aiFails = session.aiFails || 0;
 
   const sys = `
 Sos Mariana, entrevistadora inicial por teléfono para restaurantes en Miami.
-Objetivo: en 5-7 minutos obtener y confirmar:
+Objetivo: obtener y confirmar:
 - zona/cercanía
-- vive en Miami permanente o temporada (y cuánto tiempo si temporada)
+- Miami permanente o temporada
 - disponibilidad (días/horarios)
-- expectativa salarial por hora (número)
-
+- salario por hora (número)
 Reglas:
-- Máximo 2 preguntas cortas por turno.
-- Si el candidato es vago ("depende", "cuando pueda"), repreguntá para concretar.
-- Confirmá datos con frases humanas ("ok, entonces...").
-- Tono cálido y humano. Frases cortas.
-
-Salida: respondé SOLO JSON válido con esta forma:
-{
-  "say": "texto que Mariana va a decir ahora (puede incluir confirmación + 1-2 preguntas)",
-  "update": { "zona": string|null, "residencia": string|null, "disponibilidad": string|null, "salario": string|null },
-  "done": boolean
-}
+- máximo 2 preguntas cortas por turno
+- si es vago, repreguntá para concretar
+- tono cálido, humano, frases cortas
+Salida: SOLO JSON:
+{"say": "...", "update":{"zona":null|string,"residencia":null|string,"disponibilidad":null|string,"salario":null|string}, "done": boolean}
 No inventes datos.
 `.trim();
 
   const userPrompt =
-`Contexto:
-- Marca: ${session.brand}
-- Datos actuales: ${JSON.stringify(session.data)}
-- Preguntas ya hechas: ${JSON.stringify(session.asked)}
-- Último mensaje de Mariana: ${session.last_bot || "N/A"}
-
-Texto del candidato (transcripción):
-${userText || ""}
-
-Decidí el próximo paso.`;
+`Marca: ${session.brand}
+Datos actuales: ${JSON.stringify(session.data)}
+Último mensaje de Mariana: ${session.last_bot || "N/A"}
+Texto del candidato: ${userText || ""}`;
 
   const payload = {
     model: OPENAI_MODEL,
-    // ✅ formato compatible: input_text
     input: [
-      {
-        role: "system",
-        content: [{ type: "input_text", text: sys }]
-      },
-      {
-        role: "user",
-        content: [{ type: "input_text", text: userPrompt }]
-      }
+      { role: "system", content: [{ type: "input_text", text: sys }] },
+      { role: "user", content: [{ type: "input_text", text: userPrompt }] }
     ],
-    // ✅ pedir salida JSON dura
     text: { format: { type: "json_object" } }
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_KEY}`,
-      "Content-Type": "application/json"
-    },
+    headers: { Authorization: `Bearer ${OPENAI_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
 
   if (!resp.ok) {
-    const t = await resp.text();
-    throw new Error(`OpenAI error: ${resp.status} ${t}`);
+    session.aiFails += 1;
+    return session.aiFails >= MAX_AI_FAILS ? scriptedNext(session) : { say: FALLBACK_LINE, update: {}, done: false };
   }
 
   const data = await resp.json();
-
-  // La salida “completa” viene en output_text
-  const out = data.output_text || "";
+  const out = getResponsesOutputText(data);
 
   let obj;
   try {
     obj = JSON.parse(out);
   } catch {
-    obj = {
-      say: "Perdón, se me cortó un segundo. ¿Me repetís dónde vivís y qué disponibilidad tenés?",
-      update: { zona: null, residencia: null, disponibilidad: null, salario: null },
-      done: false
-    };
+    session.aiFails += 1;
+    return session.aiFails >= MAX_AI_FAILS ? scriptedNext(session) : { say: FALLBACK_LINE, update: {}, done: false };
   }
 
-  obj.say = String(obj.say || "").slice(0, 900);
+  // Si el modelo devuelve el fallback repetido, cortamos loop
+  const say = String(obj.say || "");
+  if (say.trim() === FALLBACK_LINE.trim()) {
+    session.aiFails += 1;
+    return session.aiFails >= MAX_AI_FAILS ? scriptedNext(session) : { say: FALLBACK_LINE, update: {}, done: false };
+  }
+
+  // Reset si fue bien
+  session.aiFails = 0;
+
   obj.update = obj.update || {};
   obj.done = Boolean(obj.done);
+  obj.say = say.slice(0, 900);
 
   return obj;
 }
