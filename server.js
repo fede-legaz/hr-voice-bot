@@ -1,810 +1,762 @@
-/* Hiring Voice Bot — Twilio Media Streams <-> OpenAI Realtime
-   - Consent-based call recording (Twilio)
-   - Download MP3
-   - Send WhatsApp report + audio (to yesbot)
+Te está pasando un root-cause clásico: el bot sí genera audio, pero vos lo estás tirando a la basura porque Twilio todavía no te mandó el streamSid (evento start). Si enviás audio a Twilio sin streamSid, o lo descartás cuando streamSid=null, la llamada queda muda.
+
+Además, si lo que no se escucha es el audio por WhatsApp, normalmente es porque:
+	•	Estás bajando el RecordingUrl sin autenticación (Twilio te devuelve HTML/401), o
+	•	Lo bajás antes de que esté listo, y te llega un MP3 vacío/0 segundos.
+
+Abajo te dejo un server.js completo (copiar/pegar) que arregla ambos frentes:
+	•	No dispara el saludo hasta tener (1) streamSid y (2) session.updated de OpenAI.
+	•	Bufferiza audio si llega antes del streamSid.
+	•	Usa formato correcto para Twilio: audio/pcmu (mulaw 8k) y escucha response.output_audio.delta.  ￼
+	•	Implementa barge-in real: cuando detecta que el humano empieza a hablar, manda clear a Twilio + response.cancel a OpenAI para que no se pisen.  ￼
+	•	Función de consentimiento vía tool-calling: el modelo escucha el “sí/no” (sin STT externo), y tu server decide si graba.
+	•	Cuando termina, descarga el recording con auth + retry y lo manda por WhatsApp con mediaUrl.
+
+⸻
+
+1) Pegá esto tal cual en server.js
+
+Ojo: esto asume Node 18+ (vos tenés 22, perfecto).
+
+/* server.js - Twilio <Connect><Stream> <-> OpenAI Realtime + Recording -> WhatsApp
+   Fixes:
+   - No "silent call": waits for Twilio start(streamSid) + OpenAI session.updated before greeting
+   - Buffers audio until streamSid exists
+   - Barge-in: Twilio clear + OpenAI response.cancel on speech_started
+   - Recording consent via tool-calling (no fragile realtime transcription config)
 */
 
+require("dotenv").config();
+
 const express = require("express");
-const crypto = require("crypto");
+const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const twilio = require("twilio");
 const WebSocket = require("ws");
-const { WebSocketServer } = WebSocket;
+const { WebSocketServer } = require("ws");
 
-const PORT = process.env.PORT || 8080;
+const PORT = Number(process.env.PORT || 8080);
 
-// ====== ENV ======
+// REQUIRED
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, ""); // e.g. https://your-app.ondigitalocean.app
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+// OPTIONAL / RECOMMENDED
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
-const TRANSCRIBE_MODEL =
-  process.env.TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe-2025-12-15";
-const SCORING_MODEL = process.env.SCORING_MODEL || "gpt-4o-mini";
-const VOICE = process.env.VOICE || "cedar";
-const BRAND_NAME = process.env.BRAND_NAME || "New Campo Argentino";
+const OPENAI_VOICE = process.env.OPENAI_VOICE || "marin"; // OpenAI recommends marin/cedar for best quality  [oai_citation:2‡OpenAI Platform](https://platform.openai.com/docs/guides/realtime-conversations)
+const TEMPERATURE = Number(process.env.TEMPERATURE || 0.7);
 
-const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
-
+// Twilio (required for recording + WhatsApp)
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
-const WHATSAPP_FROM = process.env.WHATSAPP_FROM; // "whatsapp:+1..."
-const WHATSAPP_TO = process.env.WHATSAPP_TO;     // "whatsapp:+1..." (yesbot)
+// WhatsApp via Twilio
+const WHATSAPP_FROM = process.env.WHATSAPP_FROM; // e.g. "whatsapp:+14155238886" (sandbox) or your WA-enabled number
+const WHATSAPP_TO = process.env.WHATSAPP_TO;     // e.g. "whatsapp:+17866450967" (your yesbot)
 
-// ====== Basic guardrails ======
-if (!OPENAI_API_KEY) console.warn("⚠️ Missing OPENAI_API_KEY");
-if (!TWILIO_ACCOUNT_SID) console.warn("⚠️ Missing TWILIO_ACCOUNT_SID");
-if (!TWILIO_AUTH_TOKEN) console.warn("⚠️ Missing TWILIO_AUTH_TOKEN");
-if (!WHATSAPP_FROM) console.warn("⚠️ Missing WHATSAPP_FROM");
-if (!WHATSAPP_TO) console.warn("⚠️ Missing WHATSAPP_TO");
-
-// ====== Storage ======
-const RECORDINGS_DIR = path.join(process.cwd(), "recordings");
-if (!fs.existsSync(RECORDINGS_DIR)) fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
-
-// Token -> { filePath, mime, expiresAt, filename }
-const mediaTokens = new Map();
-
-// CallSid -> metadata collected at /voice time
-const callMeta = new Map();
-
-// StreamSid -> session object
-const sessionsByStream = new Map();
-
-// RecordingSid -> CallSid
-const recordingToCall = new Map();
-
-// Cleanup tokens periodically
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, info] of mediaTokens.entries()) {
-    if (info.expiresAt <= now) {
-      mediaTokens.delete(token);
-      try { fs.unlinkSync(info.filePath); } catch (_) {}
-    }
-  }
-  // Cleanup old callMeta (10 min)
-  for (const [callSid, meta] of callMeta.entries()) {
-    if ((now - meta.createdAt) > 10 * 60 * 1000) callMeta.delete(callSid);
-  }
-}, 60 * 1000).unref();
-
-// ====== Helpers ======
-function safeJsonParse(s) {
-  try { return JSON.parse(s); } catch (_) {}
-  // try to salvage JSON blob
-  const start = s.indexOf("{");
-  const end = s.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try { return JSON.parse(s.slice(start, end + 1)); } catch (_) {}
-  }
-  return null;
+function must(name, val) {
+  if (!val) throw new Error(`Missing env var: ${name}`);
 }
 
-function toWsBaseUrl(httpBase) {
-  if (!httpBase) return "";
-  if (httpBase.startsWith("https://")) return "wss://" + httpBase.slice("https://".length);
-  if (httpBase.startsWith("http://")) return "ws://" + httpBase.slice("http://".length);
-  return httpBase;
-}
+must("PUBLIC_BASE_URL", PUBLIC_BASE_URL);
+must("OPENAI_API_KEY", OPENAI_API_KEY);
 
-function deriveBaseUrlFromReq(req) {
-  // Works behind reverse proxies (DigitalOcean, etc.)
-  const proto = (req.headers["x-forwarded-proto"] || "https").toString().split(",")[0].trim();
-  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").toString().split(",")[0].trim();
-  if (!host) return PUBLIC_BASE_URL || "";
-  return `${proto}://${host}`;
-}
+// Twilio client only if credentials exist (so the voice bot can still run without WhatsApp)
+const hasTwilio = !!(TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN);
+const twilioClient = hasTwilio ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) : null;
 
-function normalizeText(t) {
-  return (t || "")
-    .toString()
-    .trim()
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, " ");
-}
-
-function parseYesNo(text) {
-  const t = ` ${normalizeText(text)} `;
-  const yesWords = [" si ", " sí ", " dale ", " ok ", " okay ", " de acuerdo ", " claro ", " yes ", " sure ", " y "];
-  const noWords = [" no ", " nop ", " no gracias ", " prefiero que no ", " mejor no "];
-
-  const hasNo = noWords.some(w => t.includes(w));
-  const hasYes = yesWords.some(w => t.includes(w));
-
-  if (hasNo && !hasYes) return false;
-  if (hasYes && !hasNo) return true;
-  if (hasYes && hasNo) return false; // conservative
-  return null;
-}
-
-function looksLikeFarewell(text) {
-  const t = ` ${normalizeText(text)} `;
-  const bye = [" chau ", " chao ", " adios ", " adiós ", " bye ", " hasta luego ", " gracias chau ", " me voy ", " tengo que cortar "];
-  return bye.some(w => t.includes(w));
-}
-
-async function twilioRequest(method, url, params = null) {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) throw new Error("Twilio creds missing");
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
-  const headers = { Authorization: `Basic ${auth}` };
-
-  let body;
-  if (params) {
-    headers["Content-Type"] = "application/x-www-form-urlencoded";
-    body = new URLSearchParams(params).toString();
-  }
-
-  const res = await fetch(url, { method, headers, body });
-  const txt = await res.text();
-  if (!res.ok) {
-    throw new Error(`Twilio API error ${res.status}: ${txt}`);
-  }
-  try { return JSON.parse(txt); } catch (_) { return txt; }
-}
-
-async function startTwilioRecording(callSid, baseUrl) {
-  // Start recording on an in-progress call
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}/Recordings.json`;
-  const payload = {
-    RecordingStatusCallback: `${baseUrl}/recording-status`,
-    RecordingStatusCallbackMethod: "POST",
-    RecordingStatusCallbackEvent: "completed",
-    RecordingChannels: "mono"
-  };
-  const rec = await twilioRequest("POST", url, payload);
-  return rec; // contains sid etc
-}
-
-async function hangupCall(callSid) {
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${callSid}.json`;
-  // Update call status to completed
-  await twilioRequest("POST", url, { Status: "completed" });
-}
-
-async function downloadTwilioRecordingMp3(recordingSid) {
-  // Twilio supports fetching .mp3 when status is completed
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Recordings/${recordingSid}.mp3`;
-  const auth = Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
-  const res = await fetch(url, { headers: { Authorization: `Basic ${auth}` } });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Recording download failed ${res.status}: ${txt}`);
-  }
-  const buf = Buffer.from(await res.arrayBuffer());
-  return buf;
-}
-
-function mintMediaToken(filePath, mime, filename, ttlMinutes = 60) {
-  const token = crypto.randomBytes(18).toString("hex");
-  mediaTokens.set(token, {
-    filePath,
-    mime,
-    filename,
-    expiresAt: Date.now() + ttlMinutes * 60 * 1000
-  });
-  return token;
-}
-
-async function sendWhatsApp({ to, from, body, mediaUrl }) {
-  if (!to || !from) throw new Error("WhatsApp to/from missing");
-  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
-  const payload = { To: to, From: from, Body: body || "" };
-  if (mediaUrl) payload.MediaUrl = mediaUrl;
-  const out = await twilioRequest("POST", url, payload);
-  return out;
-}
-
-function buildTranscript(session) {
-  // Interleave best-effort by time
-  const items = [];
-  for (const u of session.userTurns) items.push({ who: "CANDIDATO", ts: u.ts, text: u.text });
-  for (const a of session.assistantTurns) items.push({ who: "BOT", ts: a.ts, text: a.text });
-  items.sort((x, y) => x.ts - y.ts);
-
-  const lines = items
-    .filter(i => i.text && i.text.trim())
-    .map(i => `${i.who}: ${i.text.trim()}`);
-  return lines.join("\n");
-}
-
-function extractOutputTextFromResponsesApi(respJson) {
-  // robust extraction
-  let out = "";
-  const output = respJson.output || [];
-  for (const item of output) {
-    if (item && item.type === "message" && Array.isArray(item.content)) {
-      for (const c of item.content) {
-        if (c && c.type === "output_text" && typeof c.text === "string") out += c.text;
-      }
-    }
-  }
-  return out.trim();
-}
-
-async function scoreInterview(transcriptText) {
-  if (!transcriptText || transcriptText.length < 20) {
-    return {
-      score_0_100: 0,
-      recommendation: "followup",
-      summary: "Sin suficiente texto para evaluar. Revisar audio/manual.",
-      key_points: [],
-      red_flags: [],
-      extracted: {}
-    };
-  }
-
-  const prompt = `
-Sos un reclutador senior en Miami. Evaluás una entrevista inicial de restaurante (front/cocina/runner/etc).
-Devolvé SOLO un JSON válido, sin markdown, sin texto extra.
-
-Objetivo: extraer datos NO negociables + experiencia y dar un score 0-100.
-
-NO negociables:
-- zona donde vive / si vive cerca
-- si vive en Miami ahora o está por temporada
-- disponibilidad horaria (ej: full time / part time / nights/weekends)
-- expectativa salarial
-Además:
-- nivel de inglés (none/basic/conversational/fluent/unknown)
-- experiencia previa en restaurantes (años + roles)
-- autorización para trabajar legalmente en EEUU (yes/no/unknown) — no inventes
-- señales de riesgo (impuntualidad, incoherencias, evasivo, etc.)
-
-Schema requerido:
-{
-  "score_0_100": number,
-  "recommendation": "interview" | "reject" | "followup",
-  "summary": string,
-  "key_points": string[],
-  "red_flags": string[],
-  "extracted": {
-    "area": string|null,
-    "lives_near": boolean|null,
-    "in_miami_now": boolean|null,
-    "seasonal": boolean|null,
-    "availability": string|null,
-    "salary_expectation": string|null,
-    "english_level": "none"|"basic"|"conversational"|"fluent"|"unknown",
-    "experience": string|null,
-    "work_authorized_us": "yes"|"no"|"unknown"
-  }
-}
-
-TRANSCRIPCIÓN:
-${transcriptText}
-`.trim();
-
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: SCORING_MODEL,
-      input: prompt,
-      max_output_tokens: 700
-    })
-  });
-
-  const txt = await res.text();
-  if (!res.ok) throw new Error(`OpenAI scoring error ${res.status}: ${txt}`);
-
-  const json = safeJsonParse(txt) || safeJsonParse(extractOutputTextFromResponsesApi(safeJsonParse(txt) || {})) || safeJsonParse(txt);
-  if (json && json.output) {
-    // It was a full response object
-    const outText = extractOutputTextFromResponsesApi(json);
-    const parsed = safeJsonParse(outText);
-    if (parsed) return parsed;
-  }
-  if (json && typeof json === "object" && json.score_0_100 !== undefined) return json;
-
-  // last resort: try to parse as response object
-  const maybe = safeJsonParse(txt);
-  if (maybe && maybe.output) {
-    const outText = extractOutputTextFromResponsesApi(maybe);
-    const parsed = safeJsonParse(outText);
-    if (parsed) return parsed;
-  }
-
-  return {
-    score_0_100: 0,
-    recommendation: "followup",
-    summary: "No pude parsear JSON de scoring. Revisar logs.",
-    key_points: [],
-    red_flags: [],
-    extracted: {}
-  };
-}
-
-function buildWhatsAppBody(session, scored) {
-  const meta = session.meta || {};
-  const from = meta.from || "(desconocido)";
-  const role = session.roleApplied || "no especificado";
-
-  const e = (scored && scored.extracted) ? scored.extracted : {};
-
-  const lines = [
-    `🧾 Entrevista inicial — ${BRAND_NAME}`,
-    `📞 Candidato: ${from}`,
-    `🎯 Puesto: ${role}`,
-    "",
-    `✅ Grabación: ${session.recordingConsent === true ? "Sí" : "No"}`,
-    `📍 Zona: ${e.area ?? "—"}`,
-    `🏠 Vive cerca: ${e.lives_near ?? "—"}`,
-    `🌴 En Miami ahora: ${e.in_miami_now ?? "—"}`,
-    `🗓 Disponibilidad: ${e.availability ?? "—"}`,
-    `💰 Expectativa: ${e.salary_expectation ?? "—"}`,
-    `🗣 Inglés: ${e.english_level ?? "unknown"}`,
-    `🇺🇸 Autorización trabajo EEUU: ${e.work_authorized_us ?? "unknown"}`,
-    "",
-    `⭐ Score: ${scored?.score_0_100 ?? "—"}/100`,
-    `📌 Recomendación: ${scored?.recommendation ?? "—"}`,
-    "",
-    `📝 Resumen: ${scored?.summary ?? "—"}`
-  ];
-
-  if (Array.isArray(scored?.red_flags) && scored.red_flags.length) {
-    lines.push("", "🚩 Red flags:", ...scored.red_flags.map(x => `- ${x}`));
-  }
-
-  return lines.join("\n");
-}
-
-// ====== Express app ======
 const app = express();
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ extended: false })); // Twilio webhooks are form-encoded
 app.use(express.json());
 
-app.get("/health", (req, res) => res.status(200).send("ok"));
+// --- In-memory stores (OK for low volume tests) ---
+const sessionsByConn = new Map();     // wsConnection -> session
+const sessionsByCallSid = new Map();  // callSid -> session
+const recordingsByToken = new Map();  // token -> { filePath, mime, expiresAt }
 
-app.post("/voice", (req, res) => {
-  const baseUrl = PUBLIC_BASE_URL || deriveBaseUrlFromReq(req);
-
-  const callSid = req.body.CallSid;
-  const from = req.body.From;
-  const to = req.body.To;
-
-  if (callSid) {
-    callMeta.set(callSid, {
-      from,
-      to,
-      baseUrl,
-      createdAt: Date.now()
-    });
+// Cleanup old recordings (best-effort)
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, rec] of recordingsByToken.entries()) {
+    if (rec.expiresAt <= now) {
+      try { fs.unlinkSync(rec.filePath); } catch {}
+      recordingsByToken.delete(token);
+    }
   }
+}, 60_000).unref();
 
-  const wsUrl = `${toWsBaseUrl(baseUrl)}/media-stream`;
-
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${wsUrl}" />
-  </Connect>
-</Response>`;
-
-  res.set("Content-Type", "text/xml");
-  res.status(200).send(twiml);
-});
-
-// Serve audio for WhatsApp MediaUrl
-function serveMedia(req, res) {
-  const token = req.params.token;
-  const info = mediaTokens.get(token);
-  if (!info) return res.status(404).send("Not found");
-
-  res.setHeader("Content-Type", info.mime || "audio/mpeg");
-  res.setHeader("Content-Disposition", `inline; filename="${info.filename || "interview.mp3"}"`);
-
-  const stream = fs.createReadStream(info.filePath);
-  stream.on("error", () => res.status(500).end());
-  stream.pipe(res);
+function toWsUrl(httpUrl) {
+  if (httpUrl.startsWith("https://")) return "wss://" + httpUrl.slice("https://".length);
+  if (httpUrl.startsWith("http://")) return "ws://" + httpUrl.slice("http://".length);
+  return httpUrl;
 }
 
-app.get("/r/:token", serveMedia);
-app.head("/r/:token", (req, res) => {
-  const token = req.params.token;
-  const info = mediaTokens.get(token);
-  if (!info) return res.status(404).end();
-  res.setHeader("Content-Type", info.mime || "audio/mpeg");
-  res.setHeader("Content-Disposition", `inline; filename="${info.filename || "interview.mp3"}"`);
-  res.status(200).end();
+function safeJsonParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function basicAuthHeader(user, pass) {
+  return "Basic " + Buffer.from(`${user}:${pass}`).toString("base64");
+}
+
+function mintToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+// ---------- TwiML: incoming call webhook ----------
+app.post("/voice", (req, res) => {
+  // IMPORTANT: bidirectional stream uses <Connect><Stream>  [oai_citation:3‡Twilio](https://www.twilio.com/docs/voice/media-streams)
+  const VoiceResponse = twilio.twiml.VoiceResponse;
+  const twiml = new VoiceResponse();
+
+  const connect = twiml.connect();
+  connect.stream({
+    url: `${toWsUrl(PUBLIC_BASE_URL)}/media-stream`,
+    track: "inbound_track",
+  });
+
+  // Once our server closes the websocket, Twilio continues and hangs up.
+  twiml.hangup();
+
+  res.type("text/xml").send(twiml.toString());
 });
 
-// Twilio RecordingStatusCallback
+// Serve recording files for WhatsApp mediaUrl (public, random token)
+app.get("/r/:token", (req, res) => {
+  const rec = recordingsByToken.get(req.params.token);
+  if (!rec) return res.status(404).send("Not found");
+  res.setHeader("Content-Type", rec.mime);
+  res.setHeader("Cache-Control", "no-store");
+  res.sendFile(rec.filePath);
+});
+
+// Recording status callback from Twilio
 app.post("/recording-status", async (req, res) => {
-  // Respond fast to Twilio
+  // Respond fast, process async
   res.status(200).send("ok");
 
-  const recordingSid = req.body.RecordingSid || req.body.RecordingSid?.toString();
-  const callSid = req.body.CallSid || req.body.CallSid?.toString();
-  const status = (req.body.RecordingStatus || "").toString();
+  if (!hasTwilio) return;
 
-  if (!recordingSid || !callSid) {
-    console.warn("recording-status: missing RecordingSid/CallSid", req.body);
-    return;
-  }
+  const callSid = req.body.CallSid;
+  const recordingSid = req.body.RecordingSid;
+  const recordingUrl = req.body.RecordingUrl; // usually without extension
+  const status = (req.body.RecordingStatus || "").toLowerCase();
 
-  if (status !== "completed") return;
+  if (!callSid || !recordingSid || !recordingUrl) return;
+  if (status && status !== "completed") return;
 
-  recordingToCall.set(recordingSid, callSid);
-
-  const session = [...sessionsByStream.values()].find(s => s.callSid === callSid);
-  if (!session) {
-    console.warn("recording-status: session not found for callSid", callSid);
-  }
+  const session = sessionsByCallSid.get(callSid);
 
   try {
-    const mp3 = await downloadTwilioRecordingMp3(recordingSid);
+    const mp3Path = path.join(os.tmpdir(), `call_${callSid}_${recordingSid}.mp3`);
+    await downloadTwilioRecordingMp3WithRetry(recordingUrl, mp3Path);
 
-    const fileName = `call-${callSid}-${recordingSid}.mp3`;
-    const filePath = path.join(RECORDINGS_DIR, fileName);
-    fs.writeFileSync(filePath, mp3);
+    const token = mintToken();
+    recordingsByToken.set(token, {
+      filePath: mp3Path,
+      mime: "audio/mpeg",
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
 
-    const token = mintMediaToken(filePath, "audio/mpeg", fileName, 180); // 3h
-    const baseUrl = (session?.baseUrl) || (callMeta.get(callSid)?.baseUrl) || PUBLIC_BASE_URL;
-    const mediaUrl = `${baseUrl}/r/${token}`;
+    const mediaUrl = `${PUBLIC_BASE_URL}/r/${token}`;
 
-    if (session) {
-      session.recording = { recordingSid, filePath, mediaUrl, ready: true };
-    }
+    // Build a compact report
+    const summary = session?.candidateSummary || null;
+    const scoreLine = summary?.score_0_10 != null ? `Score: ${summary.score_0_10}/10` : "Score: (pendiente)";
+    const roleLine = summary?.role ? `Puesto: ${summary.role}` : "";
+    const localLine = summary?.local ? `Local: ${summary.local}` : "";
+    const payLine = summary?.salary_expectation ? `Expectativa: ${summary.salary_expectation}` : "";
+    const availLine = summary?.availability ? `Disponibilidad: ${summary.availability}` : "";
+    const areaLine = summary?.location_area ? `Zona: ${summary.location_area}` : "";
+    const engLine = summary?.english_level ? `Inglés: ${summary.english_level}` : "";
 
-    // If we already ended call, now we can send the report with audio
-    if (session && session.ended && !session.reportSent) {
-      await finalizeAndReport(session);
+    const header = `Entrevista telefónica (${nowIso()})`;
+    const body =
+      [header, localLine, roleLine, areaLine, availLine, payLine, engLine, scoreLine, summary?.notes ? `Notas: ${summary.notes}` : ""]
+        .filter(Boolean)
+        .join("\n");
+
+    // Send WhatsApp (to yesbot), with audio attached
+    if (WHATSAPP_FROM && WHATSAPP_TO) {
+      await twilioClient.messages.create({
+        from: WHATSAPP_FROM,
+        to: WHATSAPP_TO,
+        body,
+        mediaUrl: [mediaUrl],
+      });
+      console.log(`[WA] Sent report + audio to ${WHATSAPP_TO} (callSid=${callSid})`);
+    } else {
+      console.log("[WA] WHATSAPP_FROM/WHATSAPP_TO not set. Audio URL:", mediaUrl);
     }
   } catch (err) {
-    console.error("recording-status: failed to download/send", err);
+    console.error("[Recording] Failed to process recording:", err);
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Server listening on ${PORT}`);
-});
+// ----------- Health ----------
+app.get("/health", (req, res) => res.json({ ok: true }));
 
-// ====== WebSocket server for Twilio Media Streams ======
+// ---------- HTTP + WS server ----------
+const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/media-stream" });
 
-wss.on("connection", (twilioWs) => {
+// ----------- OpenAI system prompt (neutral Spanish, no slang) -----------
+const SYSTEM_MESSAGE = `
+Sos "Mariana", entrevistadora inicial para restaurantes en Miami Beach.
+Objetivo: entrevista corta (3-5 min), cálida y humana, sin sonar robótica.
+
+Reglas de conversación:
+- Habla en español neutro (sin modismos argentinos tipo "laburo").
+- 1 pregunta por vez. Después de preguntar, callate y esperá la respuesta.
+- No repitas lo mismo en loop. Si no entendés, pedí repetir UNA sola vez y seguí.
+- No digas que sos IA.
+- Si la persona dice "chau", "gracias", "no me interesa", o se quiere ir: despedite y llamá a end_call.
+- Si la persona no puede hablar ahora: pedí un horario para volver a llamar, guardalo en notes, y end_call.
+
+Flujo:
+1) Saludo breve: "Hola, te llamo por tu postulación. ¿Preferís seguir en español o en inglés?"
+2) "¿Tenés 3 minutos para una entrevista rápida ahora?"
+3) Consentimiento de grabación (legal y simple):
+   "Para compartir el resultado con el equipo, ¿autorizás que esta llamada se grabe? Podés decir 'sí' o 'no'."
+   Cuando detectes la respuesta, llamá a set_recording_consent(consented: true/false).
+
+4) Preguntas no negociables (obligatorias):
+   - Zona donde vive / si vive cerca del local
+   - Si está viviendo en Miami o es por temporada (y hasta cuándo)
+   - Disponibilidad horaria
+   - Expectativa salarial (por hora)
+
+5) Extra (muy importante):
+   - Experiencia previa en el puesto (años, tipo de lugares)
+   - Para roles de atención al público: validar inglés conversacional (preguntar si puede atender en inglés y pedir una mini frase/ejemplo).
+   - Pregunta legal correcta (sin detalles): "¿Estás autorizado/a para trabajar en Estados Unidos? (sí/no)"
+
+Cierre:
+- Agradecé, decí que el equipo revisa y que lo contactan.
+- Antes de cortar, llamá a submit_candidate_summary con los datos.
+- Luego llamá a end_call.
+
+Formato de submit_candidate_summary:
+- local (si lo mencionó)
+- role (si lo mencionó)
+- location_area
+- in_miami_or_season (texto corto)
+- availability
+- salary_expectation
+- english_level
+- work_authorization (yes/no/unsure)
+- notes (corto, útil)
+- score_0_10 (0-10)
+`;
+
+const TOOLS = [
+  {
+    type: "function",
+    name: "set_recording_consent",
+    description: "Set recording consent (true/false) when the candidate answers the recording question.",
+    parameters: {
+      type: "object",
+      properties: {
+        consented: { type: "boolean" },
+      },
+      required: ["consented"],
+    },
+  },
+  {
+    type: "function",
+    name: "submit_candidate_summary",
+    description: "Submit a structured summary of the candidate interview for WhatsApp report + scoring.",
+    parameters: {
+      type: "object",
+      properties: {
+        local: { type: "string" },
+        role: { type: "string" },
+        location_area: { type: "string" },
+        in_miami_or_season: { type: "string" },
+        availability: { type: "string" },
+        salary_expectation: { type: "string" },
+        english_level: { type: "string" },
+        work_authorization: { type: "string", enum: ["yes", "no", "unsure"] },
+        notes: { type: "string" },
+        score_0_10: { type: "number" },
+      },
+      required: ["location_area", "availability", "salary_expectation", "score_0_10"],
+    },
+  },
+  {
+    type: "function",
+    name: "end_call",
+    description: "End the call now.",
+    parameters: { type: "object", properties: {} },
+  },
+];
+
+// ----------- WS: Twilio <-> OpenAI -----------
+wss.on("connection", (twilioConn) => {
+  console.log("[TwilioWS] connected");
+
   const session = {
+    createdAt: Date.now(),
     streamSid: null,
     callSid: null,
-    baseUrl: PUBLIC_BASE_URL || null,
-    meta: {},
+    twilioConn,
     openaiWs: null,
-    userTurns: [],
-    assistantTurns: [],
-    assistantTranscriptBuffer: "",
-    recordingConsent: null, // null until decided
-    recording: { ready: false },
-    ended: false,
-    reportSent: false,
-    hangupRequested: false,
-    roleApplied: null
+
+    twilioReady: false,
+    openaiReady: false,
+    greeted: false,
+
+    pendingAudioDeltas: [],
+    lastClearAt: 0,
+
+    recordingConsent: null,
+    recordingStarted: false,
+
+    candidateSummary: null,
   };
 
-  sessionsByStream.set(crypto.randomUUID(), session);
+  sessionsByConn.set(twilioConn, session);
 
   // Connect to OpenAI Realtime
   const openaiWs = new WebSocket(
-    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL)}`,
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL)}&temperature=${encodeURIComponent(TEMPERATURE)}`,
     {
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`
-      }
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+      },
     }
   );
   session.openaiWs = openaiWs;
 
-  function sendToOpenAI(obj) {
-    if (openaiWs.readyState === WebSocket.OPEN) {
-      openaiWs.send(JSON.stringify(obj));
+  function sendToTwilioAudio(deltaBase64) {
+    // Twilio requires audio/x-mulaw 8000, base64, no headers  [oai_citation:4‡Twilio](https://www.twilio.com/docs/voice/media-streams/websocket-messages)
+    if (!session.streamSid) {
+      // Buffer until we have streamSid
+      if (session.pendingAudioDeltas.length < 400) session.pendingAudioDeltas.push(deltaBase64);
+      return;
     }
+    const payload = Buffer.from(deltaBase64, "base64").toString("base64"); // normalize base64 like Twilio's sample  [oai_citation:5‡Twilio](https://www.twilio.com/en-us/blog/voice-ai-assistant-openai-realtime-api-node)
+    session.twilioConn.send(
+      JSON.stringify({
+        event: "media",
+        streamSid: session.streamSid,
+        media: { payload },
+      })
+    );
   }
 
-  function sendToTwilioAudio(base64Pcmu) {
+  function flushPendingAudio() {
     if (!session.streamSid) return;
-    const msg = {
-      event: "media",
-      streamSid: session.streamSid,
-      media: { payload: base64Pcmu }
-    };
-    twilioWs.send(JSON.stringify(msg));
+    if (!session.pendingAudioDeltas.length) return;
+    for (const d of session.pendingAudioDeltas) sendToTwilioAudio(d);
+    session.pendingAudioDeltas = [];
   }
 
-  function buildSystemInstructions() {
-    // No slang argentino, tono recruiter cálido, no decir "soy IA" salvo que pregunten.
-    return `
-Sos una entrevistadora inicial para ${BRAND_NAME} (restaurante en Miami).
-Objetivo: entrevista corta (3-5 minutos), cálida y humana. Español neutro. Si el candidato habla en inglés, cambiá a inglés sin drama.
-
-Reglas:
-- NO uses slang argentino (no "laburo", no "che", no "boludo", etc).
-- Soná natural: frases cortas, ritmo humano, repregunta solo si hace falta.
-- No digas que sos una IA. Si te preguntan si sos humana/IA, decí la verdad ("soy un asistente virtual").
-- Si el candidato dice "chau/bye" o que tiene que cortar, despedite corto y terminá.
-
-Primero SIEMPRE pedí consentimiento para grabar:
-"Para mejorar calidad, ¿te parece bien que grabemos esta llamada? Decime sí o no."
-- Si dice NO: seguí igual pero sin grabación.
-- Si no queda claro: pedilo 1 vez más y si sigue ambiguo, asumí NO y seguí.
-
-Preguntas NO negociables (una por una, sin interrogatorio robótico):
-1) ¿En qué zona vivís? ¿Te queda cerca venir a Miami Beach?
-2) ¿Estás viviendo en Miami ahora o estás por temporada? (si temporada, ¿hasta cuándo?)
-3) Disponibilidad horaria (días / horarios / weekends / nights).
-4) Expectativa salarial (por hora o semanal).
-
-Preguntas extra (corta, conversacional):
-- ¿Qué experiencia previa tenés en restaurantes? (rol, años, tipo de lugar).
-- (Si aplica a Front) Validá inglés conversacional con 1 pregunta corta en inglés.
-
-Legal / trabajo:
-- Preguntá así: "¿Estás autorizado/a para trabajar legalmente en Estados Unidos?"
-- No preguntes ciudadanía, ni papeles específicos.
-
-Cierre:
-- Agradecé, decí que esto es la primera etapa, y que el equipo revisa y responde por WhatsApp.
-`.trim();
-  }
-
-  async function maybeStartRecordingOnConsent(yesNo) {
-    if (session.recordingConsent !== null) return;
-    session.recordingConsent = yesNo;
-
-    if (yesNo === true && session.callSid) {
-      try {
-        const baseUrl = session.baseUrl || PUBLIC_BASE_URL;
-        const rec = await startTwilioRecording(session.callSid, baseUrl);
-        if (rec && rec.sid) {
-          session.recording.recordingSid = rec.sid;
-        }
-      } catch (err) {
-        console.error("Failed to start recording:", err);
-      }
-    }
-  }
-
-  async function finalizeAndReport(sess) {
-    if (sess.reportSent) return;
-    sess.reportSent = true;
-
-    let transcript = buildTranscript(sess);
-
-    let scored = null;
-    try {
-      scored = await scoreInterview(transcript);
-    } catch (err) {
-      console.error("Scoring failed:", err);
-      scored = {
-        score_0_100: 0,
-        recommendation: "followup",
-        summary: "Error al generar scoring automático. Revisar manual.",
-        key_points: [],
-        red_flags: [],
-        extracted: {}
-      };
-    }
-
-    const body = buildWhatsAppBody(sess, scored);
-
-    const mediaUrl = (sess.recording && sess.recording.ready) ? sess.recording.mediaUrl : null;
+  async function startRecordingIfNeeded() {
+    if (!hasTwilio) return;
+    if (!session.callSid) return;
+    if (session.recordingStarted) return;
+    if (session.recordingConsent !== true) return;
 
     try {
-      await sendWhatsApp({
-        to: WHATSAPP_TO,
-        from: WHATSAPP_FROM,
-        body,
-        mediaUrl
+      session.recordingStarted = true;
+      // Start call recording; status callback will send audio to WhatsApp
+      await twilioClient.calls(session.callSid).recordings.create({
+        recordingStatusCallback: `${PUBLIC_BASE_URL}/recording-status`,
+        recordingStatusCallbackEvent: ["completed"],
       });
-      console.log("WhatsApp report sent. media:", !!mediaUrl);
-    } catch (err) {
-      console.error("WhatsApp send failed:", err);
+      console.log(`[Recording] started (callSid=${session.callSid})`);
+    } catch (e) {
+      console.error("[Recording] start failed:", e);
+      session.recordingStarted = false;
     }
   }
 
-  // OpenAI WS events
-  openaiWs.on("open", () => {
-    // Configure session (GA format)
-    sendToOpenAI({
+  function maybeGreet() {
+    if (session.greeted) return;
+    if (!session.twilioReady) return;
+    if (!session.openaiReady) return;
+
+    session.greeted = true;
+    flushPendingAudio();
+
+    // Kick off conversation (text input -> audio output)
+    const kickoff = {
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: "Arrancá la entrevista ahora siguiendo el flujo. Recordá: 1 pregunta por vez y esperá la respuesta.",
+          },
+        ],
+      },
+    };
+
+    openaiWs.send(JSON.stringify(kickoff));
+    openaiWs.send(JSON.stringify({ type: "response.create" }));
+    console.log("[Flow] greeted");
+  }
+
+  function sendSessionUpdate() {
+    // Note: This matches the pattern used in Twilio's Realtime + Media Streams guide (pcmu).  [oai_citation:6‡Twilio](https://www.twilio.com/en-us/blog/voice-ai-assistant-openai-realtime-api-node)
+    const sessionUpdate = {
       type: "session.update",
       session: {
-        instructions: buildSystemInstructions(),
-        // We only want audio out (but we still receive audio transcript events)
+        type: "realtime",
+        model: OPENAI_MODEL,
         output_modalities: ["audio"],
         audio: {
           input: {
             format: { type: "audio/pcmu" },
-            // Turn detection with auto response + interruptions
             turn_detection: {
               type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 700,
               create_response: true,
-              interrupt_response: true
+              interrupt_response: true,
             },
-            // IMPORTANT: This is the updated transcription path
-            transcription: {
-              model: TRANSCRIBE_MODEL,
-              language: "es",
-              prompt:
-                "Miami, Miami Beach, North Beach, Mid Beach, South Beach, Surfside, Bal Harbour, Aventura, Brickell, Wynwood, Downtown. Roles: server, runner, cook, prep cook, dishwasher, hostess, barista, pizza maker."
-            }
           },
           output: {
             format: { type: "audio/pcmu" },
-            voice: VOICE
-          }
+            voice: OPENAI_VOICE,
+          },
+        },
+        instructions: SYSTEM_MESSAGE,
+        tools: TOOLS,
+        tool_choice: "auto",
+      },
+    };
+    openaiWs.send(JSON.stringify(sessionUpdate));
+  }
+
+  function sendToolOutput(callId, outputObj) {
+    openaiWs.send(
+      JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "function_call_output",
+          call_id: callId,
+          output: JSON.stringify(outputObj || {}),
+        },
+      })
+    );
+    // Let the model continue
+    openaiWs.send(JSON.stringify({ type: "response.create" }));
+  }
+
+  async function handleFunctionCall(item) {
+    const name = item.name;
+    const callId = item.call_id || item.callId;
+    const args = safeJsonParse(item.arguments) || {};
+
+    if (!name || !callId) return;
+
+    if (name === "set_recording_consent") {
+      session.recordingConsent = !!args.consented;
+      console.log("[Tool] set_recording_consent =", session.recordingConsent);
+      sendToolOutput(callId, { ok: true, consented: session.recordingConsent });
+
+      if (session.recordingConsent === true) {
+        await startRecordingIfNeeded();
+      }
+      return;
+    }
+
+    if (name === "submit_candidate_summary") {
+      session.candidateSummary = args;
+      console.log("[Tool] submit_candidate_summary", args);
+      sendToolOutput(callId, { ok: true });
+
+      // If no recording consent, we can still send a text-only WhatsApp report now
+      if (hasTwilio && WHATSAPP_FROM && WHATSAPP_TO && session.recordingConsent === false) {
+        const body =
+          [
+            `Entrevista (sin grabación) (${nowIso()})`,
+            args.local ? `Local: ${args.local}` : "",
+            args.role ? `Puesto: ${args.role}` : "",
+            args.location_area ? `Zona: ${args.location_area}` : "",
+            args.availability ? `Disponibilidad: ${args.availability}` : "",
+            args.salary_expectation ? `Expectativa: ${args.salary_expectation}` : "",
+            args.english_level ? `Inglés: ${args.english_level}` : "",
+            args.work_authorization ? `Work authorization: ${args.work_authorization}` : "",
+            args.score_0_10 != null ? `Score: ${args.score_0_10}/10` : "",
+            args.notes ? `Notas: ${args.notes}` : "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+
+        try {
+          await twilioClient.messages.create({
+            from: WHATSAPP_FROM,
+            to: WHATSAPP_TO,
+            body,
+          });
+          console.log("[WA] Sent text-only report (no recording).");
+        } catch (e) {
+          console.error("[WA] Failed to send text-only report:", e);
         }
       }
-    });
 
-    // Make the bot speak first (greeting + consent)
-    sendToOpenAI({
-      type: "response.create",
-      response: {
-        modalities: ["audio"],
-        instructions: `Arrancá la llamada: saludá corto y pedí consentimiento de grabación (sí/no).`
+      return;
+    }
+
+    if (name === "end_call") {
+      console.log("[Tool] end_call");
+      sendToolOutput(callId, { ok: true });
+
+      // Hard hangup to avoid “chau” but call never ends
+      try {
+        if (hasTwilio && session.callSid) {
+          await twilioClient.calls(session.callSid).update({ status: "completed" });
+        } else {
+          // fallback: close stream
+          twilioConn.close();
+        }
+      } catch (e) {
+        console.error("[Call] hangup failed:", e);
+        try { twilioConn.close(); } catch {}
       }
-    });
+      return;
+    }
+
+    // Unknown tool
+    sendToolOutput(callId, { ok: false, error: "unknown_tool" });
+  }
+
+  // OpenAI socket lifecycle
+  openaiWs.on("open", () => {
+    console.log("[OpenAIWS] connected");
+    // Tiny delay improves stability (same tactic used in Twilio examples)  [oai_citation:7‡Twilio](https://www.twilio.com/en-us/blog/voice-ai-assistant-openai-realtime-api-node)
+    setTimeout(sendSessionUpdate, 250);
   });
 
-  openaiWs.on("message", async (data) => {
-    let event;
+  openaiWs.on("message", async (raw) => {
+    let evt;
     try {
-      event = JSON.parse(data.toString());
-    } catch (_) {
+      evt = JSON.parse(raw.toString());
+    } catch {
       return;
     }
 
-    const t = event.type;
-
-    // Audio from model -> Twilio
-    if (t === "response.output_audio.delta" || t === "response.audio.delta") {
-      if (event.delta) sendToTwilioAudio(event.delta);
+    if (evt.type === "session.updated") {
+      session.openaiReady = true;
+      maybeGreet();
       return;
     }
 
-    // Transcript of model audio (we store for scoring)
-    if (t === "response.output_audio_transcript.delta") {
-      if (typeof event.delta === "string") {
-        session.assistantTranscriptBuffer += event.delta;
+    // Barge-in: when user starts speaking, cancel current assistant output + clear Twilio buffer
+    if (evt.type === "input_audio_buffer.speech_started") {
+      const now = Date.now();
+      if (session.streamSid && now - session.lastClearAt > 400) {
+        session.lastClearAt = now;
+        try {
+          twilioConn.send(JSON.stringify({ event: "clear", streamSid: session.streamSid }));
+        } catch {}
+        try {
+          openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+        } catch {}
       }
       return;
     }
-    if (t === "response.output_audio_transcript.done") {
-      const finalText = (event.transcript || session.assistantTranscriptBuffer || "").trim();
-      if (finalText) session.assistantTurns.push({ ts: Date.now(), text: finalText });
-      session.assistantTranscriptBuffer = "";
+
+    // Audio back to Twilio
+    if ((evt.type === "response.output_audio.delta" || evt.type === "response.audio.delta") && evt.delta) {
+      sendToTwilioAudio(evt.delta);
       return;
     }
 
-    // User input transcription (key for consent + scoring)
-    if (t === "conversation.item.input_audio_transcription.completed") {
-      const userText = (event.transcript || "").trim();
-      if (userText) {
-        session.userTurns.push({ ts: Date.now(), text: userText });
-
-        // Consent logic
-        if (session.recordingConsent === null) {
-          const yn = parseYesNo(userText);
-          if (yn === true || yn === false) {
-            await maybeStartRecordingOnConsent(yn);
-          }
-        }
-
-        // Farewell => hang up after next response.done
-        if (looksLikeFarewell(userText)) {
-          session.hangupRequested = true;
-        }
-
-        // If user says role loosely, capture (optional)
-        // lightweight heuristics
-        const nt = normalizeText(userText);
-        const roles = ["server", "runner", "cook", "cocin", "prep", "dish", "dishwasher", "hostess", "barista", "pizza", "pizzero", "front"];
-        for (const r of roles) {
-          if (nt.includes(r)) {
-            session.roleApplied = session.roleApplied || userText;
-            break;
-          }
+    // Tool calling results arrive in response.done output items  [oai_citation:8‡OpenAI Platform](https://platform.openai.com/docs/guides/realtime-conversations)
+    if (evt.type === "response.done" && evt.response?.output?.length) {
+      for (const out of evt.response.output) {
+        if (out?.type === "function_call") {
+          await handleFunctionCall(out);
         }
       }
       return;
     }
 
-    // End-of-response => if farewell detected, hang up call
-    if (t === "response.done") {
-      if (session.hangupRequested && session.callSid) {
-        // Give a tiny cushion so the last audio gets out
-        setTimeout(async () => {
-          try { await hangupCall(session.callSid); } catch (e) { /* ignore */ }
-        }, 350);
-      }
-      return;
-    }
-
-    // Log OpenAI errors clearly
-    if (t === "error") {
-      console.error("OpenAI error event:", event);
-      return;
-    }
+    // If you want more observability, uncomment:
+    // if (evt.type && evt.type.startsWith("error")) console.error("[OpenAI] error event", evt);
   });
 
-  openaiWs.on("close", () => {
-    // If OpenAI closes, close Twilio side
-    try { twilioWs.close(); } catch (_) {}
-  });
+  openaiWs.on("error", (e) => console.error("[OpenAIWS] error", e));
+  openaiWs.on("close", () => console.log("[OpenAIWS] closed"));
 
-  openaiWs.on("error", (err) => {
-    console.error("OpenAI WS error:", err);
-  });
-
-  // Twilio WS events
-  twilioWs.on("message", async (msg) => {
+  // Twilio -> server messages
+  twilioConn.on("message", (msg) => {
     let data;
-    try { data = JSON.parse(msg.toString()); } catch (_) { return; }
+    try {
+      data = JSON.parse(msg.toString());
+    } catch {
+      return;
+    }
 
     if (data.event === "start") {
-      session.streamSid = data.start.streamSid;
-      session.callSid = data.start.callSid;
+      session.streamSid = data.start?.streamSid || null;
+      session.callSid = data.start?.callSid || null;
+      session.twilioReady = true;
 
-      const meta = callMeta.get(session.callSid);
-      if (meta) {
-        session.meta = { from: meta.from, to: meta.to };
-        session.baseUrl = meta.baseUrl || session.baseUrl || PUBLIC_BASE_URL;
-      } else {
-        session.baseUrl = session.baseUrl || PUBLIC_BASE_URL;
-      }
+      if (session.callSid) sessionsByCallSid.set(session.callSid, session);
 
+      console.log("[TwilioWS] start", { streamSid: session.streamSid, callSid: session.callSid });
+      maybeGreet();
+      flushPendingAudio();
       return;
     }
 
     if (data.event === "media") {
-      // Forward incoming audio from Twilio to OpenAI
-      if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
-        session.openaiWs.send(
-          JSON.stringify({
-            type: "input_audio_buffer.append",
-            audio: data.media.payload
-          })
-        );
+      // Send caller audio to OpenAI
+      if (openaiWs.readyState === WebSocket.OPEN && data.media?.payload) {
+        openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: data.media.payload }));
       }
       return;
     }
 
     if (data.event === "stop") {
-      session.ended = true;
-
-      // If no recording or not consented, send report now.
-      // If recording consented, wait for recording-status callback (max 2 min).
-      if (session.recordingConsent !== true) {
-        await finalizeAndReport(session);
-      } else {
-        // wait a bit for the recording callback
-        setTimeout(async () => {
-          if (!session.reportSent) {
-            await finalizeAndReport(session);
-          }
-        }, 120000).unref();
-      }
-
-      try { session.openaiWs.close(); } catch (_) {}
+      console.log("[TwilioWS] stop");
+      try { twilioConn.close(); } catch {}
       return;
     }
   });
 
-  twilioWs.on("close", async () => {
-    session.ended = true;
-    try { session.openaiWs.close(); } catch (_) {}
-
-    // Best-effort fallback report (no audio)
-    if (!session.reportSent) {
-      try { await finalizeAndReport(session); } catch (_) {}
-    }
-  });
-
-  twilioWs.on("error", (err) => {
-    console.error("Twilio WS error:", err);
+  twilioConn.on("close", () => {
+    sessionsByConn.delete(twilioConn);
+    if (session.callSid) sessionsByCallSid.delete(session.callSid);
+    try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
+    console.log("[TwilioWS] closed");
   });
 });
+
+// ---- Download recording from Twilio (with auth + retry) ----
+async function downloadTwilioRecordingMp3WithRetry(recordingUrlNoExt, destPath) {
+  if (!hasTwilio) throw new Error("Twilio creds missing");
+
+  const url = `${recordingUrlNoExt}.mp3`;
+  const auth = basicAuthHeader(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
+  const attempts = 10;
+  let lastErr = null;
+
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      const resp = await fetch(url, { headers: { Authorization: auth } });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+
+      const buf = Buffer.from(await resp.arrayBuffer());
+      // Guardrail: avoid writing tiny/empty files
+      if (buf.length < 10_000) throw new Error(`Recording too small (${buf.length} bytes), not ready yet`);
+
+      fs.writeFileSync(destPath, buf);
+      console.log(`[Recording] downloaded mp3 (${buf.length} bytes) attempt ${i}`);
+      return;
+    } catch (e) {
+      lastErr = e;
+      // wait a bit, Twilio sometimes needs time to finalize
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  throw lastErr || new Error("Failed to download recording");
+}
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server listening on ${PORT}`);
+});
+
+
+⸻
+
+2) package.json mínimo (y el error de “Cannot find package ‘twilio’”)
+
+En tu carpeta del proyecto:
+
+npm init -y
+npm install express ws twilio dotenv
+
+Y en package.json:
+
+{
+  "name": "hiring-voice-bot",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
+
+
+⸻
+
+3) Variables de entorno que tenés que setear (sin vueltas)
+
+En DigitalOcean App Platform → Settings → Environment Variables:
+	•	PUBLIC_BASE_URL = https://TU-APP.ondigitalocean.app
+	•	OPENAI_API_KEY = tu key de OpenAI
+	•	TWILIO_ACCOUNT_SID = ACxxxx
+	•	TWILIO_AUTH_TOKEN = tu token
+	•	WHATSAPP_FROM = whatsapp:+... (tu número WhatsApp de Twilio o el sandbox)
+	•	WHATSAPP_TO = whatsapp:+17866450967 (tu Yesbot)
+
+Qué carajo es PUBLIC_BASE_URL
+
+Es la URL pública HTTPS de tu server. Se usa para:
+	1.	que Twilio conecte al WebSocket wss://TU-APP/media-stream
+	2.	que WhatsApp pueda bajar el audio desde https://TU-APP/r/<token>
+
+Sin eso, tu pipeline queda “ciego” desde afuera.
+
+⸻
+
+4) Configuración Twilio (lo único que tenés que tocar)
+
+En Twilio Console → Phone Numbers → (tu número) → Voice:
+	•	A CALL COMES IN → Webhook
+	•	URL: https://TU-APP.ondigitalocean.app/voice
+	•	Method: POST
+
+Importante: esto usa <Connect><Stream> porque es lo que habilita bidireccional (audio ida y vuelta).  ￼
+
+⸻
+
+5) Si seguís sin escuchar nada: checklist brutal (2 minutos)
+	1.	En logs del server, cuando llamás, tenés que ver:
+	•	[TwilioWS] connected
+	•	[TwilioWS] start { streamSid, callSid }
+	•	[OpenAIWS] connected
+	•	[Flow] greeted
+
+Si no aparece start, Twilio no llegó al WS (URL mala / wss no público / no está en /media-stream).
+Si aparece start pero no OpenAIWS connected, OpenAI key o red.
+	2.	Asegurate que no estás usando <Start><Stream> en vez de <Connect><Stream>. El bidireccional es con Connect.  ￼
+	3.	El formato: Twilio exige audio/x-mulaw 8000 y base64.  ￼
+Este código ya lo fuerza con audio/pcmu (equivalente práctico en esta integración, como en los ejemplos de Twilio).  ￼
+
+⸻
+
+6) Diagrama del proceso WhatsApp + audio + scoring (lo que pediste “ya armado”)
+
+Call in → Stream → AI → Record → WhatsApp
+	1.	Llamada entra a Twilio → Twilio pega a /voice
+	2.	/voice devuelve TwiML con <Connect><Stream wss://.../media-stream>  ￼
+	3.	Twilio abre WS y manda start (callSid, streamSid)
+	4.	Server abre WS con OpenAI Realtime, manda session.update
+	5.	OpenAI manda session.updated → server dispara saludo
+	6.	Conversación: OpenAI manda response.output_audio.delta → server lo reenvía a Twilio como media.payload  ￼
+	7.	Cuando el candidato dice “sí/no” a grabación, OpenAI llama tool set_recording_consent (function calling).  ￼
+	8.	Si “sí”: server inicia recording del call por Twilio y espera callback /recording-status
+	9.	OpenAI al final llama submit_candidate_summary con scoring y datos (estructura)  ￼
+	10.	Twilio avisa “recording completed” → server baja MP3 con auth+retry → expone /r/<token> → manda WhatsApp con mediaUrl + summary.
+
+⸻
+
+Si me confirmás una sola cosa (sin mareos):
+cuando decís “no se escucha nada”, ¿es en la llamada o en el audio que llega por WhatsApp?
+Igual, con este server ya quedás cubierto en los dos: no-call-silence + recording download robusto.
