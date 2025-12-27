@@ -1,10 +1,13 @@
 {
-  "name": "hr-voice-bot",
+  "name": "hiring-voice-bot",
+  "version": "1.0.0",
   "type": "module",
-  "private": true,
-  "scripts": { "start": "node server.js" },
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.19.2",
-    "body-parser": "^1.20.2"
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
   }
 }
