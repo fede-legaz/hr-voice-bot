@@ -7,44 +7,68 @@ import crypto from "crypto";
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
+// --- Static audio hosting ---
 const AUDIO_DIR = path.join(process.cwd(), "audio");
 fs.mkdirSync(AUDIO_DIR, { recursive: true });
 app.use("/audio", express.static(AUDIO_DIR));
 
+// --- Env ---
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY;
 const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
 
 const OPENAI_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-let BASE_URL = process.env.BASE_URL; // DO te da URL pública, si no se setea lo autodetectamos
+let BASE_URL = process.env.BASE_URL; // opcional; si no está, se autodetecta
 
-// --- Sesiones (MVP) ---
-const sessions = new Map(); // CallSid -> state
+// --- Simple in-memory sessions (MVP) ---
+const sessions = new Map(); // CallSid -> session state
 
 function getSession(callSid) {
   if (!sessions.has(callSid)) {
     sessions.set(callSid, {
       brand: "New Campo Argentino",
-      role: null, // después lo conectamos
       language: "es",
       asked: [],
       data: {
         zona: null,
         residencia: null,
         disponibilidad: null,
-        salario: null,
-        ingles_ok: null
+        salario: null
       },
       last_bot: null,
-      started_at: Date.now()
+      created_at: Date.now()
     });
   }
   return sessions.get(callSid);
 }
 
-// --- ElevenLabs TTS ---
+// --- Helpers ---
+function autodetectBaseUrl(req) {
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  return `${proto}://${host}`;
+}
+
+function twimlPlayAndGather(playUrl, actionUrl, lang = "es-US") {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Play>${playUrl}</Play>
+  <Gather input="speech" language="${lang}" timeout="10" speechTimeout="auto"
+          action="${actionUrl}" method="POST"/>
+</Response>`;
+}
+
+function twimlPlayOnly(playUrl) {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Play>${playUrl}</Play></Response>`;
+}
+
+// --- ElevenLabs TTS -> MP3 file served from /audio ---
 async function ttsToMp3(text) {
+  if (!ELEVEN_KEY || !VOICE_ID) {
+    throw new Error("Missing ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID");
+  }
+
   const id = crypto.randomBytes(10).toString("hex");
   const outPath = path.join(AUDIO_DIR, `${id}.mp3`);
 
@@ -59,7 +83,7 @@ async function ttsToMp3(text) {
       text,
       model_id: "eleven_multilingual_v2",
       voice_settings: {
-        // más natural para teléfono
+        // más natural para llamadas
         stability: 0.30,
         similarity_boost: 0.85
       }
@@ -77,21 +101,10 @@ async function ttsToMp3(text) {
   return `${BASE_URL}/audio/${id}.mp3`;
 }
 
-// --- TwiML ---
-function twimlPlayAndGather(playUrl, actionUrl, lang = "es-US") {
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Play>${playUrl}</Play>
-  <Gather input="speech" language="${lang}" timeout="10" speechTimeout="auto"
-          action="${actionUrl}" method="POST"/>
-</Response>`;
-}
-function twimlPlayOnly(playUrl) {
-  return `<?xml version="1.0" encoding="UTF-8"?><Response><Play>${playUrl}</Play></Response>`;
-}
-
-// --- OpenAI “cerebro” ---
+// --- OpenAI "brain": returns JSON with say/update/done ---
 async function decideNext(session, userText) {
+  if (!OPENAI_KEY) throw new Error("Missing OPENAI_API_KEY");
+
   const sys = `
 Sos Mariana, entrevistadora inicial por teléfono para restaurantes en Miami.
 Objetivo: en 5-7 minutos obtener y confirmar:
@@ -99,27 +112,26 @@ Objetivo: en 5-7 minutos obtener y confirmar:
 - vive en Miami permanente o temporada (y cuánto tiempo si temporada)
 - disponibilidad (días/horarios)
 - expectativa salarial por hora (número)
+
 Reglas:
-- Hacé máximo 2 preguntas cortas por turno.
+- Máximo 2 preguntas cortas por turno.
 - Si el candidato es vago ("depende", "cuando pueda"), repreguntá para concretar.
 - Confirmá datos con frases humanas ("ok, entonces...").
-- Tono cálido, humano, cero robot.
+- Tono cálido y humano. Cero robot. Frases cortas.
+
 Salida: respondé SOLO JSON válido con esta forma:
 {
   "say": "texto que Mariana va a decir ahora (puede incluir confirmación + 1-2 preguntas)",
   "update": { "zona": string|null, "residencia": string|null, "disponibilidad": string|null, "salario": string|null },
   "done": boolean
 }
-No inventes datos. Si no hay algo, dejalo null en update.
-`;
+No inventes datos. Si no hay algo, dejalo null.
+`.trim();
 
   const payload = {
     model: OPENAI_MODEL,
     input: [
-      {
-        role: "system",
-        content: [{ type: "text", text: sys.trim() }]
-      },
+      { role: "system", content: [{ type: "text", text: sys }] },
       {
         role: "user",
         content: [
@@ -140,14 +152,14 @@ Decidí el próximo paso.`
         ]
       }
     ],
-    // Pedimos JSON “duro”
-    response_format: { type: "json_object" }
+    // ✅ formato correcto para Responses API
+    text: { format: { type: "json_object" } }
   };
 
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${OPENAI_KEY}`,
+      Authorization: `Bearer ${OPENAI_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
@@ -159,13 +171,12 @@ Decidí el próximo paso.`
   }
 
   const data = await resp.json();
-  const text = data.output_text;
+  const out = data.output_text || "";
 
   let obj;
   try {
-    obj = JSON.parse(text);
+    obj = JSON.parse(out);
   } catch {
-    // fallback ultra simple si el modelo devuelve algo raro
     obj = {
       say: "Perdón, se me cortó un segundo. ¿Me repetís dónde vivís y qué disponibilidad tenés?",
       update: { zona: null, residencia: null, disponibilidad: null, salario: null },
@@ -173,31 +184,26 @@ Decidí el próximo paso.`
     };
   }
 
-  // saneo básico
+  // sanitize
+  obj.say = String(obj.say || "").slice(0, 900);
   obj.update = obj.update || {};
   obj.done = Boolean(obj.done);
-  obj.say = String(obj.say || "").slice(0, 800);
 
   return obj;
 }
 
-// --- Route principal Twilio ---
+// --- Main Twilio webhook ---
 app.post("/voice", async (req, res) => {
-  // autodetect BASE_URL si no está seteada
-  if (!BASE_URL) {
-    const proto = req.headers["x-forwarded-proto"] || "https";
-    const host = req.headers["x-forwarded-host"] || req.headers.host;
-    BASE_URL = `${proto}://${host}`;
-  }
+  // set BASE_URL if missing
+  if (!BASE_URL) BASE_URL = autodetectBaseUrl(req);
 
   const callSid = req.body.CallSid || "no-call-sid";
   const session = getSession(callSid);
 
-  // Twilio STT
   const speech = (req.body.SpeechResult || "").trim();
 
   try {
-    // Primer contacto: intro (sin IA)
+    // Intro (first turn) - no IA yet
     if (!session.last_bot) {
       const intro =
         "Hola, ¿cómo estás? Soy Mariana. Te llamo porque aplicaste para trabajar en New Campo Argentino. " +
@@ -209,30 +215,29 @@ app.post("/voice", async (req, res) => {
       return res.type("text/xml").send(twimlPlayAndGather(url, "/voice", "es-US"));
     }
 
-    // Si no dijo nada, pedimos repetir sin gastar IA
+    // If user said nothing
     if (!speech) {
-      const rep = "Perdón, no te escuché bien. ¿Me repetís eso, porfa?";
+      const rep = "Perdón, no te escuché bien. ¿Me lo repetís, porfa?";
       session.last_bot = rep;
       const url = await ttsToMp3(rep);
       return res.type("text/xml").send(twimlPlayAndGather(url, "/voice", "es-US"));
     }
 
-    // IA decide el próximo paso (semi-dios)
+    // IA step
     const next = await decideNext(session, speech);
 
-    // Actualiza datos extraídos
+    // Update extracted fields
     for (const k of ["zona", "residencia", "disponibilidad", "salario"]) {
       const v = next.update?.[k];
-      if (v && typeof v === "string" && v.trim().length > 0) session.data[k] = v.trim();
+      if (typeof v === "string" && v.trim().length > 0) session.data[k] = v.trim();
     }
 
-    // Track de “qué ya preguntamos” (simple)
-    // si el bot menciona palabras clave, lo marcamos
-    const sayLower = (next.say || "").toLowerCase();
-    if (sayLower.includes("zona") || sayLower.includes("viv")) session.asked.push("zona");
-    if (sayLower.includes("perman") || sayLower.includes("tempor")) session.asked.push("residencia");
-    if (sayLower.includes("horar") || sayLower.includes("días") || sayLower.includes("dias")) session.asked.push("disponibilidad");
-    if (sayLower.includes("salar") || sayLower.includes("por hora")) session.asked.push("salario");
+    // crude asked tracking
+    const s = (next.say || "").toLowerCase();
+    if (s.includes("zona") || s.includes("viv")) session.asked.push("zona");
+    if (s.includes("perman") || s.includes("tempor")) session.asked.push("residencia");
+    if (s.includes("horar") || s.includes("días") || s.includes("dias")) session.asked.push("disponibilidad");
+    if (s.includes("salar") || s.includes("por hora")) session.asked.push("salario");
 
     session.last_bot = next.say;
 
@@ -245,12 +250,13 @@ app.post("/voice", async (req, res) => {
 
     return res.type("text/xml").send(twimlPlayAndGather(url, "/voice", "es-US"));
   } catch (e) {
-    // Para debug: mirá Runtime Logs en DO
     console.error(e);
     return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?>
 <Response><Say>Hubo un error técnico. Intentá más tarde.</Say></Response>`);
   }
 });
 
+// Health check
 app.get("/health", (_, res) => res.status(200).send("ok"));
+
 app.listen(process.env.PORT || 3000, () => console.log("running"));
