@@ -9,7 +9,7 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
-const VOICE = process.env.VOICE || "cedar";
+const VOICE = process.env.VOICE || "marin";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
