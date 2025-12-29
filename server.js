@@ -3,13 +3,23 @@
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-realtime";
+const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-realtime";
+const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
 const VOICE = process.env.VOICE || "marin";
+const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
+
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const WHATSAPP_FROM = process.env.WHATSAPP_FROM || "";
+const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -92,10 +102,52 @@ function parseEnglishRequired(value) {
   return value === "1" || value === "true" || value === "yes";
 }
 
+// --- in-memory stores with TTL ---
+const CALL_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const callsByStream = new Map(); // streamSid -> call
+const callsByCallSid = new Map(); // callSid -> call
+const tokens = new Map(); // token -> { path, expiresAt }
+const recordingsDir = path.join("/tmp", "recordings");
+fs.mkdirSync(recordingsDir, { recursive: true });
+
+function cleanup() {
+  const now = Date.now();
+  for (const [k, v] of callsByStream.entries()) {
+    if (v.expiresAt && v.expiresAt < now) callsByStream.delete(k);
+  }
+  for (const [k, v] of callsByCallSid.entries()) {
+    if (v.expiresAt && v.expiresAt < now) callsByCallSid.delete(k);
+  }
+  for (const [k, v] of tokens.entries()) {
+    if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
+  }
+}
+setInterval(cleanup, 5 * 60 * 1000).unref();
+
+function randomToken() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function base64Auth(user, pass) {
+  return Buffer.from(`${user}:${pass}`).toString("base64");
+}
+
 const app = express();
+app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 
 app.get("/health", (req, res) => res.status(200).send("ok"));
+
+app.get("/r/:token", (req, res) => {
+  const entry = tokens.get(req.params.token);
+  if (!entry || entry.expiresAt < Date.now()) {
+    return res.status(404).send("not found");
+  }
+  fs.createReadStream(entry.path)
+    .on("error", () => res.status(404).send("not found"))
+    .pipe(res.type("audio/mpeg"));
+});
 
 app.post("/voice", (req, res) => {
   const wsUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
@@ -126,6 +178,13 @@ wss.on("connection", (twilioWs, req) => {
     role,
     englishRequired,
     address,
+    from: null,
+    recordingStarted: false,
+    transcriptText: "",
+    scoring: null,
+    recordingPath: null,
+    recordingToken: null,
+    whatsappSent: false,
     twilioReady: false,
     openaiReady: false,
     started: false,
@@ -136,6 +195,11 @@ wss.on("connection", (twilioWs, req) => {
     transcript: []
   };
 
+  call.expiresAt = Date.now() + CALL_TTL_MS;
+  // Hold by temporary stream key until Twilio sends real streamSid
+  const tempKey = `temp-${crypto.randomUUID()}`;
+  callsByStream.set(tempKey, call);
+
   function record(kind, payload) {
     call.transcript.push({ at: Date.now(), kind, ...payload });
   }
@@ -143,7 +207,7 @@ wss.on("connection", (twilioWs, req) => {
   record("context", { brand, role, englishRequired, address });
 
   const openaiWs = new WebSocket(
-    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL)}`,
+    `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL_REALTIME)}`,
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
   );
 
@@ -175,8 +239,8 @@ wss.on("connection", (twilioWs, req) => {
       type: "session.update",
       session: {
         type: "realtime",
-        model: OPENAI_MODEL,
-        output_modalities: ["audio"],
+        model: OPENAI_MODEL_REALTIME,
+        output_modalities: ["audio", "text"],
         instructions: buildInstructions(call),
         audio: {
           input: {
@@ -232,6 +296,12 @@ wss.on("connection", (twilioWs, req) => {
       return;
     }
 
+    if ((evt.type === "response.output_text.delta" || evt.type === "response.text.delta") && evt.delta) {
+      record("bot_text", { text: evt.delta });
+      call.transcriptText += `Bot: ${evt.delta}\n`;
+      return;
+    }
+
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
       record("speech_started", {});
@@ -279,8 +349,19 @@ wss.on("connection", (twilioWs, req) => {
     if (data.event === "start") {
       call.streamSid = data.start?.streamSid || null;
       call.callSid = data.start?.callSid || null;
+      call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
       call.twilioReady = true;
       record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
+      // re-key maps now that streamSid/callSid are known
+      callsByStream.delete(tempKey);
+      if (call.streamSid) callsByStream.set(call.streamSid, call);
+      if (call.callSid) {
+        callsByCallSid.set(call.callSid, call);
+        call.expiresAt = Date.now() + CALL_TTL_MS;
+        if (AUTO_RECORD) {
+          startRecording(call).catch((err) => console.error("[recording start] failed", err));
+        }
+      }
       kickoff();
       flushAudio();
       return;
@@ -303,9 +384,234 @@ wss.on("connection", (twilioWs, req) => {
 
   twilioWs.on("close", () => {
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
+    call.expiresAt = Date.now() + CALL_TTL_MS;
   });
+});
+
+// --- Recording status webhook ---
+app.post("/recording-status", async (req, res) => {
+  res.status(204).end(); // Twilio expects quick ack
+  const recordingUrl = req.body?.RecordingUrl;
+  const recordingSid = req.body?.RecordingSid;
+  const callSid = req.body?.CallSid;
+  if (!recordingUrl || !recordingSid || !callSid) {
+    console.error("[recording-status] missing fields", req.body);
+    return;
+  }
+  const call = callsByCallSid.get(callSid) || { brand: DEFAULT_BRAND, role: DEFAULT_ROLE, englishRequired: DEFAULT_ENGLISH_REQUIRED, address: resolveAddress(DEFAULT_BRAND, null), callSid };
+  call.expiresAt = Date.now() + CALL_TTL_MS;
+  try {
+    await handleRecordingStatus(call, { recordingUrl, recordingSid });
+  } catch (err) {
+    console.error("[recording-status] failed", err);
+  }
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on ${PORT}`);
 });
+
+// --- helpers for recording/scoring/whatsapp ---
+async function handleRecordingStatus(call, { recordingUrl, recordingSid }) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    console.error("[recording] missing Twilio credentials, skipping download");
+    return;
+  }
+  const dest = path.join(recordingsDir, `${recordingSid}.mp3`);
+  await downloadRecordingWithRetry(`${recordingUrl}.mp3`, dest);
+  const token = randomToken();
+  tokens.set(token, { path: dest, expiresAt: Date.now() + TOKEN_TTL_MS });
+  call.recordingPath = dest;
+  call.recordingToken = token;
+  call.expiresAt = Date.now() + CALL_TTL_MS;
+  await maybeScoreAndSend(call);
+}
+
+async function downloadRecordingWithRetry(url, dest, attempts = 5) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await downloadRecording(url, dest);
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+async function downloadRecording(url, dest) {
+  const resp = await fetch(url, {
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    }
+  });
+  if (!resp.ok) throw new Error(`download failed ${resp.status}`);
+  const arrayBuf = await resp.arrayBuffer();
+  await fs.promises.writeFile(dest, Buffer.from(arrayBuf));
+}
+
+async function startRecording(call) {
+  if (!call.callSid || call.recordingStarted) return;
+  call.recordingStarted = true;
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    console.error("[recording start] missing Twilio credentials");
+    return;
+  }
+  const params = new URLSearchParams();
+  params.append("RecordingStatusCallback", `${PUBLIC_BASE_URL}/recording-status`);
+  params.append("RecordingStatusCallbackMethod", "POST");
+  params.append("RecordingChannels", "mono");
+  params.append("RecordingTrack", "both");
+  params.append("Trim", "trim-silence");
+
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${call.callSid}/Recordings.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    },
+    body: params
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`recording start failed ${resp.status} ${text}`);
+  }
+}
+
+async function transcribeAudio(filePath) {
+  const form = new FormData();
+  form.append("file", fs.createReadStream(filePath));
+  form.append("model", "whisper-1");
+  const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: form
+  });
+  if (!resp.ok) throw new Error(`transcription failed ${resp.status}`);
+  const data = await resp.json();
+  return data.text || "";
+}
+
+function buildScoringPrompt(call, transcriptText) {
+  return `
+Sos un asistente que evalúa entrevistas para restaurantes. Devolvé JSON estricto con este shape:
+{
+  "score_0_100": 0-100,
+  "recommendation": "advance" | "review" | "reject",
+  "summary": "1-2 líneas",
+  "key_points": ["..."],
+  "red_flags": ["..."],
+  "extracted": {
+    "area": "texto",
+    "availability": "texto",
+    "salary_expectation": "texto",
+    "english_level": "none|basic|conversational|fluent|unknown",
+    "experience": "texto breve",
+    "mobility": "yes|no|unknown"
+  }
+}
+Contexto fijo:
+- Restaurante: ${call.brand}
+- Puesto: ${call.role}
+- Dirección: ${call.address}
+- Inglés requerido: ${call.englishRequired ? "sí" : "no"}
+
+Transcript completo (usa esto para extraer datos):
+${transcriptText || "(vacío)"}
+
+No inventes datos si no están. Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
+}
+
+async function scoreTranscript(call, transcriptText) {
+  const prompt = buildScoringPrompt(call, transcriptText);
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: OPENAI_MODEL_SCORING,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "Devolvé solo JSON válido. Nada de texto fuera del JSON." },
+        { role: "user", content: prompt }
+      ]
+    })
+  });
+  if (!resp.ok) throw new Error(`scoring failed ${resp.status}`);
+  const data = await resp.json();
+  const text = data.choices?.[0]?.message?.content || "{}";
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function formatWhatsapp(scoring, call) {
+  const header = `${call.brand} – ${call.role}${call.from ? ` – ${call.from}` : ""}`;
+  if (!scoring) return `${header}\nResumen no disponible.`;
+  const lines = [];
+  if (scoring.summary) lines.push(scoring.summary);
+  if (scoring.extracted?.area) lines.push(`Zona: ${scoring.extracted.area}`);
+  if (scoring.extracted?.availability) lines.push(`Disponibilidad: ${scoring.extracted.availability}`);
+  if (scoring.extracted?.salary_expectation) lines.push(`Salario: ${scoring.extracted.salary_expectation}`);
+  if (scoring.extracted?.english_level) lines.push(`Inglés: ${scoring.extracted.english_level}`);
+  if (scoring.extracted?.mobility) lines.push(`Movilidad: ${scoring.extracted.mobility}`);
+  if (scoring.key_points?.length) lines.push(`Claves: ${scoring.key_points.slice(0, 3).join(" · ")}`);
+  if (scoring.red_flags?.length) lines.push(`Red flags: ${scoring.red_flags.slice(0, 2).join(" · ")}`);
+  if (typeof scoring.score_0_100 === "number") lines.push(`Score: ${scoring.score_0_100}/100 (${scoring.recommendation || "n/a"})`);
+  return `${header}\n${lines.join("\n")}`;
+}
+
+async function sendWhatsappReport(call) {
+  if (!WHATSAPP_FROM || !WHATSAPP_TO || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    console.error("[whatsapp] missing credentials/from/to");
+    return;
+  }
+  const params = new URLSearchParams();
+  params.append("From", WHATSAPP_FROM);
+  params.append("To", WHATSAPP_TO);
+  params.append("Body", formatWhatsapp(call.scoring, call));
+  if (call.recordingToken) {
+    params.append("MediaUrl", `${PUBLIC_BASE_URL}/r/${call.recordingToken}`);
+  }
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    },
+    body: params
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`whatsapp send failed ${resp.status} ${text}`);
+  }
+}
+
+async function maybeScoreAndSend(call) {
+  if (call.whatsappSent) return;
+  let transcriptText = call.transcriptText || "";
+  if (!transcriptText && call.recordingPath) {
+    try {
+      transcriptText = await transcribeAudio(call.recordingPath);
+      call.transcriptText = transcriptText;
+    } catch (err) {
+      console.error("[transcription] failed", err);
+    }
+  }
+  try {
+    call.scoring = await scoreTranscript(call, transcriptText);
+  } catch (err) {
+    console.error("[scoring] failed", err);
+  }
+  try {
+    await sendWhatsappReport(call);
+    call.whatsappSent = true;
+    call.expiresAt = Date.now() + CALL_TTL_MS;
+  } catch (err) {
+    console.error("[whatsapp] failed", err);
+  }
+}
