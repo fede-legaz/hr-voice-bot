@@ -405,6 +405,77 @@ app.post("/recording-status", async (req, res) => {
   }
 });
 
+
+// --- WHATSAPP DEBUG SEND (mínimo, sin twilio package) ---
+import { URLSearchParams } from "url";
+
+function normalizeWhatsApp(raw) {
+  if (!raw) throw new Error("Missing WhatsApp number");
+  let s = String(raw).trim();
+
+  // remove whatsapp: prefix if present
+  if (s.startsWith("whatsapp:")) s = s.slice("whatsapp:".length);
+
+  // remove spaces, parentheses, dashes
+  s = s.replace(/[()\-\s]/g, "");
+
+  // ensure it starts with +
+  if (!s.startsWith("+")) s = "+" + s;
+
+  return "whatsapp:" + s;
+}
+
+async function twilioSendWhatsApp({ to, from, body, mediaUrl }) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
+
+  const params = new URLSearchParams();
+  params.set("To", to);
+  params.set("From", from);
+  params.set("Body", body);
+  if (mediaUrl) params.append("MediaUrl", mediaUrl);
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": "Basic " + Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: params
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    // esto te imprime el error REAL de Twilio en logs
+    throw new Error(`Twilio send failed (${resp.status}): ${text}`);
+  }
+  return JSON.parse(text);
+}
+
+// Endpoint debug: /debug/wa?body=hola
+app.get("/debug/wa", async (req, res) => {
+  try {
+    // Log RAW env to catch hidden spaces/newlines
+    console.log("WHATSAPP_FROM raw:", JSON.stringify(process.env.WHATSAPP_FROM));
+    console.log("WHATSAPP_TO   raw:", JSON.stringify(process.env.WHATSAPP_TO));
+
+    const from = normalizeWhatsApp(process.env.WHATSAPP_FROM || "whatsapp:+14155238886");
+    const to   = normalizeWhatsApp(process.env.WHATSAPP_TO   || "whatsapp:+17866450967");
+
+    const body = String(req.query.body || `Ping OK ${new Date().toISOString()}`);
+
+    const out = await twilioSendWhatsApp({ to, from, body });
+    res.json({ ok: true, sid: out.sid, status: out.status });
+  } catch (err) {
+    console.error("DEBUG WA ERROR:", err?.message || err);
+    res.status(500).send(err?.message || String(err));
+  }
+});
+
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on ${PORT}`);
 });
