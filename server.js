@@ -492,8 +492,9 @@ async function transcribeAudio(filePath) {
   } catch (err) {
     console.error("[transcription] cannot stat file", err);
   }
+  const audioBuf = await fs.promises.readFile(filePath);
   const form = new FormData();
-  form.append("file", fs.createReadStream(filePath));
+  form.append("file", new Blob([audioBuf]), path.basename(filePath));
   form.append("model", "whisper-1");
   const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
@@ -504,8 +505,8 @@ async function transcribeAudio(filePath) {
     const text = await resp.text().catch(() => "");
     throw new Error(`transcription failed ${resp.status} ${text}`);
   }
-  const data = await resp.json();
-  return data.text || "";
+  const dataJson = await resp.json();
+  return dataJson.text || "";
 }
 
 function buildScoringPrompt(call, transcriptText) {
