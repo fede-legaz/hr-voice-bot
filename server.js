@@ -11,7 +11,7 @@ const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-realtime";
+const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-4o-mini-realtime-preview-2024-12-17";
 const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
 const VOICE = process.env.VOICE || "marin";
 const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
@@ -524,7 +524,11 @@ Sos un asistente que evalúa entrevistas para restaurantes. Devolvé JSON estric
     "salary_expectation": "texto",
     "english_level": "none|basic|conversational|fluent|unknown",
     "experience": "texto breve",
-    "mobility": "yes|no|unknown"
+    "mobility": "yes|no|unknown",
+    "warmth_score": 0-10,
+    "fluency_score": 0-10,
+    "warmth_note": "texto breve",
+    "fluency_note": "texto breve"
   }
 }
 Contexto fijo:
@@ -566,20 +570,34 @@ async function scoreTranscript(call, transcriptText) {
   }
 }
 
-function formatWhatsapp(scoring, call) {
+function formatWhatsapp(scoring, call, opts = {}) {
+  const note = opts.note || "";
   const header = `${call.brand} – ${call.role}${call.from ? ` – ${call.from}` : ""}`;
-  if (!scoring) return `${header}\nResumen no disponible.`;
+  if (!scoring) return `${header}\n${note || "Resumen no disponible."}`;
+
+  const ex = scoring.extracted || {};
+  const recIcon = scoring.recommendation === "advance" ? "✅ Avanzar" : scoring.recommendation === "reject" ? "⛔ No avanzar" : "🟡 Revisar";
+  const warmth = typeof ex.warmth_score === "number" ? `${ex.warmth_score}/10` : "n/d";
+  const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
+
   const lines = [];
-  if (scoring.summary) lines.push(scoring.summary);
-  if (scoring.extracted?.area) lines.push(`Zona: ${scoring.extracted.area}`);
-  if (scoring.extracted?.availability) lines.push(`Disponibilidad: ${scoring.extracted.availability}`);
-  if (scoring.extracted?.salary_expectation) lines.push(`Salario: ${scoring.extracted.salary_expectation}`);
-  if (scoring.extracted?.english_level) lines.push(`Inglés: ${scoring.extracted.english_level}`);
-  if (scoring.extracted?.mobility) lines.push(`Movilidad: ${scoring.extracted.mobility}`);
-  if (scoring.key_points?.length) lines.push(`Claves: ${scoring.key_points.slice(0, 3).join(" · ")}`);
-  if (scoring.red_flags?.length) lines.push(`Red flags: ${scoring.red_flags.slice(0, 2).join(" · ")}`);
-  if (typeof scoring.score_0_100 === "number") lines.push(`Score: ${scoring.score_0_100}/100 (${scoring.recommendation || "n/a"})`);
-  return `${header}\n${lines.join("\n")}`;
+  lines.push(`⭐ Score: ${scoring.score_0_100 ?? "n/d"}/100  ${recIcon}`);
+  if (scoring.summary) lines.push(`\n🧾 Resumen\n${scoring.summary}`);
+  lines.push(`\n🌡️ Impresión (calidez/fluidez)\nCalidez: ${warmth}${ex.warmth_note ? ` (${ex.warmth_note})` : ""}\nFluidez: ${fluency}${ex.fluency_note ? ` (${ex.fluency_note})` : ""}`);
+  lines.push(`\n✅ Checklist`);
+  lines.push(`📍 Zona: ${ex.area || "no informado"}`);
+  lines.push(`🚗 Movilidad: ${ex.mobility || "unknown"}`);
+  lines.push(`🕒 Disponibilidad: ${ex.availability || "no informado"}`);
+  lines.push(`💰 Pretensión: ${ex.salary_expectation || "no informado"}`);
+  lines.push(`🗣️ Inglés: ${ex.english_level || "unknown"}`);
+  lines.push(`🍽️ Experiencia: ${ex.experience || "no informado"}`);
+
+  const reds = (scoring.red_flags || []).filter(Boolean);
+  if (reds.length) lines.push(`\n🚩 Red flags\n• ${reds.slice(0, 3).join("\n• ")}`);
+
+  lines.push(`\n🎯 Recomendación\n${recIcon}`);
+
+  return `📞 Entrevista – ${header}\n${lines.join("\n")}`;
 }
 
 async function sendWhatsappMessage({ body, mediaUrl }) {
@@ -607,8 +625,9 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
 }
 
 async function sendWhatsappReport(call) {
+  const note = call.noTranscriptReason || "";
   try {
-    await sendWhatsappMessage({ body: formatWhatsapp(call.scoring, call) });
+    await sendWhatsappMessage({ body: formatWhatsapp(call.scoring, call, { note }) });
   } catch (err) {
     console.error("[whatsapp] failed sending text", err);
     return;
@@ -633,10 +652,17 @@ async function maybeScoreAndSend(call) {
       console.error("[transcription] failed", err);
     }
   }
-  try {
-    call.scoring = await scoreTranscript(call, transcriptText);
-  } catch (err) {
-    console.error("[scoring] failed", err);
+  const words = (transcriptText || "").trim().split(/\s+/).filter(Boolean).length;
+  if (!transcriptText || transcriptText.trim().length < 30 || words < 8) {
+    call.scoring = null;
+    call.noTranscriptReason = "No se pudo usar el audio (muy corto o inaudible).";
+    console.warn("[scoring] skipped: transcript unusable");
+  } else {
+    try {
+      call.scoring = await scoreTranscript(call, transcriptText);
+    } catch (err) {
+      console.error("[scoring] failed", err);
+    }
   }
   try {
     await sendWhatsappReport(call);
