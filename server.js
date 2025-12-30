@@ -240,7 +240,7 @@ wss.on("connection", (twilioWs, req) => {
       session: {
         type: "realtime",
         model: OPENAI_MODEL_REALTIME,
-        output_modalities: ["audio", "text"],
+        output_modalities: ["audio"],
         instructions: buildInstructions(call),
         audio: {
           input: {
@@ -280,8 +280,10 @@ wss.on("connection", (twilioWs, req) => {
         }]
       }
     }));
-    openaiWs.send(JSON.stringify({ type: "response.create" }));
-    call.responseInFlight = true;
+    if (!call.responseInFlight) {
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
+      call.responseInFlight = true;
+    }
   }
 
   openaiWs.on("open", () => sendSessionUpdate());
@@ -296,16 +298,12 @@ wss.on("connection", (twilioWs, req) => {
       return;
     }
 
-    if ((evt.type === "response.output_text.delta" || evt.type === "response.text.delta") && evt.delta) {
-      record("bot_text", { text: evt.delta });
-      call.transcriptText += `Bot: ${evt.delta}\n`;
-      return;
-    }
-
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
       record("speech_started", {});
-      try { openaiWs.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+      if (call.responseInFlight) {
+        try { openaiWs.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+      }
       if (call.streamSid) {
         try { twilioWs.send(JSON.stringify({ event: "clear", streamSid: call.streamSid })); } catch {}
       }
