@@ -582,18 +582,15 @@ function formatWhatsapp(scoring, call) {
   return `${header}\n${lines.join("\n")}`;
 }
 
-async function sendWhatsappReport(call) {
+async function sendWhatsappMessage({ body, mediaUrl }) {
   if (!WHATSAPP_FROM || !WHATSAPP_TO || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-    console.error("[whatsapp] missing credentials/from/to");
-    return;
+    throw new Error("missing whatsapp credentials/from/to");
   }
   const params = new URLSearchParams();
   params.append("From", WHATSAPP_FROM);
   params.append("To", WHATSAPP_TO);
-  params.append("Body", formatWhatsapp(call.scoring, call));
-  if (call.recordingToken) {
-    params.append("MediaUrl", `${PUBLIC_BASE_URL}/r/${call.recordingToken}`);
-  }
+  if (body) params.append("Body", body);
+  if (mediaUrl) params.append("MediaUrl", mediaUrl);
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: "POST",
     headers: {
@@ -605,7 +602,24 @@ async function sendWhatsappReport(call) {
     const text = await resp.text().catch(() => "");
     throw new Error(`whatsapp send failed ${resp.status} ${text}`);
   }
-  console.log("[whatsapp] sent");
+  const data = await resp.json();
+  console.log("[whatsapp] sent", { sid: data.sid, hasMedia: !!mediaUrl });
+}
+
+async function sendWhatsappReport(call) {
+  try {
+    await sendWhatsappMessage({ body: formatWhatsapp(call.scoring, call) });
+  } catch (err) {
+    console.error("[whatsapp] failed sending text", err);
+    return;
+  }
+  if (call.recordingToken) {
+    try {
+      await sendWhatsappMessage({ mediaUrl: `${PUBLIC_BASE_URL}/r/${call.recordingToken}` });
+    } catch (err) {
+      console.error("[whatsapp] failed sending audio", err);
+    }
+  }
 }
 
 async function maybeScoreAndSend(call) {
