@@ -61,7 +61,8 @@ function toWss(httpUrl) {
 function buildInstructions(ctx) {
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
-No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá.
+No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
+Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable.
 
 Contexto:
 - Restaurante: ${ctx.brand}
@@ -246,12 +247,12 @@ wss.on("connection", (twilioWs, req) => {
           input: {
             format: { type: "audio/pcmu" },
             turn_detection: {
-              type: "server_vad",
-              create_response: false,
-              interrupt_response: true,
-              threshold: 0.70,
-              prefix_padding_ms: 200,
-              silence_duration_ms: 900
+          type: "server_vad",
+          create_response: false,
+          interrupt_response: true,
+          threshold: 0.85,
+          prefix_padding_ms: 200,
+          silence_duration_ms: 1200
             }
           },
           output: {
@@ -276,7 +277,7 @@ wss.on("connection", (twilioWs, req) => {
         role: "user",
         content: [{
           type: "input_text",
-          text: `Decí EXACTO esto y después callate: "Hola, soy Mariana, te llamo de ${call.brand}. Te llamo por tu aplicación para ${call.role}. ¿Te viene bien hablar 3 minutos ahora?"`
+          text: `Hola, soy Mariana, te llamo de ${call.brand}. Te llamo por tu aplicación para ${call.role}. ¿Te viene bien hablar 3 minutos ahora?`
         }]
       }
     }));
