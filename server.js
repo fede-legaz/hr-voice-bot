@@ -429,7 +429,8 @@ async function downloadRecordingWithRetry(url, dest, attempts = 5) {
   let lastErr;
   for (let i = 0; i < attempts; i++) {
     try {
-      await downloadRecording(url, dest);
+      const size = await downloadRecording(url, dest);
+      if (size < 1024) throw new Error(`downloaded recording too small (${size} bytes)`);
       return;
     } catch (err) {
       lastErr = err;
@@ -445,9 +446,15 @@ async function downloadRecording(url, dest) {
       Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
     }
   });
-  if (!resp.ok) throw new Error(`download failed ${resp.status}`);
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`download failed ${resp.status} ${text}`);
+  }
   const arrayBuf = await resp.arrayBuffer();
   await fs.promises.writeFile(dest, Buffer.from(arrayBuf));
+  const stats = await fs.promises.stat(dest);
+  console.log(`[recording] downloaded ${dest} size=${stats.size} bytes`);
+  return stats.size;
 }
 
 async function startRecording(call) {
@@ -478,6 +485,12 @@ async function startRecording(call) {
 }
 
 async function transcribeAudio(filePath) {
+  try {
+    const stats = await fs.promises.stat(filePath);
+    console.log(`[transcription] file size=${stats.size} path=${filePath}`);
+  } catch (err) {
+    console.error("[transcription] cannot stat file", err);
+  }
   const form = new FormData();
   form.append("file", fs.createReadStream(filePath));
   form.append("model", "whisper-1");
@@ -486,7 +499,10 @@ async function transcribeAudio(filePath) {
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form
   });
-  if (!resp.ok) throw new Error(`transcription failed ${resp.status}`);
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`transcription failed ${resp.status} ${text}`);
+  }
   const data = await resp.json();
   return data.text || "";
 }
@@ -584,9 +600,10 @@ async function sendWhatsappReport(call) {
     body: params
   });
   if (!resp.ok) {
-    const text = await resp.text();
+    const text = await resp.text().catch(() => "");
     throw new Error(`whatsapp send failed ${resp.status} ${text}`);
   }
+  console.log("[whatsapp] sent");
 }
 
 async function maybeScoreAndSend(call) {
