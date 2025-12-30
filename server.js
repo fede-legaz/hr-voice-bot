@@ -456,20 +456,57 @@ async function twilioSendWhatsApp({ to, from, body, mediaUrl }) {
   return JSON.parse(text);
 }
 
-// Endpoint debug: /debug/wa?body=hola
+const { URLSearchParams } = require("url");
+
+function normalizeWhatsApp(raw) {
+  if (!raw) throw new Error("Missing WhatsApp number");
+  let s = String(raw).trim();
+  if (s.startsWith("whatsapp:")) s = s.slice("whatsapp:".length);
+  s = s.replace(/[()\-\s]/g, "");
+  if (!s.startsWith("+")) s = "+" + s;
+  return "whatsapp:" + s;
+}
+
+async function twilioSendWhatsApp({ to, from, body, mediaUrl }) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken  = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
+
+  const params = new URLSearchParams();
+  params.set("To", to);
+  params.set("From", from);
+  params.set("Body", body);
+  if (mediaUrl) params.append("MediaUrl", mediaUrl);
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Authorization": "Basic " + Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: params
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) throw new Error(`Twilio send failed (${resp.status}): ${text}`);
+  return JSON.parse(text);
+}
+
+// ✅ DEBUG ENDPOINT
 app.get("/debug/wa", async (req, res) => {
   try {
-    // Log RAW env to catch hidden spaces/newlines
     console.log("WHATSAPP_FROM raw:", JSON.stringify(process.env.WHATSAPP_FROM));
     console.log("WHATSAPP_TO   raw:", JSON.stringify(process.env.WHATSAPP_TO));
 
-    const from = normalizeWhatsApp(process.env.WHATSAPP_FROM || "whatsapp:+14155238886");
-    const to   = normalizeWhatsApp(process.env.WHATSAPP_TO   || "whatsapp:+17866450967");
-
+    const from = normalizeWhatsApp(process.env.WHATSAPP_FROM);
+    const to   = normalizeWhatsApp(process.env.WHATSAPP_TO);
     const body = String(req.query.body || `Ping OK ${new Date().toISOString()}`);
 
     const out = await twilioSendWhatsApp({ to, from, body });
-    res.json({ ok: true, sid: out.sid, status: out.status });
+    res.json({ ok: true, sid: out.sid, status: out.status, to: out.to, from: out.from });
   } catch (err) {
     console.error("DEBUG WA ERROR:", err?.message || err);
     res.status(500).send(err?.message || String(err));
