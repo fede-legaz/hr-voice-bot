@@ -456,8 +456,6 @@ async function twilioSendWhatsApp({ to, from, body, mediaUrl }) {
   return JSON.parse(text);
 }
 
-const { URLSearchParams } = require("url");
-
 function normalizeWhatsApp(raw) {
   if (!raw) throw new Error("Missing WhatsApp number");
   let s = String(raw).trim();
