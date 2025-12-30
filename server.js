@@ -431,11 +431,11 @@ async function twilioSendWhatsApp({ to, from, body, mediaUrl }) {
 
   if (!accountSid || !authToken) throw new Error("Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN");
 
-  const params = new URLSearchParams();
-  params.set("To", to);
-  params.set("From", from);
-  params.set("Body", body);
-  if (mediaUrl) params.append("MediaUrl", mediaUrl);
+const params = new URLSearchParams();
+params.set("To", to);
+params.set("From", from);
+params.set("Body", body);
+if (mediaUrl) params.append("MediaUrl", mediaUrl);
 
   const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
 
