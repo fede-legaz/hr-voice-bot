@@ -63,6 +63,7 @@ function buildInstructions(ctx) {
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
+Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. Nunca respondas "sí" a tu propia pregunta ni digas "tengo unos minutos"; vos preguntás y esperás.
 
 Contexto:
 - Restaurante: ${ctx.brand}
@@ -187,6 +188,8 @@ wss.on("connection", (twilioWs, req) => {
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
+    startedAt: Date.now(),
+    durationSec: null,
     twilioReady: false,
     openaiReady: false,
     started: false,
@@ -383,6 +386,7 @@ wss.on("connection", (twilioWs, req) => {
   });
 
   twilioWs.on("close", () => {
+    call.durationSec = Math.round((Date.now() - call.startedAt) / 1000);
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
     call.expiresAt = Date.now() + CALL_TTL_MS;
   });
@@ -543,10 +547,11 @@ Transcript completo (usa esto para extraer datos):
 ${transcriptText || "(vacío)"}
 
 Reglas para el análisis:
+- NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia ni inglés si no se dijo.
 - Calidez = amabilidad/cercanía en el trato; bajá el score si el candidato suena seco o cortante.
 - Fluidez = claridad y continuidad al expresarse (no es inglés); bajá si se traba, responde en monosílabos o cuesta entender su disponibilidad/experiencia.
 - Inglés: detalla si pudo o no comunicarse en inglés y cómo sonó (acento/claridad).
-No inventes datos si no están. Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
+Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
 }
 
 async function scoreTranscript(call, transcriptText) {
@@ -587,7 +592,8 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
 
   const lines = [];
-  lines.push(`⭐ Score: ${scoring.score_0_100 ?? "n/d"}/100  ${recIcon}`);
+  const duration = call.durationSec ? ` ⏱️ ${call.durationSec}s` : "";
+  lines.push(`⭐ Score: ${scoring.score_0_100 ?? "n/d"}/100  ${recIcon}${duration}`);
   if (scoring.summary) lines.push(`\n🧾 Resumen\n${scoring.summary}`);
   lines.push(`\n🌡️ Impresión (calidez/fluidez)\nCalidez: ${warmth}${ex.warmth_note ? ` (${ex.warmth_note})` : ""}\nFluidez: ${fluency}${ex.fluency_note ? ` (${ex.fluency_note})` : ""}`);
   lines.push(`\n✅ Checklist`);
