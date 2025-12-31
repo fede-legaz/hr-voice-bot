@@ -92,10 +92,10 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
 4) Disponibilidad: "¿Cómo es tu disponibilidad normalmente? Semana, fines de semana, día/noche… lo que puedas."
 5) Expectativa salarial: "Tenés alguna expectativa salarial por hora?"
 6) Prueba (sin prometer): "Si te invitamos, ¿cuándo podrías venir a hacer una prueba?"
-7) Inglés (solo si aplica):
-   - "Para esta posición necesitamos inglés conversacional, ¿te hago un par de preguntas en inglés para chequearlo?"
-   - Preguntas: "What did you do in your last job?" y si falla: "Can you tell me your availability in English?"
-   - Si no se puede comunicar en inglés, marcá que no es conversacional y seguí sin insistir.
+7) Inglés (solo si aplica, NO lo saltees):
+   - "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?"
+   - Luego, sí o sí, hacé una pregunta en inglés: "Can you describe your last job and what you did day to day?"
+   - Si no se puede comunicar o no responde en inglés, marcá que no es conversacional y seguí sin insistir.
 Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por WhatsApp." y cortás.
 `.trim();
 }
