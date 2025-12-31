@@ -63,7 +63,7 @@ function buildInstructions(ctx) {
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
-Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. Nunca respondas "sí" a tu propia pregunta ni digas "tengo unos minutos"; vos preguntás y esperás.
+Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
 
 Contexto:
 - Restaurante: ${ctx.brand}
@@ -281,7 +281,15 @@ wss.on("connection", (twilioWs, req) => {
         role: "user",
         content: [{
           type: "input_text",
-          text: `Hola, soy Mariana, te llamo de ${call.brand}. Te llamo por tu aplicación para ${call.role}. ¿Te viene bien hablar 3 minutos ahora?`
+          text: `
+INSTRUCCIONES PARA VOS (no las digas):
+- Primer turno: decí solo el opener, sin agregar "claro", "sí", "tengo tiempo" ni responder tu propia pregunta.
+- No actúes como candidato. Vos preguntás y esperás.
+- Si hay silencio/ruido, esperá la respuesta; no rellenes.
+
+DECÍ ESTO Y CALLATE:
+"Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar? Soy Mariana."
+`.trim()
         }]
       }
     }));
@@ -547,11 +555,11 @@ Transcript completo (usa esto para extraer datos):
 ${transcriptText || "(vacío)"}
 
 Reglas para el análisis:
-- NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia ni inglés si no se dijo.
+- NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia ni inglés si no se dijo. Si un dato no se mencionó, dejalo vacío/unknown y baja el score.
 - Calidez = amabilidad/cercanía en el trato; bajá el score si el candidato suena seco o cortante.
 - Fluidez = claridad y continuidad al expresarse (no es inglés); bajá si se traba, responde en monosílabos o cuesta entender su disponibilidad/experiencia.
 - Inglés: detalla si pudo o no comunicarse en inglés y cómo sonó (acento/claridad).
-Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
+Si la entrevista no aporta datos claros, devolvé recommendation="review", score <= 30, y marcá todos los campos dudosos como "unknown". Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
 }
 
 async function scoreTranscript(call, transcriptText) {
