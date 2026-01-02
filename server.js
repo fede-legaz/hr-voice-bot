@@ -90,6 +90,7 @@ Reglas:
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
 - Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
 - SIEMPRE preguntá por zona y cómo llega, y SIEMPRE preguntá por inglés si es requerido. No saltees esas preguntas.
+- Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
 1) Apertura: "Hola, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
@@ -360,15 +361,16 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
     if (!call.twilioReady || !call.openaiReady) return;
     call.started = true;
     flushAudio();
-
-    openaiWs.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{
-          type: "input_text",
-          text: `
+    setTimeout(() => {
+      if (call.heardSpeech || call.responseInFlight) return;
+      openaiWs.send(JSON.stringify({
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: `
 INSTRUCCIONES PARA VOS (no las digas):
 - Primer turno: decí solo el opener, sin agregar "claro", "sí", "tengo tiempo" ni responder tu propia pregunta.
 - No actúes como candidato. Vos preguntás y esperás.
@@ -377,13 +379,14 @@ INSTRUCCIONES PARA VOS (no las digas):
 DECÍ ESTO Y CALLATE:
 "Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar? Soy Mariana."
 `.trim()
-        }]
+          }]
+        }
+      }));
+      if (!call.responseInFlight) {
+        openaiWs.send(JSON.stringify({ type: "response.create" }));
+        call.responseInFlight = true;
       }
-    }));
-    if (!call.responseInFlight) {
-      openaiWs.send(JSON.stringify({ type: "response.create" }));
-      call.responseInFlight = true;
-    }
+    }, 1200);
   }
 
   openaiWs.on("open", () => sendSessionUpdate());
