@@ -88,6 +88,7 @@ Reglas:
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
 - No repitas literal lo que dijo; si necesitás, resumí en tus palabras de forma breve.
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
+- Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
 1) Apertura: "Hola, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
@@ -335,12 +336,13 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
           input: {
             format: { type: "audio/pcmu" },
             turn_detection: {
-          type: "server_vad",
-          create_response: false,
-          interrupt_response: true,
-          threshold: 0.85,
-          prefix_padding_ms: 200,
-          silence_duration_ms: 1200
+              type: "server_vad",
+              create_response: false,
+              interrupt_response: true,
+              // Hacerlo menos sensible a ruido ambiente
+              threshold: 0.92,
+              prefix_padding_ms: 400,
+              silence_duration_ms: 1400
             }
           },
           output: {
