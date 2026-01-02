@@ -20,6 +20,8 @@ const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const WHATSAPP_FROM = process.env.WHATSAPP_FROM || "";
 const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
+const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
+const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -70,6 +72,8 @@ Contexto:
 - Puesto: ${ctx.role}
 - Dirección: ${ctx.address}
 - Inglés requerido: ${ctx.englishRequired ? "sí" : "no"}
+- Candidato: ${ctx.applicant || "no informado"}
+- Resumen CV (si hay): ${ctx.cvSummary || "sin CV"}
 
 Reglas:
 - Una pregunta abierta por vez; preguntás y esperás.
@@ -164,6 +168,72 @@ app.post("/voice", (req, res) => {
   res.type("text/xml").send(twiml);
 });
 
+app.post("/call", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const expected = `Bearer ${CALL_BEARER_TOKEN}`;
+    if (!CALL_BEARER_TOKEN || authHeader !== expected) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+
+    const {
+      to,
+      brand = DEFAULT_BRAND,
+      role = DEFAULT_ROLE,
+      englishRequired = DEFAULT_ENGLISH_REQUIRED,
+      address,
+      applicant = "",
+      cv_summary = "",
+      resume_url = "",
+      from = TWILIO_VOICE_FROM
+    } = req.body || {};
+
+    if (!to || !from) {
+      return res.status(400).json({ error: "missing to/from" });
+    }
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
+      return res.status(500).json({ error: "twilio or base url not configured" });
+    }
+
+    const url = new URL(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
+    url.searchParams.set("brand", brand);
+    url.searchParams.set("role", role);
+    url.searchParams.set("english", englishRequired ? "1" : "0");
+    url.searchParams.set("address", address || resolveAddress(brand, null));
+    if (applicant) url.searchParams.set("applicant", applicant);
+    if (cv_summary) url.searchParams.set("cv_summary", cv_summary);
+    if (resume_url) url.searchParams.set("resume_url", resume_url);
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${url.toString()}" />
+  </Connect>
+</Response>`;
+
+    const params = new URLSearchParams();
+    params.append("To", to);
+    params.append("From", from);
+    params.append("Twiml", twiml);
+
+    const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+      },
+      body: params
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      return res.status(500).json({ error: "twilio_call_failed", detail: data });
+    }
+    return res.json({ callId: data.sid, status: data.status });
+  } catch (err) {
+    console.error("[/call] error", err);
+    return res.status(500).json({ error: "internal_error" });
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media-stream" });
 
@@ -173,6 +243,9 @@ wss.on("connection", (twilioWs, req) => {
   const role = url.searchParams.get("role") || DEFAULT_ROLE;
   const englishRequired = parseEnglishRequired(url.searchParams.get("english"));
   const address = resolveAddress(brand, url.searchParams.get("address"));
+  const applicant = url.searchParams.get("applicant") || "";
+  const cvSummary = url.searchParams.get("cv_summary") || "";
+  const resumeUrl = url.searchParams.get("resume_url") || "";
 
   const call = {
     streamSid: null,
@@ -181,6 +254,9 @@ wss.on("connection", (twilioWs, req) => {
     role,
     englishRequired,
     address,
+    applicant,
+    cvSummary,
+    resumeUrl,
     from: null,
     recordingStarted: false,
     transcriptText: "",
@@ -205,11 +281,11 @@ wss.on("connection", (twilioWs, req) => {
   const tempKey = `temp-${crypto.randomUUID()}`;
   callsByStream.set(tempKey, call);
 
-  function record(kind, payload) {
-    call.transcript.push({ at: Date.now(), kind, ...payload });
-  }
+function record(kind, payload) {
+  call.transcript.push({ at: Date.now(), kind, ...payload });
+}
 
-  record("context", { brand, role, englishRequired, address });
+record("context", { brand, role, englishRequired, address, applicant, cvSummary, resumeUrl });
 
   const openaiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL_REALTIME)}`,
