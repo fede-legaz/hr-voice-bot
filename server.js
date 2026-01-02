@@ -60,6 +60,14 @@ function toWss(httpUrl) {
   return httpUrl;
 }
 
+function xmlEscapeAttr(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function buildInstructions(ctx) {
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
@@ -157,7 +165,7 @@ app.get("/r/:token", (req, res) => {
 });
 
 app.post("/voice", (req, res) => {
-  const wsUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
+  const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
@@ -207,7 +215,7 @@ app.post("/call", async (req, res) => {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${url.toString()}" />
+    <Stream url="${xmlEscapeAttr(url.toString())}" />
   </Connect>
 </Response>`;
 
