@@ -233,6 +233,7 @@ Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesion
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
+- El opener va sin "soy Mariana"; recién cuando el candidato diga que puede hablar decís: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial."
 
 Contexto:
 - Restaurante: ${ctx.brand}
@@ -260,8 +261,8 @@ Reglas:
 ${specificQs.map(q => `- ${q}`).join("\n")}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
-   Si dice que sí: "Perfecto, soy Mariana, hago la entrevista inicial."
+1) Apertura: "Hola${ctx.applicant ? ` ${ctx.applicant}` : ""}, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
+   Si dice que sí: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial."
    Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
 2) Experiencia:
    - "Contame rápido tu experiencia en ${ctx.role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
@@ -427,6 +428,15 @@ wss.on("connection", (twilioWs, req) => {
   const cvSummary = url.searchParams.get("cv_summary") || "";
   const resumeUrl = url.searchParams.get("resume_url") || "";
 
+  console.log("[media-stream] connect", {
+    brand,
+    role,
+    applicant: applicant || "(none)",
+    cvLen: cvSummary.length,
+    englishRequired,
+    address
+  });
+
   const call = {
     streamSid: null,
     callSid: null,
@@ -530,6 +540,10 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
     if (!call.twilioReady || !call.openaiReady) return;
     call.started = true;
     flushAudio();
+    const openerLine = call.applicant
+      ? `Hola ${call.applicant}, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`
+      : `Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
+    const introAfterYes = "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial.";
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
       openaiWs.send(JSON.stringify({
@@ -542,11 +556,12 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
             text: `
 INSTRUCCIONES PARA VOS (no las digas):
 - Primer turno: decí solo el opener, sin agregar "claro", "sí", "tengo tiempo" ni responder tu propia pregunta.
+- Cuando el candidato confirme que puede hablar, tu siguiente turno debe ser: "${introAfterYes}"
 - No actúes como candidato. Vos preguntás y esperás.
 - Si hay silencio/ruido, esperá la respuesta; no rellenes.
 
 DECÍ ESTO Y CALLATE:
-"Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar? Soy Mariana."
+"${openerLine}"
 `.trim()
           }]
         }
