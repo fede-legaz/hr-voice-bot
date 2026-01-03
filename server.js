@@ -193,6 +193,23 @@ function roleKey(role) {
   return "general";
 }
 
+function displayRole(role) {
+  const k = roleKey(role);
+  switch (k) {
+    case "cashier": return "cajero (front)";
+    case "hostess": return "hostess";
+    case "runner": return "runner";
+    case "server": return "server/runner";
+    case "cook": return "cocinero";
+    case "prep": return "prep cook";
+    case "dish": return "lavaplatos";
+    case "pizzero": return "pizzero";
+    case "foodtruck": return "food truck";
+    case "barista": return "barista";
+    default: return role || "rol";
+  }
+}
+
 function brandKey(brand) {
   const b = normalizeKey(brand);
   if (b.includes("campo")) return "campo";
@@ -224,6 +241,7 @@ function roleBrandQuestions(brandK, roleK) {
 function buildInstructions(ctx) {
   const rKey = roleKey(ctx.role);
   const bKey = brandKey(ctx.brand);
+  const spokenRole = displayRole(ctx.role);
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
@@ -256,16 +274,19 @@ Reglas:
 - Si inglés es requerido, SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 - Usá el nombre si está: "Hola ${ctx.applicant || "¿cómo te llamás?"}".
+- Si el candidato interrumpe el opener con un saludo/“hola” o te contesta antes de pedir permiso, repetí el opener una sola vez con su nombre y volvé a pedir si puede hablar (sin decir “ok”).
+- Después de “Perfecto, mi nombre es Mariana y yo hago la entrevista inicial”, no te quedes esperando: en ese mismo turno seguí con la primera pregunta de experiencia.
 - Checklist obligatorio que debes cubrir siempre (adaptalo a conversación, pero no lo saltees): saludo con nombre, experiencia/tareas (incluyendo CV si hay), zona y cómo llega, disponibilidad, expectativa salarial, prueba (sin prometer), inglés si es requerido (nivel + pregunta en inglés), cierre.
 - Preguntas específicas para este rol/local (metelas de forma natural):
 ${specificQs.map(q => `- ${q}`).join("\n")}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola${ctx.applicant ? ` ${ctx.applicant}` : ""}, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
-   Si dice que sí: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial."
+1) Apertura: "Hola${ctx.applicant ? ` ${ctx.applicant}` : ""}, te llamo por tu aplicación para ${spokenRole} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
+   Si dice que sí: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial. Contame rápido tu experiencia en ${spokenRole}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
    Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
 2) Experiencia:
-   - "Contame rápido tu experiencia en ${ctx.role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
+   - Si hay CV, arrancá con él: "En tu CV veo que tu último trabajo fue en <extraelo del CV>. ¿Qué tareas hacías ahí en un día normal?" y luego repreguntá breve sobre tareas (caja/pedidos/runner/café/pagos según aplique).
+   - Si no hay CV o no se ve claro: (si no lo preguntaste ya) "Contame rápido tu experiencia en ${spokenRole}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
    - Repreguntá breve sobre tareas: "¿Qué hacías ahí? ¿Caja, pedidos, runner, café, pagos?"
    - "¿Por qué te fuiste?"
    - Si hay CV: "En el CV veo que estuviste en <lo que diga el CV>. ¿Cuánto tiempo? ¿Qué hacías exactamente? ¿Por qué te fuiste?"
@@ -451,6 +472,7 @@ wss.on("connection", (twilioWs, req) => {
   let applicant = url.searchParams.get("applicant") || "";
   let cvSummary = url.searchParams.get("cv_summary") || "";
   let resumeUrl = url.searchParams.get("resume_url") || "";
+  let spokenRole = displayRole(role);
 
   console.log("[media-stream] connect", {
     brand,
@@ -565,9 +587,10 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
     call.started = true;
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
+    const spokenRole = displayRole(call.role || "");
     const openerLine = firstName
-      ? `Hola ${firstName}, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`
-      : `Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
+      ? `Hola ${firstName}, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`
+      : `Hola, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
     const introAfterYes = "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial.";
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
@@ -680,11 +703,13 @@ DECÍ ESTO Y CALLATE:
       applicant = sp.applicant || applicant;
       cvSummary = sp.cv_summary || cvSummary;
       resumeUrl = sp.resume_url || resumeUrl;
+      spokenRole = displayRole(role);
     }
 
     call.twilioReady = true;
     call.brand = brand;
     call.role = role;
+    call.spokenRole = spokenRole;
     call.englishRequired = englishRequired;
     call.address = address;
     call.applicant = applicant;
