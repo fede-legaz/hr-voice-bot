@@ -967,7 +967,8 @@ async function scoreTranscript(call, transcriptText) {
 
 function formatWhatsapp(scoring, call, opts = {}) {
   const note = opts.note || "";
-  const header = `${call.brand} – ${call.role}${call.from ? ` – ${call.from}` : ""}`;
+  const applicant = call.applicant ? ` – ${call.applicant}` : "";
+  const header = `${call.brand} – ${call.role}${applicant}${call.from ? ` – ${call.from}` : ""}`;
   if (!scoring) return `${header}\n${note || "Resumen no disponible."}`;
 
   const ex = scoring.extracted || {};
