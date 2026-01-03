@@ -396,10 +396,12 @@ app.post("/call", async (req, res) => {
     if (cv_summary) url.searchParams.set("cv_summary", cv_summary);
     if (resume_url) url.searchParams.set("resume_url", resume_url);
 
+    const streamUrl = url.toString();
+
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${xmlEscapeAttr(url.toString())}" />
+    <Stream url="${xmlEscapeAttr(streamUrl)}" />
   </Connect>
 </Response>`;
 
@@ -420,7 +422,7 @@ app.post("/call", async (req, res) => {
       console.error("[/call] twilio_call_failed", resp.status, data);
       return res.status(500).json({ error: "twilio_call_failed", detail: data });
     }
-    console.log("[/call] queued", { sid: data.sid, status: data.status });
+    console.log("[/call] queued", { sid: data.sid, status: data.status, streamUrl });
     return res.json({ callId: data.sid, status: data.status });
   } catch (err) {
     console.error("[/call] error", err);
@@ -432,6 +434,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media-stream" });
 
 wss.on("connection", (twilioWs, req) => {
+  console.log("[media-stream] raw url", req.url);
   const url = new URL(req.url, "http://localhost");
   const brand = url.searchParams.get("brand") || DEFAULT_BRAND;
   const role = url.searchParams.get("role") || DEFAULT_ROLE;
