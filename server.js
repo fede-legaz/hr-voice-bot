@@ -660,8 +660,17 @@ DECÍ ESTO Y CALLATE:
     call.callSid = data.start?.callSid || null;
     call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
 
-    // Prefer Stream Parameter payloads (Twilio passes them as start.streamParams)
-    const sp = data.start?.streamParams || data.start?.stream_params || {};
+    // Prefer Stream Parameter payloads (Twilio may pass them as streamParams, stream_params, parameters, or customParameters)
+    const sp = data.start?.streamParams
+      || data.start?.stream_params
+      || data.start?.parameters
+      || data.start?.customParameters
+      || {};
+    if (Object.keys(sp).length) {
+      console.log("[media-stream] start params", sp);
+    } else {
+      console.warn("[media-stream] no params on start; using defaults");
+    }
     if (Object.keys(sp).length) {
       brand = sp.brand || brand;
       role = sp.role || role;
