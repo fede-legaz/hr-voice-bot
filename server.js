@@ -369,6 +369,17 @@ app.post("/call", async (req, res) => {
       from = TWILIO_VOICE_FROM
     } = req.body || {};
 
+    console.log("[/call] inbound", {
+      to,
+      from,
+      brand,
+      role,
+      englishRequired: !!englishRequired,
+      address: address || resolveAddress(brand, null),
+      applicant,
+      cvLen: (cv_summary || "").length
+    });
+
     if (!to || !from) {
       return res.status(400).json({ error: "missing to/from" });
     }
@@ -406,8 +417,10 @@ app.post("/call", async (req, res) => {
     });
     const data = await resp.json();
     if (!resp.ok) {
+      console.error("[/call] twilio_call_failed", resp.status, data);
       return res.status(500).json({ error: "twilio_call_failed", detail: data });
     }
+    console.log("[/call] queued", { sid: data.sid, status: data.status });
     return res.json({ callId: data.sid, status: data.status });
   } catch (err) {
     console.error("[/call] error", err);
