@@ -144,6 +144,9 @@ const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
   "mexi cafe": "6300 Collins Ave, Miami Beach, FL 33141, US",
   "yes cafe & pizza": "731 NE 79th St, Miami, FL 33138, US",
+  "yes cafe pizza mimo 79th st": "731 NE 79th St, Miami, FL 33138, US",
+  "yes pizza 79": "731 NE 79th St, Miami, FL 33138, US",
+  "yes pizza": "731 NE 79th St, Miami, FL 33138, US",
   "yes cafe pizza": "731 NE 79th St, Miami, FL 33138, US",
   "yes cafe miami beach": "601 71st St, Miami Beach, FL 33141, US",
   "mexi trailer": "731 NE 79th St, Miami, FL 33138, US"
@@ -252,7 +255,8 @@ Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesion
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- El opener va sin "soy Mariana"; recién cuando el candidato diga que puede hablar decís: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial."
+- Primer turno: confirmar identidad + permiso: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
+- Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
 
 Contexto:
 - Restaurante: ${ctx.brand}
@@ -282,13 +286,14 @@ Reglas:
 - Si te interrumpen antes de terminar el opener (ej. dicen “hola” mientras hablás), repetí el opener completo una sola vez con su nombre y pedí permiso de nuevo.
 - Después de “Perfecto, mi nombre es Mariana y yo hago la entrevista inicial”, no te quedes esperando: en ese mismo turno seguí con la primera pregunta de experiencia.
 - No inventes datos (horarios, sueldo, beneficios, turnos, managers). Si preguntan por horarios/sueldo/beneficios/detalles del local que no tenés, respondé breve: "Yo hago la entrevista inicial; esos detalles te los confirma el manager en la próxima etapa", y retomá tus preguntas.
+- Si atiende otra persona o no sabés si es el postulante, preguntá: "¿Con quién hablo? ¿Se encuentra ${firstName || "el postulante"}?" Si no está, pedí un mejor momento o corta con un cierre amable sin seguir el cuestionario.
 - Checklist obligatorio que debes cubrir siempre (adaptalo a conversación, pero no lo saltees): saludo con nombre, experiencia/tareas (incluyendo CV si hay), zona y cómo llega, disponibilidad, expectativa salarial, prueba (sin prometer), inglés si es requerido (nivel + pregunta en inglés), cierre.
 - Preguntas específicas para este rol/local (metelas de forma natural):
 ${specificQs.map(q => `- ${q}`).join("\n")}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por tu aplicación para ${spokenRole} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
-   Si dice que sí: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial. Contame rápido tu experiencia en ${spokenRole}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
+1) Apertura: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, pedí hablar con él/ella o un mejor momento y cortá.
+   Si dice que sí y es el postulante: "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
    Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
 2) Experiencia:
    - Si hay CV, arrancá con él: "En tu CV veo que tu último trabajo fue en <extraelo del CV>. ¿Qué tareas hacías ahí en un día normal?" y luego repreguntá breve sobre tareas (caja/pedidos/runner/café/pagos según aplique).
@@ -597,9 +602,9 @@ record("context", { brand, role, spokenRole, englishRequired, address, applicant
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
     const spokenRole = call.spokenRole || displayRole(call.role || "");
     const openerLine = firstName
-      ? `Hola ${firstName}, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`
-      : `Hola, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
-    const introAfterYes = "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial.";
+      ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand}. ¿Tenés unos minutos para hablar?`
+      : `Hola, te llamo por una entrevista de trabajo en ${call.brand}. ¿Tenés unos minutos para hablar?`;
+    const introAfterYes = `Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición?`;
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
       openaiWs.send(JSON.stringify({
