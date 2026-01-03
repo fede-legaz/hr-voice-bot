@@ -52,6 +52,94 @@ const BRAND_NOTES = {
   "mexi trailer": "Trailer callejero, un solo operador cocina y atiende; experiencia en plancha y público."
 };
 
+const ROLE_QUESTIONS = {
+  campo: {
+    server: [
+      "Tenés experiencia previa de salón? ¿Dónde y cuánto tiempo? ¿Manejo de POS/bandeja?",
+      "Este es full service y carnes en ritmo alto: ¿trabajaste en algo similar?",
+      "Inglés es requerido: ¿cómo te manejás con clientes en inglés?"
+    ],
+    runner: [
+      "¿Ya trabajaste como runner? ¿En qué tipo de restaurante y volumen?",
+      "¿Te sentís cómodo coordinando con cocina y llevando varios platos?",
+      "Inglés básico/conversacional: ¿podés manejar indicaciones en inglés?"
+    ],
+    hostess: [
+      "Es la cara del negocio: ¿cómo describirías tu calidez/carisma?",
+      "Inglés requerido: ¿cómo te manejás recibiendo a clientes en inglés?",
+      "¿Cómo manejás espera/lista y mantener una sonrisa bajo presión?"
+    ],
+    cook: [
+      "Contame tu experiencia en cocina: ¿qué estaciones trabajaste (grill/frita/sartén/fría)?",
+      "¿Trabajaste en cocina argentina o con carnes? ¿Bajo presión de línea?",
+      "¿En qué tipo de volúmenes trabajaste?"
+    ],
+    prep: [
+      "¿Tenés experiencia como prep? ¿Podés seguir recetas escritas?",
+      "¿Qué mis en place has hecho en otros trabajos?"
+    ],
+    dish: [
+      "¿Experiencia como lavaplatos en volumen? ¿Manejo de químicos y orden?"
+    ]
+  },
+  yes: {
+    cashier: [
+      "Inglés requerido: ¿cómo te manejás con clientes en inglés?",
+      "¿Tenés experiencia en caja/POS y atención al público?",
+      "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+    ],
+    cashier_pm: [
+      "Inglés requerido. ¿Podés trabajar hasta tarde (1-2am)?",
+      "Experiencia en caja/POS y atención al público.",
+      "¿Cafés/shakes/smoothies? Barista es plus."
+    ],
+    cook: [
+      "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+      "¿Experiencia en plancha?",
+      "Volumen de tickets/hora donde trabajaste."
+    ],
+    cook_pm: [
+      "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+      "¿Experiencia en plancha?",
+      "¿Podés trabajar hasta tarde (1-2am)?"
+    ],
+    pizzero: [
+      "¿Experiencia como pizzero? ¿Qué estilo de pizza y cuánto tiempo?",
+      "¿Sabés hacer la masa desde cero?"
+    ],
+    pizzero_pm: [
+      "¿Experiencia como pizzero? ¿Qué estilo y cuánto tiempo?",
+      "¿Sabés hacer la masa desde cero?",
+      "¿Podés trabajar hasta tarde (1-2am)?"
+    ],
+    prep: [
+      "¿Experiencia como prep? ¿Podés seguir recetas?",
+      "¿Qué mis en place hacías?"
+    ]
+  },
+  mexi: {
+    cashier: [
+      "Inglés requerido: ¿cómo te manejás con clientes?",
+      "¿Tenés experiencia en caja/POS y atención al público?",
+      "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+    ],
+    cook: [
+      "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+      "¿Alguna vez trabajaste cocina mexicana o plancha de tacos?",
+      "Volumen de tickets/hora donde trabajaste."
+    ],
+    prep: [
+      "¿Experiencia como prep? ¿Podés seguir recetas?",
+      "¿Qué mis en place hacías?"
+    ],
+    foodtruck: [
+      "¿Experiencia atendiendo público y cocinando a la vez?",
+      "¿Trabajaste plancha en un trailer/food truck?",
+      "Inglés básico para clientes: ¿cómo te manejás?"
+    ]
+  }
+};
+
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
   "mexi cafe": "6300 Collins Ave, Miami Beach, FL 33141, US",
@@ -105,11 +193,41 @@ function roleKey(role) {
   return "general";
 }
 
+function brandKey(brand) {
+  const b = normalizeKey(brand);
+  if (b.includes("campo")) return "campo";
+  if (b.includes("mexi") && b.includes("trailer")) return "mexitrailer";
+  if (b.includes("mexi")) return "mexi";
+  if (b.includes("yes")) return "yes";
+  return "general";
+}
+
+function resolveRoleVariant(roleKey, brandK) {
+  // handle PM variants for yes
+  if (brandK === "yes") {
+    const r = normalizeKey(roleKey);
+    if (r.includes("cashier") && r.includes("pm")) return "cashier_pm";
+    if (r.includes("cook") && r.includes("pm")) return "cook_pm";
+    if (r.includes("pizzero") && r.includes("pm")) return "pizzero_pm";
+  }
+  return roleKey;
+}
+
+function roleBrandQuestions(brandK, roleK) {
+  const v = resolveRoleVariant(roleK, brandK);
+  const brandMap = ROLE_QUESTIONS[brandK] || {};
+  const qs = brandMap[v] || brandMap[roleK] || ROLE_QUESTIONS[brandK]?.general || [];
+  if (!qs.length && ROLE_QUESTIONS.general) return ROLE_QUESTIONS.general.general || [];
+  return qs;
+}
+
 function buildInstructions(ctx) {
   const rKey = roleKey(ctx.role);
+  const bKey = brandKey(ctx.brand);
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
+  const specificQs = roleBrandQuestions(bKey, rKey);
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
@@ -135,6 +253,10 @@ Reglas:
 - Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
 - SIEMPRE preguntá por zona y cómo llega, y SIEMPRE preguntá por inglés si es requerido. No saltees esas preguntas.
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
+- Usá el nombre si está: "Hola ${ctx.applicant || "¿cómo te llamás?"}".
+- Checklist obligatorio que debes cubrir siempre (adaptalo a conversación, pero no lo saltees): saludo con nombre, experiencia/tareas (incluyendo CV si hay), zona y cómo llega, disponibilidad, expectativa salarial, prueba (sin prometer), inglés si es requerido (nivel + pregunta en inglés), cierre.
+- Preguntas específicas para este rol/local (metelas de forma natural):
+${specificQs.map(q => `- ${q}`).join("\n")}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
 1) Apertura: "Hola, te llamo por tu aplicación para ${ctx.role} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
