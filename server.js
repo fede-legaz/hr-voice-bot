@@ -21,6 +21,7 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const WHATSAPP_FROM = process.env.WHATSAPP_FROM || "";
 const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
+const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
@@ -279,6 +280,7 @@ Reglas:
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Si inglés es requerido, SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
+- Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 - Usá solo el primer nombre si está: "Hola ${firstName || "¿cómo te llamás?"}". Podés repetirlo ocasionalmente para personalizar.
 - CV: nombra al menos un empleo del CV y repreguntá tareas y por qué se fue (por ejemplo, si ves "El Patio" o "Don Carlos" en el CV, preguntá qué hacía allí y por qué salió).
