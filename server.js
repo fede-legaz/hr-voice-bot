@@ -241,7 +241,8 @@ function roleBrandQuestions(brandK, roleK) {
 function buildInstructions(ctx) {
   const rKey = roleKey(ctx.role);
   const bKey = brandKey(ctx.brand);
-  const spokenRole = displayRole(ctx.role);
+  const spokenRole = ctx.spokenRole || displayRole(ctx.role);
+  const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
@@ -275,15 +276,18 @@ Reglas:
 - Si inglés es requerido, SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá que no es conversacional.
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
-- Usá el nombre si está: "Hola ${ctx.applicant || "¿cómo te llamás?"}".
+- Usá solo el primer nombre si está: "Hola ${firstName || "¿cómo te llamás?"}". Podés repetirlo ocasionalmente para personalizar.
+- CV: nombra al menos un empleo del CV y repreguntá tareas y por qué se fue (por ejemplo, si ves "El Patio" o "Don Carlos" en el CV, preguntá qué hacía allí y por qué salió).
 - Si el candidato interrumpe el opener con un saludo/“hola” o te contesta antes de pedir permiso, repetí el opener una sola vez con su nombre y volvé a pedir si puede hablar (sin decir “ok”).
+- Si te interrumpen antes de terminar el opener (ej. dicen “hola” mientras hablás), repetí el opener completo una sola vez con su nombre y pedí permiso de nuevo.
 - Después de “Perfecto, mi nombre es Mariana y yo hago la entrevista inicial”, no te quedes esperando: en ese mismo turno seguí con la primera pregunta de experiencia.
+- No inventes datos (horarios, sueldo, beneficios, turnos, managers). Si preguntan por horarios/sueldo/beneficios/detalles del local que no tenés, respondé breve: "Yo hago la entrevista inicial; esos detalles te los confirma el manager en la próxima etapa", y retomá tus preguntas.
 - Checklist obligatorio que debes cubrir siempre (adaptalo a conversación, pero no lo saltees): saludo con nombre, experiencia/tareas (incluyendo CV si hay), zona y cómo llega, disponibilidad, expectativa salarial, prueba (sin prometer), inglés si es requerido (nivel + pregunta en inglés), cierre.
 - Preguntas específicas para este rol/local (metelas de forma natural):
 ${specificQs.map(q => `- ${q}`).join("\n")}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola${ctx.applicant ? ` ${ctx.applicant}` : ""}, te llamo por tu aplicación para ${spokenRole} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
+1) Apertura: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por tu aplicación para ${spokenRole} en ${ctx.brand}. ¿Tenés unos minutos para hablar?"
    Si dice que sí: "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial. Contame rápido tu experiencia en ${spokenRole}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
    Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
 2) Experiencia:
@@ -491,6 +495,7 @@ wss.on("connection", (twilioWs, req) => {
     callSid: null,
     brand,
     role,
+    spokenRole,
     englishRequired,
     address,
     applicant,
@@ -524,7 +529,7 @@ function record(kind, payload) {
   call.transcript.push({ at: Date.now(), kind, ...payload });
 }
 
-record("context", { brand, role, englishRequired, address, applicant, cvSummary, resumeUrl });
+record("context", { brand, role, spokenRole, englishRequired, address, applicant, cvSummary, resumeUrl });
 
   const openaiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL_REALTIME)}`,
@@ -590,7 +595,7 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
     call.started = true;
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
-    const spokenRole = displayRole(call.role || "");
+    const spokenRole = call.spokenRole || displayRole(call.role || "");
     const openerLine = firstName
       ? `Hola ${firstName}, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`
       : `Hola, te llamo por tu aplicación para ${spokenRole} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
