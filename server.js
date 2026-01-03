@@ -255,7 +255,7 @@ Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesion
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- Primer turno: confirmar identidad + permiso: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
+- Primer turno: confirmar identidad + permiso: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" (SIEMPRE menciona el restaurante). Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
 - Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
 
 Contexto:
@@ -278,12 +278,12 @@ Reglas:
 - SIEMPRE preguntá por zona y cómo llega (en TODAS las posiciones). No saltees la pregunta de zona/logística.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Si inglés es requerido, SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
-- Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá que no es conversacional.
+- Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 - Usá solo el primer nombre si está: "Hola ${firstName || "¿cómo te llamás?"}". Podés repetirlo ocasionalmente para personalizar.
 - CV: nombra al menos un empleo del CV y repreguntá tareas y por qué se fue (por ejemplo, si ves "El Patio" o "Don Carlos" en el CV, preguntá qué hacía allí y por qué salió).
 - Si el candidato interrumpe el opener con un saludo/“hola” o te contesta antes de pedir permiso, repetí el opener una sola vez con su nombre y volvé a pedir si puede hablar (sin decir “ok”).
-- Si te interrumpen antes de terminar el opener (ej. dicen “hola” mientras hablás), repetí el opener completo una sola vez con su nombre y pedí permiso de nuevo.
+- Si te interrumpen antes de terminar el opener (ej. dicen “hola” mientras hablás), repetí el opener completo una sola vez con su nombre y el restaurante, y pedí permiso de nuevo.
 - Después de “Perfecto, mi nombre es Mariana y yo hago la entrevista inicial”, no te quedes esperando: en ese mismo turno seguí con la primera pregunta de experiencia.
 - No inventes datos (horarios, sueldo, beneficios, turnos, managers). Si preguntan por horarios/sueldo/beneficios/detalles del local que no tenés, respondé breve: "Yo hago la entrevista inicial; esos detalles te los confirma el manager en la próxima etapa", y retomá tus preguntas.
 - Si atiende otra persona o no sabés si es el postulante, preguntá: "¿Con quién hablo? ¿Se encuentra ${firstName || "el postulante"}?" Si no está, pedí un mejor momento o corta con un cierre amable sin seguir el cuestionario.
@@ -965,36 +965,83 @@ async function scoreTranscript(call, transcriptText) {
   }
 }
 
+function formatDuration(sec) {
+  if (!sec || Number.isNaN(sec)) return "n/d";
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")} min`;
+}
+
 function formatWhatsapp(scoring, call, opts = {}) {
   const note = opts.note || "";
-  const applicant = call.applicant ? ` – ${call.applicant}` : "";
-  const header = `${call.brand} – ${call.role}${applicant}${call.from ? ` – ${call.from}` : ""}`;
-  if (!scoring) return `${header}\n${note || "Resumen no disponible."}`;
-
-  const ex = scoring.extracted || {};
-  const recIcon = scoring.recommendation === "advance" ? "✅ Avanzar" : scoring.recommendation === "reject" ? "⛔ No avanzar" : "🟡 Revisar";
+  const ex = scoring?.extracted || {};
+  const rec = scoring?.recommendation || "review";
+  const recText = rec === "advance" ? "Avanzar" : rec === "reject" ? "No avanzar" : "Revisar";
+  const recIcon = rec === "advance" ? "🟢" : rec === "reject" ? "⛔" : "🟡";
+  const scoreVal = scoring?.score_0_100 ?? "n/d";
   const warmth = typeof ex.warmth_score === "number" ? `${ex.warmth_score}/10` : "n/d";
   const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
+  const applicant = call.applicant || "No informado";
+  const tel = call.from || "No informado";
+  const role = call.spokenRole || displayRole(call.role || "");
+  const area = ex.area || "No informada";
+  const duration = formatDuration(call.durationSec);
+  const englishLevel = ex.english_level || "No informado";
+  const englishDetail = ex.english_detail ? `\n\`${ex.english_detail}\`` : "";
+  const mobility = ex.mobility || "No informada";
+  const availability = ex.availability || "No informada";
+  const salary = ex.salary_expectation || "No informada";
+  const experience = ex.experience || "No informada";
 
-  const lines = [];
-  const duration = call.durationSec ? ` ⏱️ ${call.durationSec}s` : "";
-  lines.push(`⭐ Score: ${scoring.score_0_100 ?? "n/d"}/100  ${recIcon}${duration}`);
-  if (scoring.summary) lines.push(`\n🧾 Resumen\n${scoring.summary}`);
-  lines.push(`\n🌡️ Impresión (calidez/fluidez)\nCalidez: ${warmth}${ex.warmth_note ? ` (${ex.warmth_note})` : ""}\nFluidez: ${fluency}${ex.fluency_note ? ` (${ex.fluency_note})` : ""}`);
-  lines.push(`\n✅ Checklist`);
-  lines.push(`📍 Zona: ${ex.area || "no informado"}`);
-  lines.push(`🚗 Movilidad: ${ex.mobility || "unknown"}`);
-  lines.push(`🕒 Disponibilidad: ${ex.availability || "no informado"}`);
-  lines.push(`💰 Pretensión: ${ex.salary_expectation || "no informado"}`);
-  lines.push(`🗣️ Inglés: ${ex.english_level || "unknown"}${ex.english_detail ? ` (${ex.english_detail})` : ""}`);
-  lines.push(`🍽️ Experiencia: ${ex.experience || "no informado"}`);
+  if (!scoring) {
+    return [
+      `📞 *ENTREVISTA – ${call.brand}*`,
+      `*CANDIDATO:* \`${applicant}\``,
+      `*PUESTO:* ${role}`,
+      `📱 *TEL:* ${tel}`,
+      `📍 *UBICACIÓN:* ${area}`,
+      `⏱️ *DURACIÓN:* ${duration}`,
+      "",
+      note || "Resumen no disponible."
+    ].join("\n");
+  }
 
-  const reds = (scoring.red_flags || []).filter(Boolean);
-  if (reds.length) lines.push(`\n🚩 Red flags\n• ${reds.slice(0, 3).join("\n• ")}`);
+  const reds = (scoring.red_flags || []).filter(Boolean).slice(0, 3);
 
-  lines.push(`\n🎯 Recomendación\n${recIcon}`);
-
-  return `📞 Entrevista – ${header}\n${lines.join("\n")}`;
+  return [
+    `📞 *ENTREVISTA – ${call.brand.toUpperCase()}*`,
+    ``,
+    `*CANDIDATO:* \`${applicant}\``,
+    `*PUESTO:* ${role}`,
+    `📱 *TEL:* ${tel}`,
+    `📍 *UBICACIÓN:* ${area}`,
+    `⏱️ *DURACIÓN:* ${duration}`,
+    ``,
+    `⭐ *SCORE:* ${scoreVal} / 100`,
+    `${recIcon} *ESTADO:* ${recText}`,
+    ``,
+    `🧾 *RESUMEN*`,
+    scoring.summary ? `\`${scoring.summary}\`` : "No disponible.",
+    ``,
+    `🌡️ *IMPRESIÓN HUMANA (CALIDEZ / FLUIDEZ)*`,
+    `• *CALIDEZ:* ${warmth} 🙂`,
+    ex.warmth_note ? `\`${ex.warmth_note}\`` : "",
+    `• *FLUIDEZ:* ${fluency} 🟡`,
+    ex.fluency_note ? `\`${ex.fluency_note}\`` : "",
+    ``,
+    `✅ *CHECKLIST*`,
+    `📍 *ZONA:* ${area}`,
+    `🚗 *MOVILIDAD:* ${mobility}`,
+    `🕒 *DISPONIBILIDAD:* ${availability}`,
+    `💰 *PRETENSIÓN SALARIAL:* ${salary}`,
+    `🗣️ *INGLÉS:* ${englishLevel}${englishDetail}`,
+    `🍽️ *EXPERIENCIA:*`,
+    experience ? `\`${experience}\`` : "No informada",
+    ``,
+    `🎯 *RECOMENDACIÓN*`,
+    `${recIcon} *${recText.toUpperCase()}*`,
+    scoring.summary ? "" : note
+  ].filter(Boolean).join("\n");
 }
 
 async function sendWhatsappMessage({ body, mediaUrl }) {
