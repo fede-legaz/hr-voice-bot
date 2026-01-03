@@ -564,8 +564,9 @@ record("context", { brand, role, englishRequired, address, applicant, cvSummary,
     if (!call.twilioReady || !call.openaiReady) return;
     call.started = true;
     flushAudio();
-    const openerLine = call.applicant
-      ? `Hola ${call.applicant}, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`
+    const firstName = (call.applicant || "").split(/\s+/)[0] || "";
+    const openerLine = firstName
+      ? `Hola ${firstName}, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`
       : `Hola, te llamo por tu aplicación para ${call.role} en ${call.brand}. ¿Tenés unos minutos para hablar?`;
     const introAfterYes = "Perfecto, mi nombre es Mariana y yo hago la entrevista inicial.";
     setTimeout(() => {
