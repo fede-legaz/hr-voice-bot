@@ -523,6 +523,7 @@ wss.on("connection", (twilioWs, req) => {
     pendingAudio: [],
     responseInFlight: false,
     heardSpeech: false,
+    userSpoke: false,
     lastCommitId: null,
     transcript: []
   };
@@ -650,6 +651,7 @@ DECÍ ESTO Y CALLATE:
 
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
+      call.userSpoke = true;
       record("speech_started", {});
       if (call.responseInFlight) {
         try { openaiWs.send(JSON.stringify({ type: "response.cancel" })); } catch {}
@@ -773,6 +775,7 @@ DECÍ ESTO Y CALLATE:
 
   twilioWs.on("close", () => {
     call.durationSec = Math.round((Date.now() - call.startedAt) / 1000);
+    maybeSendNoAnswerSms(call).catch((err) => console.error("[sms no-answer] failed", err));
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
     call.expiresAt = Date.now() + CALL_TTL_MS;
   });
@@ -1068,6 +1071,41 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
   }
   const data = await resp.json();
   console.log("[whatsapp] sent", { sid: data.sid, hasMedia: !!mediaUrl });
+}
+
+async function sendSms(to, body) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_SMS_FROM) {
+    throw new Error("missing sms credentials/from");
+  }
+  const params = new URLSearchParams();
+  params.append("To", to);
+  params.append("From", TWILIO_SMS_FROM);
+  params.append("Body", body);
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    },
+    body: params
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`sms send failed ${resp.status} ${text}`);
+  }
+  const data = await resp.json();
+  console.log("[sms] sent", { sid: data.sid });
+}
+
+async function maybeSendNoAnswerSms(call) {
+  try {
+    if (!call || !call.from || !TWILIO_SMS_FROM) return;
+    // Only send if candidate never spoke (no speech detected)
+    if (call.userSpoke) return;
+    const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
+    await sendSms(call.from, msg);
+  } catch (err) {
+    console.error("[sms no-answer] error", err);
+  }
 }
 
 async function sendWhatsappReport(call) {
