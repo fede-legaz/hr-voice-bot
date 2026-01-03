@@ -387,21 +387,27 @@ app.post("/call", async (req, res) => {
       return res.status(500).json({ error: "twilio or base url not configured" });
     }
 
-    const url = new URL(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
-    url.searchParams.set("brand", brand);
-    url.searchParams.set("role", role);
-    url.searchParams.set("english", englishRequired ? "1" : "0");
-    url.searchParams.set("address", address || resolveAddress(brand, null));
-    if (applicant) url.searchParams.set("applicant", applicant);
-    if (cv_summary) url.searchParams.set("cv_summary", cv_summary);
-    if (resume_url) url.searchParams.set("resume_url", resume_url);
+    const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
 
-    const streamUrl = url.toString();
+    const paramTags = [
+      { name: "brand", value: brand },
+      { name: "role", value: role },
+      { name: "english", value: englishRequired ? "1" : "0" },
+      { name: "address", value: address || resolveAddress(brand, null) },
+      { name: "applicant", value: applicant },
+      { name: "cv_summary", value: cv_summary },
+      { name: "resume_url", value: resume_url }
+    ]
+      .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
+      .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
+      .join("\n");
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${xmlEscapeAttr(streamUrl)}" />
+    <Stream url="${xmlEscapeAttr(streamUrl)}">
+${paramTags}
+    </Stream>
   </Connect>
 </Response>`;
 
@@ -436,13 +442,15 @@ const wss = new WebSocket.Server({ server, path: "/media-stream" });
 wss.on("connection", (twilioWs, req) => {
   console.log("[media-stream] raw url", req.url);
   const url = new URL(req.url, "http://localhost");
-  const brand = url.searchParams.get("brand") || DEFAULT_BRAND;
-  const role = url.searchParams.get("role") || DEFAULT_ROLE;
-  const englishRequired = parseEnglishRequired(url.searchParams.get("english"));
-  const address = resolveAddress(brand, url.searchParams.get("address"));
-  const applicant = url.searchParams.get("applicant") || "";
-  const cvSummary = url.searchParams.get("cv_summary") || "";
-  const resumeUrl = url.searchParams.get("resume_url") || "";
+
+  // Defaults from query params (for legacy) — will be overridden by streamParams if present
+  let brand = url.searchParams.get("brand") || DEFAULT_BRAND;
+  let role = url.searchParams.get("role") || DEFAULT_ROLE;
+  let englishRequired = parseEnglishRequired(url.searchParams.get("english"));
+  let address = resolveAddress(brand, url.searchParams.get("address"));
+  let applicant = url.searchParams.get("applicant") || "";
+  let cvSummary = url.searchParams.get("cv_summary") || "";
+  let resumeUrl = url.searchParams.get("resume_url") || "";
 
   console.log("[media-stream] connect", {
     brand,
@@ -648,13 +656,43 @@ DECÍ ESTO Y CALLATE:
     try { data = JSON.parse(msg.toString()); } catch { return; }
 
     if (data.event === "start") {
-      call.streamSid = data.start?.streamSid || null;
-      call.callSid = data.start?.callSid || null;
-      call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
-      call.twilioReady = true;
-      record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
-      // re-key maps now that streamSid/callSid are known
-      callsByStream.delete(tempKey);
+    call.streamSid = data.start?.streamSid || null;
+    call.callSid = data.start?.callSid || null;
+    call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
+
+    // Prefer Stream Parameter payloads (Twilio passes them as start.streamParams)
+    const sp = data.start?.streamParams || data.start?.stream_params || {};
+    if (Object.keys(sp).length) {
+      brand = sp.brand || brand;
+      role = sp.role || role;
+      englishRequired = parseEnglishRequired(sp.english) ?? englishRequired;
+      address = resolveAddress(brand, sp.address || address);
+      applicant = sp.applicant || applicant;
+      cvSummary = sp.cv_summary || cvSummary;
+      resumeUrl = sp.resume_url || resumeUrl;
+    }
+
+    call.twilioReady = true;
+    call.brand = brand;
+    call.role = role;
+    call.englishRequired = englishRequired;
+    call.address = address;
+    call.applicant = applicant;
+    call.cvSummary = cvSummary;
+    call.resumeUrl = resumeUrl;
+
+    console.log("[media-stream] connect", {
+      brand: call.brand,
+      role: call.role,
+      applicant: call.applicant || "(none)",
+      cvLen: (call.cvSummary || "").length,
+      englishRequired: call.englishRequired,
+      address: call.address
+    });
+
+    record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
+    // re-key maps now that streamSid/callSid are known
+    callsByStream.delete(tempKey);
       if (call.streamSid) callsByStream.set(call.streamSid, call);
       if (call.callSid) {
         callsByCallSid.set(call.callSid, call);
