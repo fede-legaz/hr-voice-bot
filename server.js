@@ -30,6 +30,28 @@ const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
 const DEFAULT_ENGLISH_REQUIRED = true;
 
+const ROLE_NOTES = {
+  server: "Requiere inglés conversacional. Calidez con clientes, servicio de salón, manejo de POS/bandeja.",
+  runner: "Requiere inglés básico/conversacional. Entrega platos, soporte salón, coordinación con cocina.",
+  hostess: "Requiere inglés. Cara del negocio, siempre sonriente y cálida; controla waiting list.",
+  cashier: "Requiere inglés. Atención al público, caja/POS. Big plus: barista/shakes/smoothies.",
+  barista: "Café/espresso, espumado, limpieza molino, recetas. Atención al público.",
+  cook: "Experiencia previa. Preguntar cocinas/estaciones (grill, fritas, plancha, fría, sartén), presión en línea.",
+  prep: "Algo de experiencia. Preguntar si sabe leer y seguir recetas.",
+  dish: "Lavaplatos: experiencia previa en volumen, químicos, orden.",
+  pizzero: "Experiencia previa pizzero; sabe hacer masa desde cero.",
+  foodtruck: "Food truck: atiende público y cocina. Preguntar experiencia en plancha y atención."
+};
+
+const BRAND_NOTES = {
+  "new campo argentino": "Steakhouse full service, carnes, ritmo alto, ambiente familiar.",
+  "yes cafe & pizza": "Fast casual, desayunos/burgers/burritos/shakes/pizzas; turno AM/PM, alta rotación.",
+  "yes cafe pizza": "Fast casual, pizzas y menú rápido; considerar horarios hasta tarde.",
+  "yes cafe miami beach": "Fast casual 71st, desayunos y café; atención al público.",
+  "mexi cafe": "Fast casual mexicano, cocina a la vista, desayunos/burritos; preguntar plancha/mexicana.",
+  "mexi trailer": "Trailer callejero, un solo operador cocina y atiende; experiencia en plancha y público."
+};
+
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
   "mexi cafe": "6300 Collins Ave, Miami Beach, FL 33141, US",
@@ -68,7 +90,26 @@ function xmlEscapeAttr(value) {
     .replace(/>/g, "&gt;");
 }
 
+function roleKey(role) {
+  const r = normalizeKey(role);
+  if (r.includes("host")) return "hostess";
+  if (r.includes("runner")) return "runner";
+  if (r.includes("barista")) return "barista";
+  if (r.includes("cashier") || r.includes("front")) return "cashier";
+  if (r.includes("pizza")) return "pizzero";
+  if (r.includes("dish")) return "dish";
+  if (r.includes("prep")) return "prep";
+  if (r.includes("cook") || r.includes("cocin")) return "cook";
+  if (r.includes("server")) return "server";
+  if (r.includes("food") && r.includes("truck")) return "foodtruck";
+  return "general";
+}
+
 function buildInstructions(ctx) {
+  const rKey = roleKey(ctx.role);
+  const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
+  const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
+  const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
@@ -82,6 +123,9 @@ Contexto:
 - Inglés requerido: ${ctx.englishRequired ? "sí" : "no"}
 - Candidato: ${ctx.applicant || "no informado"}
 - Resumen CV (si hay): ${ctx.cvSummary || "sin CV"}
+${brandNotes}
+${roleNotes}
+${cvCue}
 
 Reglas:
 - Una pregunta abierta por vez; preguntás y esperás.
@@ -100,6 +144,7 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
    - "Contame rápido tu experiencia en ${ctx.role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
    - Repreguntá breve sobre tareas: "¿Qué hacías ahí? ¿Caja, pedidos, runner, café, pagos?"
    - "¿Por qué te fuiste?"
+   - Si hay CV: "En el CV veo que estuviste en <lo que diga el CV>. ¿Cuánto tiempo? ¿Qué hacías exactamente? ¿Por qué te fuiste?"
 3) Cercanía + movilidad:
    - "¿En qué zona vivís? ¿Te queda cómodo llegar al local? Estamos en ${ctx.address}."
    - Si vive lejos: "¿Tenés movilidad/auto para llegar?"
@@ -111,6 +156,7 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
    - "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?"
    - Luego, sí o sí, hacé una pregunta en inglés: "Can you describe your last job and what you did day to day?"
    - Si no se puede comunicar o no responde en inglés, marcá que no es conversacional y seguí sin insistir.
+   - Si en el CV menciona inglés/idiomas, mencioná que lo viste y verificá.
 Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por WhatsApp." y cortás.
 `.trim();
 }
