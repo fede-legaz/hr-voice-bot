@@ -520,6 +520,7 @@ wss.on("connection", (twilioWs, req) => {
   const url = new URL(req.url, "http://localhost");
 
   // Defaults from query params (for legacy) — will be overridden by streamParams if present
+  let to = url.searchParams.get("to") || "";
   let brand = url.searchParams.get("brand") || DEFAULT_BRAND;
   let role = url.searchParams.get("role") || DEFAULT_ROLE;
   let englishRequired = parseEnglishRequired(url.searchParams.get("english"));
@@ -542,6 +543,7 @@ wss.on("connection", (twilioWs, req) => {
     streamSid: null,
     callSid: null,
     brand,
+    to,
     role,
     spokenRole,
     englishRequired,
@@ -754,6 +756,7 @@ DECÍ ESTO Y CALLATE:
       console.warn("[media-stream] no params on start; using defaults");
     }
     if (Object.keys(sp).length) {
+      to = sp.to || to;
       brand = sp.brand || brand;
       role = sp.role || role;
       englishRequired = parseEnglishRequired(sp.english) ?? englishRequired;
@@ -766,6 +769,7 @@ DECÍ ESTO Y CALLATE:
 
     call.twilioReady = true;
     call.brand = brand;
+    call.to = to;
     call.role = role;
     call.spokenRole = spokenRole;
     call.englishRequired = englishRequired;
@@ -1205,17 +1209,18 @@ async function sendSms(to, body) {
 
 async function maybeSendNoAnswerSms(call) {
   try {
-    if (!call || !call.from || !TWILIO_SMS_FROM) return;
+    const candidateNumber = call.to || call.from;
+    if (!call || !candidateNumber || !TWILIO_SMS_FROM) return;
     // Send if candidate never spoke OR call ended very quickly
     const shortCall = call.durationSec !== null && call.durationSec <= 10;
     if (!shortCall && call.userSpoke) return;
     const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
-    await sendSms(call.from, msg);
+    await sendSms(candidateNumber, msg);
     // Guarda último intento para posible recall
-    if (call.to) {
-      lastCallByNumber.set(call.to, {
+    if (candidateNumber) {
+      lastCallByNumber.set(candidateNumber, {
         payload: {
-          to: call.to,
+          to: candidateNumber,
           from: TWILIO_VOICE_FROM,
           brand: call.brand,
           role: call.role,
