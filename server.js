@@ -1221,6 +1221,12 @@ async function maybeSendNoAnswerSms(call) {
     // Send if candidate never spoke OR call ended very quickly
     const shortCall = call.durationSec !== null && call.durationSec <= 10;
     if (!shortCall && call.userSpoke) return;
+    console.log("[sms no-answer] sending", {
+      candidateNumber,
+      durationSec: call.durationSec,
+      userSpoke: call.userSpoke,
+      shortCall
+    });
     const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
     await sendSms(candidateNumber, msg);
     // Guarda último intento para posible recall
