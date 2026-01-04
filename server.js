@@ -283,6 +283,8 @@ Reglas:
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
 - Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi ${firstName || "there"}, I'm calling about your application for ${spokenRole} at ${ctx.brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
+- Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá explícitamente: "¿Te sentís más cómodo si seguimos la entrevista en inglés?" y, si dice que sí, cambiá a inglés para el resto.
+- Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá en inglés: "Would you prefer we continue the interview in English?" y, si dice que sí, cambiá a inglés para el resto.
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 - Usá solo el primer nombre si está: "Hola ${firstName || "¿cómo te llamás?"}". Podés repetirlo ocasionalmente para personalizar.
 - CV: nombra al menos un empleo del CV y repreguntá tareas y por qué se fue (por ejemplo, si ves "El Patio" o "Don Carlos" en el CV, preguntá qué hacía allí y por qué salió).
@@ -1104,8 +1106,9 @@ async function sendSms(to, body) {
 async function maybeSendNoAnswerSms(call) {
   try {
     if (!call || !call.from || !TWILIO_SMS_FROM) return;
-    // Only send if candidate never spoke (no speech detected)
-    if (call.userSpoke) return;
+    // Send if candidate never spoke OR call ended very quickly
+    const shortCall = call.durationSec !== null && call.durationSec <= 10;
+    if (!shortCall && call.userSpoke) return;
     const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
     await sendSms(call.from, msg);
   } catch (err) {
