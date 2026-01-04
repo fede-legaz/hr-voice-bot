@@ -197,6 +197,10 @@ function roleKey(role) {
   return "general";
 }
 
+function roleNeedsEnglish(roleK) {
+  return ["cashier", "server", "runner", "hostess", "barista", "foodtruck"].includes(roleK);
+}
+
 function displayRole(role) {
   const k = roleKey(role);
   switch (k) {
@@ -247,6 +251,7 @@ function buildInstructions(ctx) {
   const bKey = brandKey(ctx.brand);
   const spokenRole = ctx.spokenRole || displayRole(ctx.role);
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
+  const needsEnglish = ctx.englishRequired || roleNeedsEnglish(rKey);
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
@@ -280,7 +285,7 @@ Reglas:
 - SIEMPRE preguntá por zona y cómo llega (en TODAS las posiciones). No saltees la pregunta de zona/logística.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
-- Si inglés es requerido, SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
+- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
@@ -320,8 +325,8 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
 4) Disponibilidad: "¿Cómo es tu disponibilidad normalmente? Semana, fines de semana, día/noche… lo que puedas."
 5) Expectativa salarial: "Tenés alguna expectativa salarial por hora?"
 6) Prueba (sin prometer): "Si te invitamos, ¿cuándo podrías venir a hacer una prueba?"
-7) Inglés (solo si aplica, NO lo saltees):
-   - "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?"
+7) Inglés (si aplica, NO lo saltees):
+   - "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?" (igual si ya ofreciste seguir en inglés).
    - Luego, sí o sí, hacé al menos una pregunta en inglés y esperá la respuesta: "Can you describe your last job and what you did day to day?"
    - Si no se puede comunicar o no responde en inglés, marcá que no es conversacional y seguí sin insistir.
    - Si en el CV menciona inglés/idiomas, mencioná que lo viste y verificá.
