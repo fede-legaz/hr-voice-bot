@@ -256,7 +256,7 @@ Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesion
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- Primer turno: confirmar identidad + permiso: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" (SIEMPRE menciona el restaurante). Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
+- Primer turno (bilingüe): "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?" (SIEMPRE menciona el restaurante). Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
 - Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
 
 Contexto:
@@ -609,9 +609,9 @@ record("context", { brand, role, spokenRole, englishRequired, address, applicant
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
     const spokenRole = call.spokenRole || displayRole(call.role || "");
-    const openerLine = firstName
-      ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand}. ¿Tenés unos minutos para hablar?`
-      : `Hola, te llamo por una entrevista de trabajo en ${call.brand}. ¿Tenés unos minutos para hablar?`;
+  const openerLine = firstName
+      ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?`
+      : `Hola, te llamo por una entrevista de trabajo en ${call.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?`;
     const introAfterYes = `Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición?`;
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
