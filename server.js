@@ -337,6 +337,7 @@ const CALL_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const callsByStream = new Map(); // streamSid -> call
 const callsByCallSid = new Map(); // callSid -> call
+const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
 const tokens = new Map(); // token -> { path, expiresAt }
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -348,6 +349,9 @@ function cleanup() {
   }
   for (const [k, v] of callsByCallSid.entries()) {
     if (v.expiresAt && v.expiresAt < now) callsByCallSid.delete(k);
+  }
+  for (const [k, v] of lastCallByNumber.entries()) {
+    if (v.expiresAt && v.expiresAt < now) lastCallByNumber.delete(k);
   }
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
@@ -391,6 +395,35 @@ app.post("/voice", (req, res) => {
   res.type("text/xml").send(twiml);
 });
 
+app.post("/sms-inbound", express.urlencoded({ extended: false }), async (req, res) => {
+  const from = (req.body?.From || "").trim();
+  const body = (req.body?.Body || "").trim().toLowerCase();
+  const last = lastCallByNumber.get(from);
+
+  function twiml(msg) {
+    return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscapeAttr(msg)}</Message></Response>`;
+  }
+
+  if (!from) {
+    return res.type("text/xml").send(twiml("No tengo tu número."));
+  }
+  if (!last) {
+    return res.type("text/xml").send(twiml("No encuentro tu última solicitud. Decime el puesto y te llamamos."));
+  }
+
+  if (/^(si|sí|yes|call|llama|llamar)/i.test(body)) {
+    try {
+      await placeOutboundCall(last.payload);
+      return res.type("text/xml").send(twiml("Te llamamos ahora."));
+    } catch (err) {
+      console.error("[sms-inbound] recall failed", err);
+      return res.type("text/xml").send(twiml("No pude llamar ahora. Lo intentamos de nuevo."));
+    }
+  }
+
+  return res.type("text/xml").send(twiml("Recibido. Si querés que te llamemos, responde SI."));
+});
+
 app.post("/call", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || "";
@@ -429,9 +462,10 @@ app.post("/call", async (req, res) => {
       return res.status(500).json({ error: "twilio or base url not configured" });
     }
 
-    const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
+  const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
 
-    const paramTags = [
+  const paramTags = [
+      { name: "to", value: to },
       { name: "brand", value: brand },
       { name: "role", value: role },
       { name: "english", value: englishRequired ? "1" : "0" },
@@ -1083,6 +1117,69 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
   console.log("[whatsapp] sent", { sid: data.sid, hasMedia: !!mediaUrl });
 }
 
+async function placeOutboundCall(payload) {
+  const {
+    to,
+    from = TWILIO_VOICE_FROM,
+    brand = DEFAULT_BRAND,
+    role = DEFAULT_ROLE,
+    englishRequired = DEFAULT_ENGLISH_REQUIRED,
+    address,
+    applicant = "",
+    cv_summary = "",
+    resume_url = ""
+  } = payload || {};
+
+  if (!to || !from) throw new Error("missing to/from");
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
+    throw new Error("twilio or base url not configured");
+  }
+
+  const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
+  const paramTags = [
+    { name: "to", value: to },
+    { name: "brand", value: brand },
+    { name: "role", value: role },
+    { name: "english", value: englishRequired ? "1" : "0" },
+    { name: "address", value: address || resolveAddress(brand, null) },
+    { name: "applicant", value: applicant },
+    { name: "cv_summary", value: cv_summary },
+    { name: "resume_url", value: resume_url }
+  ]
+    .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
+    .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
+    .join("\n");
+
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="${xmlEscapeAttr(streamUrl)}">
+${paramTags}
+    </Stream>
+  </Connect>
+</Response>`;
+
+  const params = new URLSearchParams();
+  params.append("To", to);
+  params.append("From", from);
+  params.append("Twiml", twiml);
+
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    },
+    body: params
+  });
+  const data = await resp.json();
+  if (!resp.ok) {
+    console.error("[placeOutboundCall] twilio_call_failed", resp.status, data);
+    throw new Error("twilio_call_failed");
+  }
+  console.log("[placeOutboundCall] queued", { sid: data.sid, status: data.status });
+  return data;
+}
+
 async function sendSms(to, body) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_SMS_FROM) {
     throw new Error("missing sms credentials/from");
@@ -1114,6 +1211,23 @@ async function maybeSendNoAnswerSms(call) {
     if (!shortCall && call.userSpoke) return;
     const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
     await sendSms(call.from, msg);
+    // Guarda último intento para posible recall
+    if (call.to) {
+      lastCallByNumber.set(call.to, {
+        payload: {
+          to: call.to,
+          from: TWILIO_VOICE_FROM,
+          brand: call.brand,
+          role: call.role,
+          englishRequired: call.englishRequired,
+          address: call.address,
+          applicant: call.applicant,
+          cv_summary: call.cvSummary,
+          resume_url: call.resumeUrl
+        },
+        expiresAt: Date.now() + CALL_TTL_MS
+      });
+    }
   } catch (err) {
     console.error("[sms no-answer] error", err);
   }
