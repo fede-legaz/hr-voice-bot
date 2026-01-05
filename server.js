@@ -991,7 +991,7 @@ Reglas para el análisis:
 - NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia ni inglés si no se dijo. Si un dato no se mencionó, dejalo vacío/unknown y baja el score.
 - Calidez = amabilidad/cercanía en el trato; bajá el score si el candidato suena seco o cortante.
 - Fluidez = claridad y continuidad al expresarse (no es inglés); bajá si se traba, responde en monosílabos o cuesta entender su disponibilidad/experiencia.
-- Inglés: detalla si pudo o no comunicarse en inglés y cómo sonó (acento/claridad).
+- Inglés: detalla si pudo o no comunicarse en inglés y cómo sonó (acento/claridad). Si la entrevista fue mayormente en inglés y se comunicó bien, marcá english_level al menos "conversational" o "fluent". Si dijo "no hablo español" pero habló en inglés, NO pongas basic.
 Si la entrevista no aporta datos claros, devolvé recommendation="review", score <= 30, y marcá todos los campos dudosos como "unknown". Red_flags puede ser vacío. Usa español neutro en summary y key_points.`;
 }
 
@@ -1039,12 +1039,12 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const warmth = typeof ex.warmth_score === "number" ? `${ex.warmth_score}/10` : "n/d";
   const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
   const applicant = call.applicant || "No informado";
-  const tel = call.from || "No informado";
+  const tel = call.to || call.from || "No informado";
   const role = call.spokenRole || displayRole(call.role || "");
   const area = ex.area || "No informada";
   const duration = formatDuration(call.durationSec);
   const englishLevel = ex.english_level || "No informado";
-  const englishDetail = ex.english_detail ? `\n\`${ex.english_detail}\`` : "";
+  const englishDetail = ex.english_detail ? `\n${ex.english_detail}` : "";
   const mobility = ex.mobility || "No informada";
   const availability = ex.availability || "No informada";
   const salary = ex.salary_expectation || "No informada";
@@ -1052,17 +1052,17 @@ function formatWhatsapp(scoring, call, opts = {}) {
 
   if (!scoring) {
     return [
-      `📞 ENTREVISTA – ${call.brand}`,
-      ``,
-      `CANDIDATO: ${applicant}`,
-      `PUESTO: ${role}`,
-      ``,
-      `📱 TEL: ${tel}`,
-      `📍 UBICACIÓN: ${area}`,
-      `⏱️ DURACIÓN: ${duration}`,
-      ``,
-      note || "Resumen no disponible."
-    ].join("\n");
+    `📞 ENTREVISTA – ${call.brand}`,
+    ``,
+    `*CANDIDATO:* ${applicant}`,
+    `*PUESTO:* ${role}`,
+    ``,
+    `📱 *TEL:* ${tel}`,
+    `📍*UBICACIÓN:* ${area}`,
+    `⏱️ *DURACIÓN:* ${duration}`,
+    ``,
+    note || "Resumen no disponible."
+  ].join("\n");
   }
 
   const reds = (scoring.red_flags || []).filter(Boolean).slice(0, 3);
@@ -1070,36 +1070,37 @@ function formatWhatsapp(scoring, call, opts = {}) {
   return [
     `📞 ENTREVISTA – ${call.brand.toUpperCase()}`,
     ``,
-    `CANDIDATO: ${applicant}`,
-    `PUESTO: ${role}`,
+    `*CANDIDATO:* ${applicant}`,
+    `*PUESTO:* ${role}`,
     ``,
-    `📱 TEL: ${tel}`,
-    `📍 UBICACIÓN: ${area}`,
-    `⏱️ DURACIÓN: ${duration}`,
+    `📱 *TEL:* ${tel}`,
+    `📍*UBICACIÓN:* ${area}`,
+    `⏱️ *DURACIÓN:* ${duration}`,
     ``,
-    `⭐ SCORE: ${scoreVal} / 100`,
-    `${recIcon} ESTADO: ${recText}`,
+    `⭐ *SCORE:* ${scoreVal} / 100`,
+    `${recIcon} *RECOMENDACION:* ${recText}`,
     ``,
-    `🧾 RESUMEN`,
-    scoring.summary || "No disponible.",
+    `🧾 *RESUMEN*`,
+    scoring.summary ? `_${scoring.summary}_` : "No disponible.",
     ``,
-    `🌡️ IMPRESIÓN HUMANA (CALIDEZ / FLUIDEZ)`,
-    `• CALIDEZ: ${warmth} 🙂`,
+    `🌡️ *IMPRESIÓN HUMANA (CALIDEZ / FLUIDEZ)*`,
+    `• *CALIDEZ:* ${warmth} 🙂`,
     ex.warmth_note ? `${ex.warmth_note}` : "",
-    `• FLUIDEZ: ${fluency} 🟡`,
+    ``,
+    `• *FLUIDEZ:* ${fluency} 🟡`,
     ex.fluency_note ? `${ex.fluency_note}` : "",
     ``,
-    `✅ CHECKLIST`,
-    `📍 ZONA: ${area}`,
-    `🚗 MOVILIDAD: ${mobility}`,
-    `🕒 DISPONIBILIDAD: ${availability}`,
-    `💰 PRETENSIÓN SALARIAL: ${salary}`,
-    `🗣️ INGLÉS: ${englishLevel}${englishDetail ? `\n${englishDetail}` : ""}`,
-    `🍽️ EXPERIENCIA:`,
-    experience || "No informada",
+    `✅ *CHECKLIST*`,
+    `📍 *ZONA:* ${area}`,
+    `🚗 *MOVILIDAD:* ${mobility}`,
+    `🕒 *DISPONIBILIDAD:* ${availability}`,
+    `💰 *PRETENSIÓN SALARIAL:* ${salary}`,
+    `🗣️ *INGLÉS:* ${englishLevel}${englishDetail ? `\n${englishDetail}` : ""}`,
+    `🍽️ *EXPERIENCIA:*`,
+    experience ? `_${experience}_` : "No informada",
     ``,
-    `🎯 RECOMENDACIÓN`,
-    `${recIcon} ${recText.toUpperCase()}`,
+    `🎯 *RECOMENDACIÓN*`,
+    `${recIcon} *${recText.toUpperCase()}*`,
     scoring.summary ? "" : note
   ].filter(Boolean).join("\n");
 }
