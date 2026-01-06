@@ -456,7 +456,7 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
   res.status(200).end();
   try {
     const status = (req.body?.CallStatus || "").toLowerCase();
-    const to = (req.body?.To || "").trim();
+    const to = normalizePhone((req.body?.To || "").trim());
     const callSid = req.body?.CallSid;
     if (!status || !to) return;
     const shouldSms = ["busy", "no-answer", "failed", "canceled"].includes(status);
@@ -1276,9 +1276,14 @@ async function sendSms(to, body) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_SMS_FROM) {
     throw new Error("missing sms credentials/from");
   }
+  const toNorm = normalizePhone(to);
+  const fromNorm = normalizePhone(TWILIO_SMS_FROM);
+  if (!toNorm || !fromNorm) {
+    throw new Error(`invalid to/from for sms to=${to} from=${TWILIO_SMS_FROM}`);
+  }
   const params = new URLSearchParams();
-  params.append("To", to);
-  params.append("From", TWILIO_SMS_FROM);
+  params.append("To", toNorm);
+  params.append("From", fromNorm);
   params.append("Body", body);
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: "POST",
@@ -1292,7 +1297,7 @@ async function sendSms(to, body) {
     throw new Error(`sms send failed ${resp.status} ${text}`);
   }
   const data = await resp.json();
-  console.log("[sms] sent", { sid: data.sid });
+  console.log("[sms] sent", { sid: data.sid, to: toNorm });
 }
 
 async function hangupCall(call) {
