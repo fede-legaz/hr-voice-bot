@@ -363,6 +363,7 @@ const callsByStream = new Map(); // streamSid -> call
 const callsByCallSid = new Map(); // callSid -> call
 const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
 const smsSentBySid = new Map(); // callSid -> expiresAt
+const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -380,6 +381,9 @@ function cleanup() {
   }
   for (const [k, v] of smsSentBySid.entries()) {
     if (v && v < now) smsSentBySid.delete(k);
+  }
+  for (const [k, v] of noAnswerSentBySid.entries()) {
+    if (v && v < now) noAnswerSentBySid.delete(k);
   }
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
@@ -645,6 +649,7 @@ wss.on("connection", (twilioWs, req) => {
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
+    outcome: null,
     startedAt: Date.now(),
     durationSec: null,
     twilioReady: false,
@@ -1418,6 +1423,9 @@ async function sendWhatsappReport(call) {
 
 async function maybeScoreAndSend(call) {
   if (call.whatsappSent) return;
+  if (call.outcome === "NO_ANSWER") {
+    return;
+  }
   if (call.incomplete) {
     await sendWhatsappReport(call);
     return;
