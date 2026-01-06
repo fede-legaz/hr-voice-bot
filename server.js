@@ -345,6 +345,7 @@ const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const callsByStream = new Map(); // streamSid -> call
 const callsByCallSid = new Map(); // callSid -> call
 const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
+const smsSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -359,6 +360,9 @@ function cleanup() {
   }
   for (const [k, v] of lastCallByNumber.entries()) {
     if (v.expiresAt && v.expiresAt < now) lastCallByNumber.delete(k);
+  }
+  for (const [k, v] of smsSentBySid.entries()) {
+    if (v && v < now) smsSentBySid.delete(k);
   }
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
@@ -431,6 +435,31 @@ app.post("/sms-inbound", express.urlencoded({ extended: false }), async (req, re
   return res.type("text/xml").send(twiml("Recibido. Si querés que te llamemos, responde SI."));
 });
 
+app.post("/call-status", express.urlencoded({ extended: false }), async (req, res) => {
+  res.status(200).end();
+  try {
+    const status = (req.body?.CallStatus || "").toLowerCase();
+    const to = (req.body?.To || "").trim();
+    const callSid = req.body?.CallSid;
+    if (!status || !to) return;
+    const shouldSms = ["busy", "no-answer", "failed", "canceled"].includes(status);
+    if (!shouldSms) return;
+    if (callSid && smsSentBySid.has(callSid)) return;
+    const msg = `Te llamo por la aplicación. Avísame si te puedo volver a llamar.`;
+    await sendSms(to, msg);
+    if (callSid) smsSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
+    // guarda payload base si existe lastCallByNumber
+    if (!lastCallByNumber.has(to)) {
+      lastCallByNumber.set(to, {
+        payload: { to, from: TWILIO_VOICE_FROM },
+        expiresAt: Date.now() + CALL_TTL_MS
+      });
+    }
+  } catch (err) {
+    console.error("[call-status] error", err);
+  }
+});
+
 app.post("/call", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || "";
@@ -469,6 +498,12 @@ app.post("/call", async (req, res) => {
       return res.status(500).json({ error: "twilio or base url not configured" });
     }
 
+    // Guarda payload para posible recall
+    lastCallByNumber.set(to, {
+      payload: { to, from, brand, role, englishRequired, address: address || resolveAddress(brand, null), applicant, cv_summary, resume_url },
+      expiresAt: Date.now() + CALL_TTL_MS
+    });
+
   const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
 
   const paramTags = [
@@ -498,6 +533,9 @@ ${paramTags}
     params.append("To", to);
     params.append("From", from);
     params.append("Twiml", twiml);
+    params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
+    params.append("StatusCallbackEvent", "initiated ringing answered completed");
+    params.append("StatusCallbackMethod", "POST");
 
     const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
       method: "POST",
@@ -577,6 +615,7 @@ wss.on("connection", (twilioWs, req) => {
     lastCommitId: null,
     transcript: []
   };
+  call.hangupTimer = null;
 
   call.expiresAt = Date.now() + CALL_TTL_MS;
   // Hold by temporary stream key until Twilio sends real streamSid
@@ -702,6 +741,10 @@ DECÍ ESTO Y CALLATE:
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
       call.userSpoke = true;
+      if (call.hangupTimer) {
+        clearTimeout(call.hangupTimer);
+        call.hangupTimer = null;
+      }
       record("speech_started", {});
       if (call.responseInFlight) {
         try { openaiWs.send(JSON.stringify({ type: "response.cancel" })); } catch {}
@@ -793,6 +836,17 @@ DECÍ ESTO Y CALLATE:
       englishRequired: call.englishRequired,
       address: call.address
     });
+
+    // Hang up if no user speech within 8s (voicemail/ghost)
+    if (!call.hangupTimer) {
+      call.hangupTimer = setTimeout(() => {
+        if (!call.userSpoke) {
+          console.log("[hangup] no user speech detected; hanging up");
+          hangupCall(call).catch(err => console.error("[hangup timer] error", err));
+          maybeSendNoAnswerSms(call).catch(err => console.error("[sms no-answer] failed", err));
+        }
+      }, 8000);
+    }
 
     record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
     // re-key maps now that streamSid/callSid are known
@@ -1175,6 +1229,9 @@ ${paramTags}
   params.append("To", to);
   params.append("From", from);
   params.append("Twiml", twiml);
+  params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
+  params.append("StatusCallbackEvent", "initiated ringing answered completed");
+  params.append("StatusCallbackMethod", "POST");
 
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
     method: "POST",
@@ -1215,6 +1272,28 @@ async function sendSms(to, body) {
   console.log("[sms] sent", { sid: data.sid });
 }
 
+async function hangupCall(call) {
+  if (!call?.callSid) return;
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) return;
+  const params = new URLSearchParams();
+  params.append("Status", "completed");
+  try {
+    const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls/${call.callSid}.json`, {
+      method: "POST",
+      headers: { Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}` },
+      body: params
+    });
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.error("[hangup] failed", resp.status, text);
+    } else {
+      console.log("[hangup] completed call", call.callSid);
+    }
+  } catch (err) {
+    console.error("[hangup] error", err);
+  }
+}
+
 async function maybeSendNoAnswerSms(call) {
   try {
     const candidateNumber = call.to || call.from;
@@ -1222,6 +1301,7 @@ async function maybeSendNoAnswerSms(call) {
     // Send if candidate never spoke OR call ended very quickly
     const shortCall = call.durationSec !== null && call.durationSec <= 10;
     if (!shortCall && call.userSpoke) return;
+    if (call.callSid && smsSentBySid.has(call.callSid)) return;
     console.log("[sms no-answer] sending", {
       candidateNumber,
       durationSec: call.durationSec,
@@ -1230,6 +1310,7 @@ async function maybeSendNoAnswerSms(call) {
     });
     const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
     await sendSms(candidateNumber, msg);
+    if (call.callSid) smsSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
     // Guarda último intento para posible recall
     if (candidateNumber) {
       lastCallByNumber.set(candidateNumber, {
