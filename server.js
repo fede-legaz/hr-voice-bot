@@ -458,19 +458,39 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
     const status = (req.body?.CallStatus || "").toLowerCase();
     const to = normalizePhone((req.body?.To || "").trim());
     const callSid = req.body?.CallSid;
+    const answeredBy = (req.body?.AnsweredBy || "").toLowerCase();
     if (!status || !to) return;
     const shouldSms = ["busy", "no-answer", "failed", "canceled"].includes(status);
-    if (!shouldSms) return;
-    if (callSid && smsSentBySid.has(callSid)) return;
-    const msg = `Te llamo por la aplicación. Avísame si te puedo volver a llamar.`;
-    await sendSms(to, msg);
-    if (callSid) smsSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
-    // guarda payload base si existe lastCallByNumber
-    if (!lastCallByNumber.has(to)) {
-      lastCallByNumber.set(to, {
-        payload: { to, from: TWILIO_VOICE_FROM },
-        expiresAt: Date.now() + CALL_TTL_MS
-      });
+    // Detect voicemail/machine
+    if (answeredBy && answeredBy.includes("machine")) {
+      const call = callsByCallSid.get(callSid) || {
+        callSid,
+        brand: DEFAULT_BRAND,
+        role: DEFAULT_ROLE,
+        spokenRole: displayRole(DEFAULT_ROLE),
+        to,
+        applicant: "",
+        englishRequired: DEFAULT_ENGLISH_REQUIRED,
+        address: resolveAddress(DEFAULT_BRAND, null)
+      };
+      call.incomplete = true;
+      call.noTranscriptReason = "Entrevista incompleta: el candidato no contestó (voicemail).";
+      await sendIncomplete(call, call.noTranscriptReason);
+      return;
+    }
+
+    if (shouldSms) {
+      if (callSid && smsSentBySid.has(callSid)) return;
+      const msg = `Te llamo por la aplicación. Avísame si te puedo volver a llamar.`;
+      await sendSms(to, msg);
+      if (callSid) smsSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
+      // guarda payload base si existe lastCallByNumber
+      if (!lastCallByNumber.has(to)) {
+        lastCallByNumber.set(to, {
+          payload: { to, from: TWILIO_VOICE_FROM },
+          expiresAt: Date.now() + CALL_TTL_MS
+        });
+      }
     }
   } catch (err) {
     console.error("[call-status] error", err);
@@ -556,6 +576,8 @@ ${paramTags}
     params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
     params.append("StatusCallbackEvent", "initiated ringing answered completed");
     params.append("StatusCallbackMethod", "POST");
+    params.append("MachineDetection", "Enable");
+    params.append("MachineDetectionTimeout", "10");
 
     const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
       method: "POST",
@@ -1268,6 +1290,8 @@ ${paramTags}
   params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
   params.append("StatusCallbackEvent", "initiated ringing answered completed");
   params.append("StatusCallbackMethod", "POST");
+  params.append("MachineDetection", "Enable");
+  params.append("MachineDetectionTimeout", "10");
 
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Calls.json`, {
     method: "POST",
