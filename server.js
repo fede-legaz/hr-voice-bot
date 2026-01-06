@@ -244,6 +244,13 @@ function normalizePhone(num) {
   return s;
 }
 
+function sanitizeRole(role) {
+  if (!role) return role;
+  const r = String(role);
+  const atIdx = r.indexOf("@");
+  return atIdx >= 0 ? r.slice(0, atIdx).trim() : r.trim();
+}
+
 function resolveRoleVariant(roleKey, brandK) {
   // handle PM variants for yes
   if (brandK === "yes") {
@@ -365,6 +372,7 @@ const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
 const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
+const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
 
@@ -384,6 +392,9 @@ function cleanup() {
   }
   for (const [k, v] of noAnswerSentBySid.entries()) {
     if (v && v < now) noAnswerSentBySid.delete(k);
+  }
+  for (const [k, v] of voiceCtxByToken.entries()) {
+    if (v.expiresAt && v.expiresAt < now) voiceCtxByToken.delete(k);
   }
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
@@ -415,16 +426,93 @@ app.get("/r/:token", (req, res) => {
     .pipe(res.type("audio/mpeg"));
 });
 
+// Hard-stop path for no-answer/voicemail before opening streams
+async function hardStopNoAnswer({ callSid, to, brand, role, applicant, reason }) {
+  const toNorm = normalizePhone(to);
+  if (!toNorm) return;
+  if (callSid && noAnswerSentBySid.has(callSid)) return;
+  const call = {
+    callSid: callSid || null,
+    to: toNorm,
+    from: null,
+    brand: brand || DEFAULT_BRAND,
+    role: role || DEFAULT_ROLE,
+    spokenRole: displayRole(role || DEFAULT_ROLE),
+    applicant: applicant || "",
+    englishRequired: roleNeedsEnglish(roleKey(role || DEFAULT_ROLE)),
+    address: resolveAddress(brand || DEFAULT_BRAND, null),
+    userSpoke: false,
+    hangupTimer: null
+  };
+  await markNoAnswer(call, reason || "no_answer");
+}
+
 app.post("/voice", (req, res) => {
+  const token = String(req.query?.token || "").trim();
+  const entry = token ? voiceCtxByToken.get(token) : null;
+  const payload = entry?.payload || {};
+  if (token) voiceCtxByToken.delete(token);
+
+  const answeredBy = String(req.body?.AnsweredBy || "").toLowerCase();
+  const callSid = req.body?.CallSid || "";
+  const to = normalizePhone(req.body?.To || payload.to || "");
+  const brand = payload.brand || DEFAULT_BRAND;
+  const role = payload.role || DEFAULT_ROLE;
+  const englishRequired =
+    payload.englishRequired === true || payload.englishRequired === "1" || payload.englishRequired === "true";
+  const address = resolveAddress(brand, payload.address || null);
+  const applicant = payload.applicant || "";
+  const cv_summary = payload.cv_summary || "";
+  const resume_url = payload.resume_url || "";
+
+  console.log("[voice] request", { callSid, to, answeredBy, brand, role });
+
+  // AMD: if not human, hang up and send SMS
+  if (answeredBy && answeredBy !== "human") {
+    setImmediate(() => {
+      hardStopNoAnswer({
+        callSid,
+        to,
+        brand,
+        role,
+        applicant,
+        reason: `amd:${answeredBy}`
+      }).catch((e) => console.error("[voice] hardStopNoAnswer failed", e));
+    });
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Hangup/>
+</Response>`;
+    return res.type("text/xml").send(twiml);
+  }
+
+  // Human: connect stream with parameters
   const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
+  const paramTags = [
+    { name: "to", value: to },
+    { name: "brand", value: brand },
+    { name: "role", value: role },
+    { name: "english", value: englishRequired ? "1" : "0" },
+    { name: "address", value: address },
+    { name: "applicant", value: applicant },
+    { name: "cv_summary", value: cv_summary },
+    { name: "resume_url", value: resume_url }
+  ]
+    .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
+    .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
+    .join("\n");
+
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect>
-    <Stream url="${wsUrl}" />
+    <Stream url="${wsUrl}">
+${paramTags}
+    </Stream>
   </Connect>
-  <Hangup/>
 </Response>`;
-  res.type("text/xml").send(twiml);
+
+  return res.type("text/xml").send(twiml);
 });
 
 app.post("/sms-inbound", express.urlencoded({ extended: false }), async (req, res) => {
@@ -464,37 +552,31 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
     const callSid = req.body?.CallSid;
     const answeredBy = (req.body?.AnsweredBy || "").toLowerCase();
     if (!status || !to) return;
-    const shouldSms = ["busy", "no-answer", "failed", "canceled"].includes(status);
-    // Detect voicemail/machine
-    if (answeredBy && answeredBy.includes("machine")) {
-      const call = callsByCallSid.get(callSid) || {
-        callSid,
-        brand: DEFAULT_BRAND,
-        role: DEFAULT_ROLE,
-        spokenRole: displayRole(DEFAULT_ROLE),
-        to,
-        applicant: "",
-        englishRequired: DEFAULT_ENGLISH_REQUIRED,
-        address: resolveAddress(DEFAULT_BRAND, null)
-      };
-      call.incomplete = true;
-      call.noTranscriptReason = "Entrevista incompleta: el candidato no contestó (voicemail).";
-      await sendIncomplete(call, call.noTranscriptReason);
-      return;
-    }
+    const call = callsByCallSid.get(callSid) || {
+      callSid,
+      brand: DEFAULT_BRAND,
+      role: DEFAULT_ROLE,
+      spokenRole: displayRole(DEFAULT_ROLE),
+      to,
+      applicant: "",
+      englishRequired: DEFAULT_ENGLISH_REQUIRED,
+      address: resolveAddress(DEFAULT_BRAND, null),
+      userSpoke: false,
+      outcome: null,
+      noAnswerReason: null
+    };
 
-    if (shouldSms) {
-      if (callSid && smsSentBySid.has(callSid)) return;
-      const msg = `Te llamo por la aplicación. Avísame si te puedo volver a llamar.`;
-      await sendSms(to, msg);
-      if (callSid) smsSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
-      // guarda payload base si existe lastCallByNumber
-      if (!lastCallByNumber.has(to)) {
-        lastCallByNumber.set(to, {
-          payload: { to, from: TWILIO_VOICE_FROM },
-          expiresAt: Date.now() + CALL_TTL_MS
-        });
-      }
+    if (answeredBy) call.answeredBy = answeredBy;
+    const statusNoAnswer = ["busy", "no-answer", "failed", "canceled"].includes(status);
+    const amdMachine = answeredBy && answeredBy.includes("machine");
+    const amdHuman = answeredBy && answeredBy.includes("human");
+
+    // If AMD says human, do nothing special
+    if (amdHuman) return;
+
+    if (statusNoAnswer || amdMachine) {
+      await markNoAnswer(call, amdMachine ? "voicemail" : `status_${status}`);
+      return;
     }
   } catch (err) {
     console.error("[call-status] error", err);
@@ -521,6 +603,7 @@ app.post("/call", async (req, res) => {
       from = TWILIO_VOICE_FROM
     } = req.body || {};
 
+    const roleClean = sanitizeRole(role);
     const toNorm = normalizePhone(to);
     const fromNorm = normalizePhone(from);
 
@@ -528,7 +611,7 @@ app.post("/call", async (req, res) => {
       to: toNorm,
       from: fromNorm,
       brand,
-      role,
+      role: roleClean,
       englishRequired: !!englishRequired,
       address: address || resolveAddress(brand, null),
       applicant,
@@ -542,41 +625,35 @@ app.post("/call", async (req, res) => {
       return res.status(500).json({ error: "twilio or base url not configured" });
     }
 
+    const resolvedAddress = address || resolveAddress(brand, null);
+
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
-      payload: { to: toNorm, from: fromNorm, brand, role, englishRequired, address: address || resolveAddress(brand, null), applicant, cv_summary, resume_url },
+      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired, address: resolvedAddress, applicant, cv_summary, resume_url },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
-  const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
-
-  const paramTags = [
-      { name: "to", value: to },
-      { name: "brand", value: brand },
-      { name: "role", value: role },
-      { name: "english", value: englishRequired ? "1" : "0" },
-      { name: "address", value: address || resolveAddress(brand, null) },
-      { name: "applicant", value: applicant },
-      { name: "cv_summary", value: cv_summary },
-      { name: "resume_url", value: resume_url }
-    ]
-      .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
-      .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
-      .join("\n");
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${xmlEscapeAttr(streamUrl)}">
-${paramTags}
-    </Stream>
-  </Connect>
-</Response>`;
+    const voiceToken = randomToken();
+    voiceCtxByToken.set(voiceToken, {
+      payload: {
+        to: toNorm,
+        from: fromNorm,
+        brand,
+        role: roleClean,
+        englishRequired: englishRequired ? "1" : "0",
+        address: resolvedAddress,
+        applicant,
+        cv_summary,
+        resume_url
+      },
+      expiresAt: Date.now() + CALL_TTL_MS
+    });
 
     const params = new URLSearchParams();
-    params.append("To", to);
-    params.append("From", from);
-    params.append("Twiml", twiml);
+    params.append("To", toNorm);
+    params.append("From", fromNorm);
+    params.append("Url", `${PUBLIC_BASE_URL}/voice?token=${voiceToken}`);
+    params.append("Method", "POST");
     params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
     params.append("StatusCallbackEvent", "initiated ringing answered completed");
     params.append("StatusCallbackMethod", "POST");
@@ -595,7 +672,7 @@ ${paramTags}
       console.error("[/call] twilio_call_failed", resp.status, data);
       return res.status(500).json({ error: "twilio_call_failed", detail: data });
     }
-    console.log("[/call] queued", { sid: data.sid, status: data.status, streamUrl });
+    console.log("[/call] queued", { sid: data.sid, status: data.status });
     return res.json({ callId: data.sid, status: data.status });
   } catch (err) {
     console.error("[/call] error", err);
@@ -650,6 +727,8 @@ wss.on("connection", (twilioWs, req) => {
     recordingToken: null,
     whatsappSent: false,
     outcome: null,
+    noAnswerReason: null,
+    outcome: null,
     startedAt: Date.now(),
     durationSec: null,
     twilioReady: false,
@@ -664,6 +743,7 @@ wss.on("connection", (twilioWs, req) => {
     incomplete: false
   };
   call.hangupTimer = null;
+  call.answeredBy = null;
 
   call.expiresAt = Date.now() + CALL_TTL_MS;
   // Hold by temporary stream key until Twilio sends real streamSid
@@ -676,7 +756,7 @@ function record(kind, payload) {
 
 record("context", { brand, role, spokenRole, englishRequired, address, applicant, cvSummary, resumeUrl });
 
-  const openaiWs = new WebSocket(
+const openaiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_MODEL_REALTIME)}`,
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}` } }
   );
@@ -838,69 +918,66 @@ DECÍ ESTO Y CALLATE:
     try { data = JSON.parse(msg.toString()); } catch { return; }
 
     if (data.event === "start") {
-    call.streamSid = data.start?.streamSid || null;
-    call.callSid = data.start?.callSid || null;
-    call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
+      call.streamSid = data.start?.streamSid || null;
+      call.callSid = data.start?.callSid || null;
+      call.from = data.start?.from || data.start?.callFrom || data.start?.caller || null;
 
-    // Prefer Stream Parameter payloads (Twilio may pass them as streamParams, stream_params, parameters, or customParameters)
-    const sp = data.start?.streamParams
-      || data.start?.stream_params
-      || data.start?.parameters
-      || data.start?.customParameters
-      || {};
-    if (Object.keys(sp).length) {
-      console.log("[media-stream] start params", sp);
-    } else {
-      console.warn("[media-stream] no params on start; using defaults");
-    }
-    if (Object.keys(sp).length) {
-      to = sp.to || to;
-      brand = sp.brand || brand;
-      role = sp.role || role;
-      englishRequired = parseEnglishRequired(sp.english) ?? englishRequired;
-      address = resolveAddress(brand, sp.address || address);
-      applicant = sp.applicant || applicant;
-      cvSummary = sp.cv_summary || cvSummary;
-      resumeUrl = sp.resume_url || resumeUrl;
-      spokenRole = displayRole(role);
-    }
+      // Prefer Stream Parameter payloads (Twilio may pass them as streamParams, stream_params, parameters, or customParameters)
+      const sp = data.start?.streamParams
+        || data.start?.stream_params
+        || data.start?.parameters
+        || data.start?.customParameters
+        || {};
+      if (Object.keys(sp).length) {
+        console.log("[media-stream] start params", sp);
+      } else {
+        console.warn("[media-stream] no params on start; using defaults");
+      }
+      if (Object.keys(sp).length) {
+        to = sp.to || to;
+        brand = sp.brand || brand;
+        role = sanitizeRole(sp.role || role);
+        englishRequired = parseEnglishRequired(sp.english) ?? englishRequired;
+        address = resolveAddress(brand, sp.address || address);
+        applicant = sp.applicant || applicant;
+        cvSummary = sp.cv_summary || cvSummary;
+        resumeUrl = sp.resume_url || resumeUrl;
+        spokenRole = displayRole(role);
+      }
 
-    call.twilioReady = true;
-    call.brand = brand;
-    call.to = to;
-    call.role = role;
-    call.spokenRole = spokenRole;
-    call.englishRequired = englishRequired;
-    call.address = address;
-    call.applicant = applicant;
-    call.cvSummary = cvSummary;
-    call.resumeUrl = resumeUrl;
+      call.twilioReady = true;
+      call.brand = brand;
+      call.to = to;
+      call.role = role;
+      call.spokenRole = spokenRole;
+      call.englishRequired = englishRequired;
+      call.address = address;
+      call.applicant = applicant;
+      call.cvSummary = cvSummary;
+      call.resumeUrl = resumeUrl;
 
-    console.log("[media-stream] connect", {
-      brand: call.brand,
-      role: call.role,
-      applicant: call.applicant || "(none)",
-      cvLen: (call.cvSummary || "").length,
-      englishRequired: call.englishRequired,
-      address: call.address
-    });
+      console.log("[media-stream] connect", {
+        brand: call.brand,
+        role: call.role,
+        applicant: call.applicant || "(none)",
+        cvLen: (call.cvSummary || "").length,
+        englishRequired: call.englishRequired,
+        address: call.address
+      });
 
-    // Hang up if no user speech within 10s (voicemail/ghost)
-    if (!call.hangupTimer) {
-      call.hangupTimer = setTimeout(() => {
-        if (!call.userSpoke) {
-          console.log("[hangup] no user speech detected; hanging up");
-          hangupCall(call).catch(err => console.error("[hangup timer] error", err));
-          call.incomplete = true;
-          sendIncomplete(call, "Entrevista incompleta: no se detectó al candidato.").catch(err => console.error("[whatsapp incomplete] failed", err));
-          maybeSendNoAnswerSms(call).catch(err => console.error("[sms no-answer] failed", err));
-        }
-      }, 10000);
-    }
+      // Hang up if no user speech within 10s (voicemail/ghost)
+      if (!call.hangupTimer) {
+        call.hangupTimer = setTimeout(() => {
+          if (!call.userSpoke) {
+            console.log("[hangup] no user speech detected; hanging up");
+            markNoAnswer(call, "timeout_no_speech").catch(err => console.error("[no-answer] failed", err));
+          }
+        }, 10000);
+      }
 
-    record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
-    // re-key maps now that streamSid/callSid are known
-    callsByStream.delete(tempKey);
+      record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
+      // re-key maps now that streamSid/callSid are known
+      callsByStream.delete(tempKey);
       if (call.streamSid) callsByStream.set(call.streamSid, call);
       if (call.callSid) {
         callsByCallSid.set(call.callSid, call);
@@ -932,10 +1009,9 @@ DECÍ ESTO Y CALLATE:
   twilioWs.on("close", () => {
     call.durationSec = Math.round((Date.now() - call.startedAt) / 1000);
     if (!call.userSpoke) {
-      call.incomplete = true;
-      sendIncomplete(call, "Entrevista incompleta: el candidato no contestó.").catch(err => console.error("[whatsapp incomplete] failed", err));
+      markNoAnswer(call, "closed_no_speech").catch(err => console.error("[no-answer] failed", err));
     }
-    maybeSendNoAnswerSms(call).catch((err) => console.error("[sms no-answer] failed", err));
+    // maybeSendNoAnswerSms is now handled via markNoAnswer / call-status
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
     call.expiresAt = Date.now() + CALL_TTL_MS;
   });
@@ -1258,40 +1334,35 @@ async function placeOutboundCall(payload) {
 
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
+  const roleClean = sanitizeRole(role);
 
   if (!toNorm || !fromNorm) throw new Error("missing to/from");
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
     throw new Error("twilio or base url not configured");
   }
 
-  const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
-  const paramTags = [
-    { name: "to", value: toNorm },
-    { name: "brand", value: brand },
-    { name: "role", value: role },
-    { name: "english", value: englishRequired ? "1" : "0" },
-    { name: "address", value: address || resolveAddress(brand, null) },
-    { name: "applicant", value: applicant },
-    { name: "cv_summary", value: cv_summary },
-    { name: "resume_url", value: resume_url }
-  ]
-    .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
-    .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
-    .join("\n");
-
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Connect>
-    <Stream url="${xmlEscapeAttr(streamUrl)}">
-${paramTags}
-    </Stream>
-  </Connect>
-</Response>`;
+  const resolvedAddress = address || resolveAddress(brand, null);
+  const voiceToken = randomToken();
+  voiceCtxByToken.set(voiceToken, {
+    payload: {
+      to: toNorm,
+      from: fromNorm,
+      brand,
+      role: roleClean,
+      englishRequired: englishRequired ? "1" : "0",
+      address: resolvedAddress,
+      applicant,
+      cv_summary,
+      resume_url
+    },
+    expiresAt: Date.now() + CALL_TTL_MS
+  });
 
   const params = new URLSearchParams();
   params.append("To", toNorm);
   params.append("From", fromNorm);
-  params.append("Twiml", twiml);
+  params.append("Url", `${PUBLIC_BASE_URL}/voice?token=${voiceToken}`);
+  params.append("Method", "POST");
   params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
   params.append("StatusCallbackEvent", "initiated ringing answered completed");
   params.append("StatusCallbackMethod", "POST");
@@ -1364,44 +1435,31 @@ async function hangupCall(call) {
   }
 }
 
-async function maybeSendNoAnswerSms(call) {
+async function markNoAnswer(call, reason) {
   try {
-    const candidateNumber = call.to || call.from;
-  if (!call || !candidateNumber || !TWILIO_SMS_FROM) return;
-  // Send if candidate never spoke OR call ended very quickly
-  const shortCall = call.durationSec !== null && call.durationSec <= 10;
-  if (!shortCall && call.userSpoke) return;
-  if (call.callSid && smsSentBySid.has(call.callSid)) return;
-  console.log("[sms no-answer] sending", {
-    candidateNumber,
-    durationSec: call.durationSec,
-    userSpoke: call.userSpoke,
-    shortCall
-  });
-  const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
-  await sendSms(candidateNumber, msg);
-  if (call.callSid) smsSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
-  // Guarda último intento para posible recall
-  if (candidateNumber) {
-    lastCallByNumber.set(candidateNumber, {
-      payload: {
-        to: candidateNumber,
-        from: TWILIO_VOICE_FROM,
-        brand: call.brand,
-        role: call.role,
-        englishRequired: call.englishRequired,
-        address: call.address,
-        applicant: call.applicant,
-        cv_summary: call.cvSummary,
-        resume_url: call.resumeUrl
-      },
-      expiresAt: Date.now() + CALL_TTL_MS
-    });
+    if (!call) return;
+    if (call.callSid && noAnswerSentBySid.has(call.callSid)) return;
+    call.outcome = "NO_ANSWER";
+    call.noAnswerReason = reason || "No contestó";
+    call.incomplete = true;
+    call.scoring = null;
+    call.whatsappSent = true;
+    if (call.hangupTimer) {
+      clearTimeout(call.hangupTimer);
+      call.hangupTimer = null;
+    }
+    await hangupCall(call);
+    const msg = `No contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    const toNumber = call.to || call.from;
+    if (toNumber) {
+      await sendSms(toNumber, msg);
+    }
+    if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
+  } catch (err) {
+    console.error("[no-answer] error", err);
   }
-} catch (err) {
-  console.error("[sms no-answer] error", err);
 }
-}
+
 
 async function sendWhatsappReport(call) {
   if (call.whatsappSent) return;
