@@ -227,6 +227,23 @@ function brandKey(brand) {
   return "general";
 }
 
+function normalizePhone(num) {
+  if (!num) return "";
+  let s = String(num).trim();
+  // If already starts with + and digits, keep plus and digits only
+  if (s.startsWith("+")) {
+    s = "+" + s.slice(1).replace(/[^0-9]/g, "");
+  } else {
+    s = s.replace(/[^0-9]/g, "");
+  }
+  // If no leading +, assume US and prepend +1 when length looks like 10 or 11
+  if (!s.startsWith("+")) {
+    if (s.length === 10) s = "+1" + s;
+    else if (s.length === 11 && s.startsWith("1")) s = "+" + s;
+  }
+  return s;
+}
+
 function resolveRoleVariant(roleKey, brandK) {
   // handle PM variants for yes
   if (brandK === "yes") {
@@ -480,9 +497,12 @@ app.post("/call", async (req, res) => {
       from = TWILIO_VOICE_FROM
     } = req.body || {};
 
+    const toNorm = normalizePhone(to);
+    const fromNorm = normalizePhone(from);
+
     console.log("[/call] inbound", {
-      to,
-      from,
+      to: toNorm,
+      from: fromNorm,
       brand,
       role,
       englishRequired: !!englishRequired,
@@ -491,7 +511,7 @@ app.post("/call", async (req, res) => {
       cvLen: (cv_summary || "").length
     });
 
-    if (!to || !from) {
+    if (!toNorm || !fromNorm) {
       return res.status(400).json({ error: "missing to/from" });
     }
     if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
@@ -499,8 +519,8 @@ app.post("/call", async (req, res) => {
     }
 
     // Guarda payload para posible recall
-    lastCallByNumber.set(to, {
-      payload: { to, from, brand, role, englishRequired, address: address || resolveAddress(brand, null), applicant, cv_summary, resume_url },
+    lastCallByNumber.set(toNorm, {
+      payload: { to: toNorm, from: fromNorm, brand, role, englishRequired, address: address || resolveAddress(brand, null), applicant, cv_summary, resume_url },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
@@ -1196,14 +1216,17 @@ async function placeOutboundCall(payload) {
     resume_url = ""
   } = payload || {};
 
-  if (!to || !from) throw new Error("missing to/from");
+  const toNorm = normalizePhone(to);
+  const fromNorm = normalizePhone(from);
+
+  if (!toNorm || !fromNorm) throw new Error("missing to/from");
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
     throw new Error("twilio or base url not configured");
   }
 
   const streamUrl = `${toWss(PUBLIC_BASE_URL)}/media-stream`;
   const paramTags = [
-    { name: "to", value: to },
+    { name: "to", value: toNorm },
     { name: "brand", value: brand },
     { name: "role", value: role },
     { name: "english", value: englishRequired ? "1" : "0" },
@@ -1226,8 +1249,8 @@ ${paramTags}
 </Response>`;
 
   const params = new URLSearchParams();
-  params.append("To", to);
-  params.append("From", from);
+  params.append("To", toNorm);
+  params.append("From", fromNorm);
   params.append("Twiml", twiml);
   params.append("StatusCallback", `${PUBLIC_BASE_URL}/call-status`);
   params.append("StatusCallbackEvent", "initiated ringing answered completed");
