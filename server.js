@@ -633,7 +633,8 @@ wss.on("connection", (twilioWs, req) => {
     heardSpeech: false,
     userSpoke: false,
     lastCommitId: null,
-    transcript: []
+    transcript: [],
+    incomplete: false
   };
   call.hangupTimer = null;
 
@@ -857,15 +858,17 @@ DECÍ ESTO Y CALLATE:
       address: call.address
     });
 
-    // Hang up if no user speech within 8s (voicemail/ghost)
+    // Hang up if no user speech within 10s (voicemail/ghost)
     if (!call.hangupTimer) {
       call.hangupTimer = setTimeout(() => {
         if (!call.userSpoke) {
           console.log("[hangup] no user speech detected; hanging up");
           hangupCall(call).catch(err => console.error("[hangup timer] error", err));
+          call.incomplete = true;
+          sendIncomplete(call, "Entrevista incompleta: no se detectó al candidato.").catch(err => console.error("[whatsapp incomplete] failed", err));
           maybeSendNoAnswerSms(call).catch(err => console.error("[sms no-answer] failed", err));
         }
-      }, 8000);
+      }, 10000);
     }
 
     record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
@@ -901,6 +904,10 @@ DECÍ ESTO Y CALLATE:
 
   twilioWs.on("close", () => {
     call.durationSec = Math.round((Date.now() - call.startedAt) / 1000);
+    if (!call.userSpoke) {
+      call.incomplete = true;
+      sendIncomplete(call, "Entrevista incompleta: el candidato no contestó.").catch(err => console.error("[whatsapp incomplete] failed", err));
+    }
     maybeSendNoAnswerSms(call).catch((err) => console.error("[sms no-answer] failed", err));
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
     call.expiresAt = Date.now() + CALL_TTL_MS;
@@ -1123,6 +1130,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const availability = ex.availability || "No informada";
   const salary = ex.salary_expectation || "No informada";
   const experience = ex.experience || "No informada";
+  const trial = ex.trial_date || ex.trial_availability || "No informada";
 
   if (!scoring) {
     return [
@@ -1169,6 +1177,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
     `🚗 *MOVILIDAD:* ${mobility}`,
     `🕒 *DISPONIBILIDAD:* ${availability}`,
     `💰 *PRETENSIÓN SALARIAL:* ${salary}`,
+    `📆 *PRUEBA:* ${trial}`,
     `🗣️ *INGLÉS:* ${englishLevel}${englishDetail ? `\n${englishDetail}` : ""}`,
     `🍽️ *EXPERIENCIA:*`,
     experience ? `_${experience}_` : "No informada",
@@ -1364,6 +1373,7 @@ async function maybeSendNoAnswerSms(call) {
 }
 
 async function sendWhatsappReport(call) {
+  if (call.whatsappSent) return;
   const note = call.noTranscriptReason || "";
   try {
     await sendWhatsappMessage({ body: formatWhatsapp(call.scoring, call, { note }) });
@@ -1382,6 +1392,10 @@ async function sendWhatsappReport(call) {
 
 async function maybeScoreAndSend(call) {
   if (call.whatsappSent) return;
+  if (call.incomplete) {
+    await sendWhatsappReport(call);
+    return;
+  }
   let transcriptText = call.transcriptText || "";
   if (!transcriptText && call.recordingPath) {
     try {
@@ -1409,5 +1423,16 @@ async function maybeScoreAndSend(call) {
     call.expiresAt = Date.now() + CALL_TTL_MS;
   } catch (err) {
     console.error("[whatsapp] failed", err);
+  }
+}
+
+async function sendIncomplete(call, reason) {
+  try {
+    call.incomplete = true;
+    call.noTranscriptReason = reason || "Entrevista incompleta: el candidato no contestó.";
+    call.scoring = null;
+    await sendWhatsappReport(call);
+  } catch (err) {
+    console.error("[whatsapp incomplete] failed", err);
   }
 }
