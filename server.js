@@ -1443,16 +1443,23 @@ async function markNoAnswer(call, reason) {
     call.noAnswerReason = reason || "No contestó";
     call.incomplete = true;
     call.scoring = null;
-    call.whatsappSent = true;
+    call.whatsappSent = false;
     if (call.hangupTimer) {
       clearTimeout(call.hangupTimer);
       call.hangupTimer = null;
     }
     await hangupCall(call);
-    const msg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    const smsMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
     const toNumber = call.to || call.from;
     if (toNumber) {
-      await sendSms(toNumber, msg);
+      await sendSms(toNumber, smsMsg);
+    }
+    const waMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    try {
+      await sendWhatsappMessage({ body: waMsg });
+      call.whatsappSent = true;
+    } catch (err) {
+      console.error("[no-answer] whatsapp failed", err);
     }
     if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
   } catch (err) {
