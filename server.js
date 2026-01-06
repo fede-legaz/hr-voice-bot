@@ -1134,17 +1134,19 @@ function formatWhatsapp(scoring, call, opts = {}) {
 
   if (!scoring) {
     return [
-    `📞 ENTREVISTA – ${call.brand}`,
-    ``,
-    `*CANDIDATO:* ${applicant}`,
-    `*PUESTO:* ${role}`,
-    ``,
-    `📱 *TEL:* ${tel}`,
-    `📍*UBICACIÓN:* ${area}`,
-    `⏱️ *DURACIÓN:* ${duration}`,
-    ``,
-    note || "Resumen no disponible."
-  ].join("\n");
+      `📞 ENTREVISTA – ${call.brand}`,
+      ``,
+      `*CANDIDATO:* ${applicant}`,
+      `*PUESTO:* ${role}`,
+      ``,
+      `📱 *TEL:* ${tel}`,
+      `📍*UBICACIÓN:* ${area}`,
+      `⏱️ *DURACIÓN:* ${duration}`,
+      ``,
+      note || "Entrevista incompleta: el candidato no contestó.",
+      ``,
+      call.callSid ? `callId: ${call.callSid}` : ""
+    ].filter(Boolean).join("\n");
   }
 
   const reds = (scoring.red_flags || []).filter(Boolean).slice(0, 3);
@@ -1336,40 +1338,40 @@ async function hangupCall(call) {
 async function maybeSendNoAnswerSms(call) {
   try {
     const candidateNumber = call.to || call.from;
-    if (!call || !candidateNumber || !TWILIO_SMS_FROM) return;
-    // Send if candidate never spoke OR call ended very quickly
-    const shortCall = call.durationSec !== null && call.durationSec <= 10;
-    if (!shortCall && call.userSpoke) return;
-    if (call.callSid && smsSentBySid.has(call.callSid)) return;
-    console.log("[sms no-answer] sending", {
-      candidateNumber,
-      durationSec: call.durationSec,
-      userSpoke: call.userSpoke,
-      shortCall
+  if (!call || !candidateNumber || !TWILIO_SMS_FROM) return;
+  // Send if candidate never spoke OR call ended very quickly
+  const shortCall = call.durationSec !== null && call.durationSec <= 10;
+  if (!shortCall && call.userSpoke) return;
+  if (call.callSid && smsSentBySid.has(call.callSid)) return;
+  console.log("[sms no-answer] sending", {
+    candidateNumber,
+    durationSec: call.durationSec,
+    userSpoke: call.userSpoke,
+    shortCall
+  });
+  const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
+  await sendSms(candidateNumber, msg);
+  if (call.callSid) smsSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
+  // Guarda último intento para posible recall
+  if (candidateNumber) {
+    lastCallByNumber.set(candidateNumber, {
+      payload: {
+        to: candidateNumber,
+        from: TWILIO_VOICE_FROM,
+        brand: call.brand,
+        role: call.role,
+        englishRequired: call.englishRequired,
+        address: call.address,
+        applicant: call.applicant,
+        cv_summary: call.cvSummary,
+        resume_url: call.resumeUrl
+      },
+      expiresAt: Date.now() + CALL_TTL_MS
     });
-    const msg = `Te llamo por la aplicación de ${call.spokenRole || displayRole(call.role)} en ${call.brand}. Avísame si te puedo volver a llamar.`;
-    await sendSms(candidateNumber, msg);
-    if (call.callSid) smsSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
-    // Guarda último intento para posible recall
-    if (candidateNumber) {
-      lastCallByNumber.set(candidateNumber, {
-        payload: {
-          to: candidateNumber,
-          from: TWILIO_VOICE_FROM,
-          brand: call.brand,
-          role: call.role,
-          englishRequired: call.englishRequired,
-          address: call.address,
-          applicant: call.applicant,
-          cv_summary: call.cvSummary,
-          resume_url: call.resumeUrl
-        },
-        expiresAt: Date.now() + CALL_TTL_MS
-      });
-    }
-  } catch (err) {
-    console.error("[sms no-answer] error", err);
   }
+} catch (err) {
+  console.error("[sms no-answer] error", err);
+}
 }
 
 async function sendWhatsappReport(call) {
