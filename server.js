@@ -1175,7 +1175,9 @@ function formatWhatsapp(scoring, call, opts = {}) {
     ``,
     `🎯 *RECOMENDACIÓN*`,
     `${recIcon} *${recText.toUpperCase()}*`,
-    scoring.summary ? "" : note
+    scoring.summary ? "" : note,
+    ``,
+    call.callSid ? `callId: ${call.callSid}` : ""
   ].filter(Boolean).join("\n");
 }
 
