@@ -1449,7 +1449,7 @@ async function markNoAnswer(call, reason) {
       call.hangupTimer = null;
     }
     await hangupCall(call);
-    const msg = `No contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    const msg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
     const toNumber = call.to || call.from;
     if (toNumber) {
       await sendSms(toNumber, msg);
