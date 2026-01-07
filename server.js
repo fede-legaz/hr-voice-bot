@@ -1156,6 +1156,8 @@ Sos un asistente que evalúa entrevistas para restaurantes. Devolvé JSON estric
     "english_detail": "texto breve sobre si se pudo comunicar y cómo sonó",
     "experience": "texto breve",
     "mobility": "yes|no|unknown",
+    "stay_plan": "permanent|temporary|unknown",
+    "stay_detail": "texto breve (ej: 'temporal 3 meses' o 'vive en Miami')",
     "warmth_score": 0-10,
     "fluency_score": 0-10,
     "warmth_note": "texto breve",
@@ -1172,7 +1174,8 @@ Transcript completo (usa esto para extraer datos):
 ${transcriptText || "(vacío)"}
 
 Reglas para el análisis:
-- NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia ni inglés si no se dijo. Si un dato no se mencionó, dejalo vacío/unknown y baja el score.
+ - NO inventes datos. Si algo no está claro en el transcript, marcá "unknown" o "no informado". No asumas zona, salario, experiencia, permanencia en Miami/EE.UU. ni inglés si no se dijo. Si un dato no se mencionó, dejalo vacío/unknown y baja el score.
+ - Permanencia: si dice que está temporal, intenta capturar cuánto tiempo (ej. “3 meses”). Si no dice nada, stay_plan=unknown.
 - Calidez = amabilidad/cercanía en el trato; bajá el score si el candidato suena seco o cortante.
 - Fluidez = claridad y continuidad al expresarse (no es inglés); bajá si se traba, responde en monosílabos o cuesta entender su disponibilidad/experiencia.
 - Inglés: detalla si pudo o no comunicarse en inglés y cómo sonó (acento/claridad). Si la entrevista fue mayormente en inglés y se comunicó bien, marcá english_level al menos "conversational" o "fluent". Si dijo "no hablo español" pero habló en inglés, NO pongas basic.
@@ -1234,21 +1237,12 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const salary = ex.salary_expectation || "No informada";
   const experience = ex.experience || "No informada";
   const trial = ex.trial_date || ex.trial_availability || "No informada";
+  const stayPlan = ex.stay_plan || "No informado";
+  const stayDetail = ex.stay_detail ? ` (${ex.stay_detail})` : "";
 
   if (!scoring) {
     return [
-      `📞 ENTREVISTA – ${call.brand}`,
-      ``,
-      `*CANDIDATO:* ${applicant}`,
-      `*PUESTO:* ${role}`,
-      ``,
-      `📱 *TEL:* ${tel}`,
-      `📍*UBICACIÓN:* ${area}`,
-      `⏱️ *DURACIÓN:* ${duration}`,
-      ``,
-      note || "Entrevista incompleta: el candidato no contestó.",
-      ``,
-      call.callSid ? `callId: ${call.callSid}` : ""
+      `📵 Candidato no contestó: *${applicant}* | ${call.brand} | ${role} | callId: ${call.callSid || "n/a"}`
     ].filter(Boolean).join("\n");
   }
 
@@ -1282,6 +1276,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
     `🚗 *MOVILIDAD:* ${mobility}`,
     `🕒 *DISPONIBILIDAD:* ${availability}`,
     `💰 *PRETENSIÓN SALARIAL:* ${salary}`,
+    `🏠 *ESTADÍA:* ${stayPlan}${stayDetail}`,
     `📆 *PRUEBA:* ${trial}`,
     `🗣️ *INGLÉS:* ${englishLevel}${englishDetail ? `\n${englishDetail}` : ""}`,
     `🍽️ *EXPERIENCIA:*`,
@@ -1454,7 +1449,7 @@ async function markNoAnswer(call, reason) {
     if (toNumber) {
       await sendSms(toNumber, smsMsg);
     }
-    const waMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    const waMsg = `📵 Candidato no contestó: *${call.applicant || "Candidato"}* | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
     try {
       await sendWhatsappMessage({ body: waMsg });
       call.whatsappSent = true;
