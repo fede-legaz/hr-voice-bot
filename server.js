@@ -1274,22 +1274,21 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const reds = (scoring.red_flags || []).filter(Boolean).slice(0, 3);
 
   return [
-    `📞 ENTREVISTA – ${call.brand.toUpperCase()}`,
+    `*ENTREVISTA – ${call.brand.toUpperCase()}*`,
+    ``,
     `- *CANDIDATO:* ${applicant}`,
     `- *PUESTO:* ${role}`,
-    `- *TEL:* ${tel}`,
     `- *UBICACIÓN:* ${area}`,
-    `- *DURACIÓN:* ${duration}`,
-    `- *SCORE:* ${scoreVal} / 100 ${recIcon}`,
-    `- *RECOMENDACIÓN:* ${recText.toUpperCase()}`,
+    `- *SCORE:* ${scoreVal} / 100 ⭐`,
+    `- *RECOMENDACIÓN:* ${recText.toUpperCase()} ${recIcon}`,
     ``,
-    `🧾 *RESUMEN*`,
-    scoring.summary ? `_${scoring.summary}_` : "No disponible.",
+    `*RESUMEN*`,
+    scoring.summary ? `${scoring.summary}` : "No disponible.",
     ``,
     `- *CALIDEZ:* ${warmth}${ex.warmth_note ? ` - ${ex.warmth_note}` : ""}`,
     `- *FLUIDEZ:* ${fluency}${ex.fluency_note ? ` - ${ex.fluency_note}` : ""}`,
     ``,
-    `✅ *CHECKLIST*`,
+    `✅ CHECKLIST`,
     `- *ZONA:* ${area}`,
     `- *MOVILIDAD:* ${mobility}`,
     `- *DISPONIBILIDAD:* ${availability}`,
@@ -1297,9 +1296,11 @@ function formatWhatsapp(scoring, call, opts = {}) {
     `- *ESTADÍA:* ${stayPlan}${stayDetail}`,
     `- *PRUEBA:* ${trial}`,
     `- *INGLÉS:* ${englishLevel}${englishDetail ? ` - ${englishDetail.trim()}` : ""}`,
-    `- *EXPERIENCIA:* ${experience ? `_${experience}_` : "No informada"}`,
+    ``,
+    `*EXPERIENCIA:* ${experience ? `${experience}` : "No informada"}`,
     reds.length ? `- 🚩 *RED FLAGS:* ${reds.join(" · ")}` : "",
-    call.callSid ? `callId: ${call.callSid}` : ""
+    call.callSid ? `\`callId: ${call.callSid}\`` : "",
+    duration ? `\`DURACIÓN: ${duration}\`` : ""
   ].filter(Boolean).join("\n");
 }
 
