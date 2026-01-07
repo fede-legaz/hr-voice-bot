@@ -278,7 +278,11 @@ function buildInstructions(ctx) {
   const needsEnglish = ctx.englishRequired || roleNeedsEnglish(rKey);
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
-  const cvCue = ctx.cvSummary ? `Pistas CV: ${ctx.cvSummary}` : "Pistas CV: sin CV.";
+  let cvSummaryClean = (ctx.cvSummary || "").trim();
+  const unusableCv = !cvSummaryClean || cvSummaryClean.length < 10 || /sin\s+cv|no\s+pude\s+leer|cv\s+adjunto|no\s+texto|datos\s+cv/i.test(cvSummaryClean);
+  if (unusableCv) cvSummaryClean = "";
+  const hasCv = !!cvSummaryClean;
+  const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const specificQs = roleBrandQuestions(bKey, rKey);
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino.
@@ -306,7 +310,9 @@ Reglas:
 - No encadenes ni superpongas preguntas: hacé UNA pregunta, esperá la respuesta completa. Solo si no queda clara, pedí una aclaración breve y recién después pasá al siguiente tema.
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
 - Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
+ - Si hay CV usable, referenciá el último trabajo del CV, confirma tareas/fechas, y repreguntá. Si el CV no es usable (ej. vacío, “datos cv”, “cv adjunto”, “no pude leer”), no lo menciones y usá preguntas genéricas de experiencia.
 - SIEMPRE preguntá por zona y cómo llega (en TODAS las posiciones). No saltees la pregunta de zona/logística.
+- OBLIGATORIO: preguntá si está viviendo en Miami/EE.UU. de forma permanente o temporal. Si dice temporal, preguntá cuánto tiempo planea quedarse (sin presionar fechas exactas).
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
 - Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees.
@@ -744,6 +750,8 @@ wss.on("connection", (twilioWs, req) => {
   };
   call.hangupTimer = null;
   call.answeredBy = null;
+  call.speechByteCount = 0;
+  call.speechStartedAt = null;
 
   call.expiresAt = Date.now() + CALL_TTL_MS;
   // Hold by temporary stream key until Twilio sends real streamSid
@@ -800,9 +808,9 @@ const openaiWs = new WebSocket(
               create_response: false,
               interrupt_response: true,
               // Hacerlo menos sensible a ruido ambiente
-              threshold: 0.92,
-              prefix_padding_ms: 400,
-              silence_duration_ms: 1400
+              threshold: 0.985,
+              prefix_padding_ms: 500,
+              silence_duration_ms: 1700
             }
           },
           output: {
@@ -851,7 +859,7 @@ DECÍ ESTO Y CALLATE:
         openaiWs.send(JSON.stringify({ type: "response.create" }));
         call.responseInFlight = true;
       }
-    }, 1200);
+    }, 300);
   }
 
   openaiWs.on("open", () => sendSessionUpdate());
@@ -869,6 +877,8 @@ DECÍ ESTO Y CALLATE:
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
       call.userSpoke = true;
+      call.speechByteCount = 0;
+      call.speechStartedAt = Date.now();
       if (call.hangupTimer) {
         clearTimeout(call.hangupTimer);
         call.hangupTimer = null;
@@ -892,6 +902,15 @@ DECÍ ESTO Y CALLATE:
     if (evt.type === "input_audio_buffer.committed") {
       if (!call.heardSpeech) return;
       call.heardSpeech = false;
+
+      const minBytes = 3200; // ~0.4s of audio (160-byte frames)
+      if (call.speechByteCount < minBytes) {
+        // Ignore tiny bursts/noise
+        call.userSpoke = false;
+        call.speechByteCount = 0;
+        call.speechStartedAt = null;
+        return;
+      }
 
       const commitId = evt.item_id || null;
       if (commitId && commitId === call.lastCommitId) return;
@@ -995,6 +1014,12 @@ DECÍ ESTO Y CALLATE:
       const payload = data.media?.payload;
       if (payload && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: payload }));
+      }
+      if (payload && call.heardSpeech) {
+        try {
+          const rawLen = Buffer.from(payload, "base64").length;
+          call.speechByteCount += rawLen;
+        } catch {}
       }
       return;
     }
