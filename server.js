@@ -813,7 +813,7 @@ const openaiWs = new WebSocket(
               create_response: false,
               interrupt_response: true,
               // Hacerlo menos sensible a ruido ambiente
-              threshold: 0.985,
+              threshold: 0.95,
               prefix_padding_ms: 500,
               silence_duration_ms: 1700
             }
@@ -864,7 +864,7 @@ DECÍ ESTO Y CALLATE:
         openaiWs.send(JSON.stringify({ type: "response.create" }));
         call.responseInFlight = true;
       }
-    }, 300);
+    }, 80);
   }
 
   openaiWs.on("open", () => sendSessionUpdate());
@@ -908,7 +908,7 @@ DECÍ ESTO Y CALLATE:
       if (!call.heardSpeech) return;
       call.heardSpeech = false;
 
-      const minBytes = 3200; // ~0.4s of audio (160-byte frames)
+      const minBytes = 2400; // ~0.3s de audio (160-byte frames)
       if (call.speechByteCount < minBytes) {
         // Ignore tiny bursts/noise
         call.userSpoke = false;
@@ -989,14 +989,14 @@ DECÍ ESTO Y CALLATE:
         address: call.address
       });
 
-      // Hang up if no user speech within 10s (voicemail/ghost)
+      // Hang up if no user speech within 15s (voicemail/ghost)
       if (!call.hangupTimer) {
         call.hangupTimer = setTimeout(() => {
           if (!call.userSpoke) {
             console.log("[hangup] no user speech detected; hanging up");
             markNoAnswer(call, "timeout_no_speech").catch(err => console.error("[no-answer] failed", err));
           }
-        }, 10000);
+        }, 15000);
       }
 
       record("twilio_start", { streamSid: call.streamSid, callSid: call.callSid });
