@@ -80,7 +80,8 @@ const ROLE_QUESTIONS = {
       "¿Qué mis en place has hecho en otros trabajos?"
     ],
     dish: [
-      "¿Experiencia como lavaplatos en volumen? ¿Manejo de químicos y orden?"
+      "¿Experiencia como lavaplatos en volumen? ¿Manejo de químicos y orden?",
+      "Es un rol físico (parado, mover racks de platos). ¿Estás cómodo con ese ritmo de trabajo?"
     ]
   },
   yes: {
@@ -275,7 +276,7 @@ function buildInstructions(ctx) {
   const bKey = brandKey(ctx.brand);
   const spokenRole = ctx.spokenRole || displayRole(ctx.role);
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
-  const needsEnglish = ctx.englishRequired || roleNeedsEnglish(rKey);
+  const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   let cvSummaryClean = (ctx.cvSummary || "").trim();
@@ -306,6 +307,7 @@ ${cvCue}
 Reglas:
 - Una pregunta abierta por vez; preguntás y esperás.
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
+- No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
 - No repitas literal lo que dijo; si necesitás, resumí en tus palabras de forma breve.
 - No encadenes ni superpongas preguntas: hacé UNA pregunta, esperá la respuesta completa. Solo si no queda clara, pedí una aclaración breve y recién después pasá al siguiente tema.
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
@@ -366,7 +368,10 @@ Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por What
 
 function parseEnglishRequired(value) {
   if (value === null || value === undefined) return DEFAULT_ENGLISH_REQUIRED;
-  return value === "1" || value === "true" || value === "yes";
+  const v = String(value).toLowerCase().trim();
+  if (v === "1" || v === "true" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "no") return false;
+  return DEFAULT_ENGLISH_REQUIRED;
 }
 
 // --- in-memory stores with TTL ---
@@ -464,8 +469,7 @@ app.post("/voice", (req, res) => {
   const to = normalizePhone(req.body?.To || payload.to || "");
   const brand = payload.brand || DEFAULT_BRAND;
   const role = payload.role || DEFAULT_ROLE;
-  const englishRequired =
-    payload.englishRequired === true || payload.englishRequired === "1" || payload.englishRequired === "true";
+  const englishRequired = parseEnglishRequired(payload.englishRequired);
   const address = resolveAddress(brand, payload.address || null);
   const applicant = payload.applicant || "";
   const cv_summary = payload.cv_summary || "";
@@ -632,10 +636,11 @@ app.post("/call", async (req, res) => {
     }
 
     const resolvedAddress = address || resolveAddress(brand, null);
+    const englishReqBool = parseEnglishRequired(englishRequired);
 
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
-      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired, address: resolvedAddress, applicant, cv_summary, resume_url },
+      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary, resume_url },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
@@ -646,7 +651,7 @@ app.post("/call", async (req, res) => {
         from: fromNorm,
         brand,
         role: roleClean,
-        englishRequired: englishRequired ? "1" : "0",
+        englishRequired: englishReqBool ? "1" : "0",
         address: resolvedAddress,
         applicant,
         cv_summary,
@@ -956,7 +961,7 @@ DECÍ ESTO Y CALLATE:
         to = sp.to || to;
         brand = sp.brand || brand;
         role = sanitizeRole(sp.role || role);
-        englishRequired = parseEnglishRequired(sp.english) ?? englishRequired;
+        if (sp.english !== undefined) englishRequired = parseEnglishRequired(sp.english);
         address = resolveAddress(brand, sp.address || address);
         applicant = sp.applicant || applicant;
         cvSummary = sp.cv_summary || cvSummary;
@@ -969,7 +974,7 @@ DECÍ ESTO Y CALLATE:
       call.to = to;
       call.role = role;
       call.spokenRole = spokenRole;
-      call.englishRequired = englishRequired;
+      call.englishRequired = parseEnglishRequired(englishRequired);
       call.address = address;
       call.applicant = applicant;
       call.cvSummary = cvSummary;
@@ -1344,6 +1349,7 @@ async function placeOutboundCall(payload) {
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
   const roleClean = sanitizeRole(role);
+  const englishReqBool = parseEnglishRequired(englishRequired);
 
   if (!toNorm || !fromNorm) throw new Error("missing to/from");
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
@@ -1358,7 +1364,7 @@ async function placeOutboundCall(payload) {
       from: fromNorm,
       brand,
       role: roleClean,
-      englishRequired: englishRequired ? "1" : "0",
+      englishRequired: englishReqBool ? "1" : "0",
       address: resolvedAddress,
       applicant,
       cv_summary,
