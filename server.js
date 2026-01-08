@@ -476,6 +476,7 @@ app.post("/voice", (req, res) => {
   const applicant = payload.applicant || "";
   const cv_summary = payload.cv_summary || "";
   const resume_url = payload.resume_url || "";
+  const lang = (req.query?.lang || "es").toString();
 
   console.log("[voice] request", { callSid, to, answeredBy, brand, role });
 
@@ -509,7 +510,7 @@ app.post("/voice", (req, res) => {
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, te llamo por una entrevista de trabajo en ${xmlEscapeAttr(brand)} para ${xmlEscapeAttr(displayRole(role))}. Soy Mariana. Si preferís en inglés, decí English.</Say>
-  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2">
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2, english">
     <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
   </Gather>
   <Say language="es-US" voice="Polly.Lupe-Neural">No te escuché, gracias por tu tiempo. Que tengas un buen día.</Say>
@@ -580,7 +581,8 @@ app.post("/consent", express.urlencoded({ extended: false }), (req, res) => {
       { name: "address", value: payload.address },
       { name: "applicant", value: payload.applicant },
       { name: "cv_summary", value: payload.cv_summary },
-      { name: "resume_url", value: payload.resume_url }
+      { name: "resume_url", value: payload.resume_url },
+      { name: "lang", value: lang }
     ]
       .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
       .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
@@ -863,7 +865,8 @@ wss.on("connection", (twilioWs, req) => {
     userSpoke: false,
     lastCommitId: null,
     transcript: [],
-    incomplete: false
+    incomplete: false,
+    lang: "es"
   };
   call.hangupTimer = null;
   call.answeredBy = null;
@@ -946,10 +949,18 @@ const openaiWs = new WebSocket(
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
     const spokenRole = call.spokenRole || displayRole(call.role || "");
-  const openerLine = firstName
-      ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?`
-      : `Hola, te llamo por una entrevista de trabajo en ${call.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?`;
-    const introAfterYes = `Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición?`;
+    const openerLine =
+      call.lang === "en"
+        ? (firstName
+            ? `Hi ${firstName}, I'm calling you about an interview for ${spokenRole} at ${call.brand}. Do you have a minute to talk?`
+            : `Hi, I'm calling you about an interview for ${spokenRole} at ${call.brand}. Do you have a minute to talk?`)
+        : (firstName
+            ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand} para ${spokenRole}. ¿Tenés un minuto para hablar?`
+            : `Hola, te llamo por una entrevista de trabajo en ${call.brand} para ${spokenRole}. ¿Tenés un minuto para hablar?`);
+    const introAfterYes =
+      call.lang === "en"
+        ? `Great. You applied for ${spokenRole}. Can you tell me about your experience in this position?`
+        : `Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición?`;
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
       openaiWs.send(JSON.stringify({
@@ -1079,6 +1090,7 @@ DECÍ ESTO Y CALLATE:
         cvSummary = sp.cv_summary || cvSummary;
         resumeUrl = sp.resume_url || resumeUrl;
         spokenRole = displayRole(role);
+        call.lang = sp.lang || call.lang || "es";
       }
 
       call.twilioReady = true;
