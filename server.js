@@ -508,7 +508,7 @@ app.post("/voice", (req, res) => {
   const introName = (applicant || "").split(/\s+/)[0] || "allí";
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, soy Mariana de ${xmlEscapeAttr(brand)}. Te llamo por tu aplicación para ${xmlEscapeAttr(displayRole(role))}. Si preferís en inglés, decí English.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, te llamo por una entrevista de trabajo en ${xmlEscapeAttr(brand)} para ${xmlEscapeAttr(displayRole(role))}. Soy Mariana. Si preferís en inglés, decí English.</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2">
     <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
   </Gather>
