@@ -462,7 +462,9 @@ app.post("/voice", (req, res) => {
   const token = String(req.query?.token || "").trim();
   const entry = token ? voiceCtxByToken.get(token) : null;
   const payload = entry?.payload || {};
-  if (token) voiceCtxByToken.delete(token);
+  if (!entry) {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
 
   const answeredBy = String(req.body?.AnsweredBy || "").toLowerCase();
   const callSid = req.body?.CallSid || "";
@@ -497,31 +499,141 @@ app.post("/voice", (req, res) => {
     return res.type("text/xml").send(twiml);
   }
 
-  // Human: connect stream with parameters
-  const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
-  const paramTags = [
-    { name: "to", value: to },
-    { name: "brand", value: brand },
-    { name: "role", value: role },
-    { name: "english", value: englishRequired ? "1" : "0" },
-    { name: "address", value: address },
-    { name: "applicant", value: applicant },
-    { name: "cv_summary", value: cv_summary },
-    { name: "resume_url", value: resume_url }
-  ]
-    .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
-    .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
-    .join("\n");
-
+  // Human: pedir consentimiento antes de abrir el stream
+  const consentParams = new URLSearchParams({
+    token,
+    attempt: "1",
+    lang: "es"
+  }).toString();
+  const introName = (applicant || "").split(/\s+/)[0] || "allí";
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, soy Mariana de ${xmlEscapeAttr(brand)}. Te llamo por tu aplicación para ${xmlEscapeAttr(displayRole(role))}. Si preferís en inglés, decí English.</Say>
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2">
+    <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
+  </Gather>
+  <Say language="es-US" voice="Polly.Lupe-Neural">No te escuché, gracias por tu tiempo. Que tengas un buen día.</Say>
+  <Hangup/>
+</Response>`;
+
+  return res.type("text/xml").send(twiml);
+});
+
+function normalizeConsentSpeech(s) {
+  if (!s) return "";
+  return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function isConsentYes({ speech, digits }) {
+  const d = (digits || "").trim();
+  if (d === "1") return true;
+  const norm = normalizeConsentSpeech(speech);
+  return /\b(si|sí|ok|dale|de acuerdo|yes|sure)\b/.test(norm);
+}
+
+function isConsentNo({ speech, digits }) {
+  const d = (digits || "").trim();
+  if (d === "2") return true;
+  const norm = normalizeConsentSpeech(speech);
+  return /\b(no|prefiero no|no gracias|don'?t|do not)\b/.test(norm);
+}
+
+app.post("/consent", express.urlencoded({ extended: false }), (req, res) => {
+  const token = String(req.query?.token || "").trim();
+  const attempt = Number(req.query?.attempt || "1");
+  const lang = (req.query?.lang || "es").toString();
+  const speech = req.body?.SpeechResult || "";
+  const digits = req.body?.Digits || "";
+  const entry = token ? voiceCtxByToken.get(token) : null;
+  if (!entry) {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
+  const payload = entry.payload || {};
+
+  const yes = isConsentYes({ speech, digits });
+  const no = isConsentNo({ speech, digits });
+  const wantsEnglish = /\benglish\b/.test(normalizeConsentSpeech(speech)) || /\bingles\b/.test(normalizeConsentSpeech(speech));
+
+  if (wantsEnglish && !yes && !no) {
+    const consentParams = new URLSearchParams({ token, attempt: String(attempt + 1), lang: "en" }).toString();
+    const introName = (payload.applicant || "").split(/\s+/)[0] || "there";
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="en-US" voice="Polly.Joanna-Neural">Hi ${xmlEscapeAttr(introName)}, I'm Mariana from ${xmlEscapeAttr(payload.brand || DEFAULT_BRAND)}. I'm calling about your application for ${xmlEscapeAttr(displayRole(payload.role || DEFAULT_ROLE))}.</Say>
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="en-US" hints="yes, no, 1, 2, sure, ok">
+    <Say language="en-US" voice="Polly.Joanna-Neural">To share the result with the team, is it okay if we record this call? Say yes or no. Or press 1 for yes, 2 for no.</Say>
+  </Gather>
+  <Say language="en-US" voice="Polly.Joanna-Neural">I didn't catch that. Thanks for your time.</Say>
+  <Hangup/>
+</Response>`;
+    return res.type("text/xml").send(twiml);
+  }
+
+  if (yes) {
+    voiceCtxByToken.delete(token);
+    const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
+    const paramTags = [
+      { name: "to", value: payload.to },
+      { name: "brand", value: payload.brand },
+      { name: "role", value: payload.role },
+      { name: "english", value: payload.englishRequired },
+      { name: "address", value: payload.address },
+      { name: "applicant", value: payload.applicant },
+      { name: "cv_summary", value: payload.cv_summary },
+      { name: "resume_url", value: payload.resume_url }
+    ]
+      .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
+      .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
+      .join("\n");
+
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">Perfecto, arrancamos.</Say>
   <Connect>
     <Stream url="${wsUrl}">
 ${paramTags}
     </Stream>
   </Connect>
 </Response>`;
+    return res.type("text/xml").send(twiml);
+  }
 
+  if (no || attempt >= 2) {
+    voiceCtxByToken.delete(token);
+    const es = lang !== "en";
+    const twiml = es
+      ? `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="es-US" voice="Polly.Lupe-Neural">Perfecto, no hay problema. Gracias por tu tiempo. Que tengas un buen día.</Say>
+  <Hangup/>
+</Response>`
+      : `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="en-US" voice="Polly.Joanna-Neural">Understood, no problem. Thanks for your time. Goodbye.</Say>
+  <Hangup/>
+</Response>`;
+    return res.type("text/xml").send(twiml);
+  }
+
+  const consentParams = new URLSearchParams({ token, attempt: String(attempt + 1), lang }).toString();
+  const es = lang !== "en";
+  const twiml = es
+    ? `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="5">
+    <Say language="es-US" voice="Polly.Lupe-Neural">Para confirmar: ¿sí o no a grabar la llamada? También podés presionar 1 para sí, o 2 para no.</Say>
+  </Gather>
+  <Say language="es-US" voice="Polly.Lupe-Neural">No te escuché, gracias por tu tiempo.</Say>
+  <Hangup/>
+</Response>`
+    : `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="5">
+    <Say language="en-US" voice="Polly.Joanna-Neural">To confirm: yes or no to recording? You can also press 1 for yes or 2 for no.</Say>
+  </Gather>
+  <Say language="en-US" voice="Polly.Joanna-Neural">I didn't catch that. Thanks for your time.</Say>
+  <Hangup/>
+</Response>`;
   return res.type("text/xml").send(twiml);
 });
 
