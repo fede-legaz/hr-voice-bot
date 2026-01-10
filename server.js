@@ -942,6 +942,14 @@ const openaiWs = new WebSocket(
     }));
   }
 
+  function sendSessionUpdateSafe() {
+    if (openaiWs.readyState === WebSocket.OPEN) {
+      sendSessionUpdate();
+    } else {
+      setTimeout(sendSessionUpdateSafe, 50);
+    }
+  }
+
   function kickoff() {
     if (call.started) return;
     if (!call.twilioReady || !call.openaiReady) return;
@@ -990,7 +998,7 @@ DECÍ ESTO Y CALLATE:
     }, 80);
   }
 
-  openaiWs.on("open", () => sendSessionUpdate());
+  openaiWs.on("open", () => sendSessionUpdateSafe());
 
   openaiWs.on("message", (raw) => {
     let evt;
@@ -1103,7 +1111,7 @@ DECÍ ESTO Y CALLATE:
       call.applicant = applicant;
       call.cvSummary = cvSummary;
       call.resumeUrl = resumeUrl;
-      sendSessionUpdate();
+      sendSessionUpdateSafe();
 
       console.log("[media-stream] connect", {
         brand: call.brand,
