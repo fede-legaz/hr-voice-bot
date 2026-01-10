@@ -23,6 +23,7 @@ const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
 const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || CALL_BEARER_TOKEN;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -277,6 +278,7 @@ function buildInstructions(ctx) {
   const spokenRole = ctx.spokenRole || displayRole(ctx.role);
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
+  const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   let cvSummaryClean = (ctx.cvSummary || "").trim();
@@ -284,7 +286,7 @@ function buildInstructions(ctx) {
   if (unusableCv) cvSummaryClean = "";
   const hasCv = !!cvSummaryClean;
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
-  const specificQs = roleBrandQuestions(bKey, rKey);
+  const specificQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si englishRequired es false, NO preguntes inglés ni hagas preguntas en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
@@ -384,8 +386,10 @@ const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
+let roleConfig = null;
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
+const rolesConfigPath = path.join(__dirname, "config", "roles.json");
 
 function cleanup() {
   const now = Date.now();
@@ -417,6 +421,38 @@ function randomToken() {
   return crypto.randomBytes(16).toString("hex");
 }
 
+function loadRoleConfig() {
+  try {
+    const raw = fs.readFileSync(rolesConfigPath, "utf8");
+    roleConfig = JSON.parse(raw);
+    console.log("[config] roles.json loaded");
+  } catch (err) {
+    console.error("[config] failed to load roles.json, using defaults", err.message);
+    roleConfig = null;
+  }
+}
+loadRoleConfig();
+
+function getRoleConfig(brand, role) {
+  if (!roleConfig) return null;
+  const bKey = normalizeKey(brand || "");
+  const rKey = normalizeKey(role || "");
+  const brandEntry = roleConfig[bKey];
+  if (!brandEntry) return null;
+  for (const key of Object.keys(brandEntry)) {
+    if (normalizeKey(key) === rKey) return brandEntry[key];
+  }
+  return null;
+}
+
+function requireAdmin(req, res, next) {
+  if (!ADMIN_TOKEN) return res.status(403).json({ error: "admin token not set" });
+  const auth = req.headers.authorization || "";
+  const expected = `Bearer ${ADMIN_TOKEN}`;
+  if (auth !== expected) return res.status(401).json({ error: "unauthorized" });
+  next();
+}
+
 function base64Auth(user, pass) {
   return Buffer.from(`${user}:${pass}`).toString("base64");
 }
@@ -424,6 +460,108 @@ function base64Auth(user, pass) {
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
+
+// Admin config endpoints (protect with ADMIN_TOKEN)
+app.get("/admin/config", requireAdmin, (req, res) => {
+  if (!roleConfig) return res.json({ config: null, source: "defaults" });
+  return res.json({ config: roleConfig, source: "file" });
+});
+
+app.post("/admin/config", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body;
+    const config = body?.config ?? body;
+    const serialized = typeof config === "string" ? config : JSON.stringify(config, null, 2);
+    const parsed = JSON.parse(serialized);
+    await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
+    roleConfig = parsed;
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/config] failed", err);
+    return res.status(400).json({ error: "invalid_config", detail: err.message });
+  }
+});
+
+app.get("/admin/ui", (req, res) => {
+  res.type("text/html").send(`
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>HRBOT Config</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f7fb; color: #111; }
+    header { padding: 16px 24px; background: #1f4b99; color: white; font-size: 18px; }
+    main { max-width: 900px; margin: 24px auto; background: white; padding: 24px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
+    label { display: block; margin-bottom: 8px; font-weight: 600; }
+    input[type="password"], textarea { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #cdd4e0; font-family: monospace; }
+    textarea { min-height: 320px; resize: vertical; }
+    button { background: #1f4b99; color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .row { margin-bottom: 16px; }
+    .status { margin-top: 8px; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>HRBOT Config</header>
+  <main>
+    <div class="row">
+      <label>Admin token</label>
+      <input type="password" id="token" placeholder="Bearer token" />
+    </div>
+    <div class="row">
+      <button id="load">Load config</button>
+      <button id="save">Save</button>
+      <span class="status" id="status"></span>
+    </div>
+    <div class="row">
+      <label>roles.json</label>
+      <textarea id="config"></textarea>
+    </div>
+  </main>
+  <script>
+    const statusEl = document.getElementById('status');
+    const cfgEl = document.getElementById('config');
+    const tokenEl = document.getElementById('token');
+    async function loadConfig() {
+      statusEl.textContent = 'Loading...';
+      try {
+        const resp = await fetch('/admin/config', {
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'load failed');
+        cfgEl.value = JSON.stringify(data.config || {}, null, 2);
+        statusEl.textContent = 'Loaded (' + (data.source || 'defaults') + ')';
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+    async function saveConfig() {
+      statusEl.textContent = 'Saving...';
+      try {
+        const resp = await fetch('/admin/config', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + tokenEl.value
+          },
+          body: cfgEl.value
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'save failed');
+        statusEl.textContent = 'Saved.';
+      } catch (err) {
+        statusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+    document.getElementById('load').onclick = loadConfig;
+    document.getElementById('save').onclick = saveConfig;
+  </script>
+</body>
+</html>
+  `);
+});
 
 app.get("/health", (req, res) => res.status(200).send("ok"));
 

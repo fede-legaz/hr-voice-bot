@@ -1,0 +1,132 @@
+{
+  "campo": {
+    "server / runner": {
+      "englishRequired": true,
+      "questions": [
+        "¿Tenés experiencia previa de salón? ¿Dónde y cuánto tiempo? ¿Manejo de POS/bandeja?",
+        "Este es full service y carnes en ritmo alto: ¿trabajaste en algo similar?",
+        "Inglés es requerido: ¿cómo te manejás con clientes en inglés?"
+      ],
+      "notes": "Steakhouse full service, ritmo alto.",
+      "physical": false
+    },
+    "hostess": {
+      "englishRequired": true,
+      "questions": [
+        "Es la cara del negocio: ¿cómo describirías tu calidez/carisma?",
+        "Inglés requerido: ¿cómo te manejás recibiendo a clientes en inglés?",
+        "¿Cómo manejás espera/lista y mantener una sonrisa bajo presión?"
+      ],
+      "notes": "Primera sonrisa, mucha calidez.",
+      "physical": false
+    },
+    "cook": {
+      "englishRequired": false,
+      "questions": [
+        "Contame tu experiencia en cocina: ¿qué estaciones trabajaste (grill/frita/sartén/fría)?",
+        "¿Trabajaste en cocina argentina o con carnes? ¿Bajo presión de línea?",
+        "¿En qué tipo de volúmenes trabajaste?"
+      ],
+      "notes": "Cocina carnes, ritmo alto.",
+      "physical": true
+    },
+    "prep cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Tenés experiencia como prep? ¿Podés seguir recetas escritas?",
+        "¿Qué mis en place has hecho en otros trabajos?"
+      ],
+      "notes": "Leer/seguir recetas.",
+      "physical": true
+    },
+    "dishwasher": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como lavaplatos en volumen? ¿Manejo de químicos y orden?",
+        "Es un rol físico (parado, mover racks de platos). ¿Estás cómodo con ese ritmo de trabajo?"
+      ],
+      "notes": "Rol físico, mucho movimiento.",
+      "physical": true
+    }
+  },
+  "yes": {
+    "front / cashier": {
+      "englishRequired": true,
+      "questions": [
+        "Inglés requerido: ¿cómo te manejás con clientes en inglés?",
+        "¿Tenés experiencia en caja/POS y atención al público?",
+        "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+      ],
+      "notes": "Fast casual, atención al público.",
+      "physical": false
+    },
+    "cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+        "¿Experiencia en plancha?",
+        "Volumen de tickets/hora donde trabajaste."
+      ],
+      "notes": "Cocina rápida, plancha es clave.",
+      "physical": true
+    },
+    "pizzero": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como pizzero? ¿Qué estilo y cuánto tiempo?",
+        "¿Sabés hacer la masa desde cero?"
+      ],
+      "notes": "Masa desde cero es importante.",
+      "physical": true
+    },
+    "prep cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como prep? ¿Podés seguir recetas?",
+        "¿Qué mis en place hacías?"
+      ],
+      "notes": "Leer/seguir recetas.",
+      "physical": true
+    }
+  },
+  "mexi": {
+    "front / cashier": {
+      "englishRequired": true,
+      "questions": [
+        "Inglés requerido: ¿cómo te manejás con clientes?",
+        "¿Tenés experiencia en caja/POS y atención al público?",
+        "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+      ],
+      "notes": "Fast casual mexicano, atención a público.",
+      "physical": false
+    },
+    "cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+        "¿Alguna vez trabajaste cocina mexicana o plancha de tacos?",
+        "Volumen de tickets/hora donde trabajaste."
+      ],
+      "notes": "Plancha tacos + cocina vista.",
+      "physical": true
+    },
+    "prep cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como prep? ¿Podés seguir recetas?",
+        "¿Qué mis en place hacías?"
+      ],
+      "notes": "Leer/seguir recetas.",
+      "physical": true
+    },
+    "food truck": {
+      "englishRequired": true,
+      "questions": [
+        "¿Experiencia atendiendo público y cocinando a la vez?",
+        "¿Trabajaste plancha en un trailer/food truck?"
+      ],
+      "notes": "Atiende público + cocina en trailer.",
+      "physical": true
+    }
+  }
+}
