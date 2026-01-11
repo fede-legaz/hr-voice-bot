@@ -290,6 +290,7 @@ function buildInstructions(ctx) {
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
   const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
+  const metaCfg = roleConfig?.meta || {};
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   let cvSummaryClean = (ctx.cvSummary || "").trim();
@@ -316,6 +317,7 @@ Contexto:
 ${brandNotes}
 ${roleNotes}
 ${cvCue}
+${metaCfg.must_ask ? `Obligatorio cubrir: ${metaCfg.must_ask}` : ""}
 ${langNote}
 
 Reglas:
@@ -583,6 +585,10 @@ app.get("/admin/ui", (req, res) => {
         <label>Notas de idioma / reglas</label>
         <textarea id="lang-rules" placeholder="Ej: si responde en inglés, mantener toda la entrevista en inglés."></textarea>
       </div>
+      <div class="row">
+        <label>Preguntas/Checklist obligatorias (texto libre)</label>
+        <textarea id="must-ask" placeholder="Ej: zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."></textarea>
+      </div>
     </div>
 
     <div id="brands"></div>
@@ -594,6 +600,7 @@ app.get("/admin/ui", (req, res) => {
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
     const langRulesEl = document.getElementById('lang-rules');
+    const mustAskEl = document.getElementById('must-ask');
     let state = { config: {} };
 
     function setStatus(msg) { statusEl.textContent = msg || ''; }
@@ -676,6 +683,7 @@ app.get("/admin/ui", (req, res) => {
       openerEsEl.value = typeof meta.opener_es === "string" ? meta.opener_es : '';
       openerEnEl.value = typeof meta.opener_en === "string" ? meta.opener_en : '';
       langRulesEl.value = typeof meta.lang_rules === "string" ? meta.lang_rules : '';
+      mustAskEl.value = typeof meta.must_ask === "string" ? meta.must_ask : '';
       const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
@@ -711,7 +719,8 @@ app.get("/admin/ui", (req, res) => {
         meta: {
           opener_es: openerEsEl.value || '',
           opener_en: openerEnEl.value || '',
-          lang_rules: langRulesEl.value || ''
+          lang_rules: langRulesEl.value || '',
+          must_ask: mustAskEl.value || ''
         }
       };
       brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
@@ -744,6 +753,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function saveConfig() {
+      if (!confirm('¿Seguro que querés guardar estos cambios?')) return;
       setStatus('Saving...');
       try {
         const body = JSON.stringify(collectConfig(), null, 2);
