@@ -601,6 +601,12 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     let state = { config: {} };
+    const defaults = {
+      opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
+      opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
+      lang_rules: "Si responde en inglés, mantener toda la entrevista en inglés.",
+      must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."
+    };
 
     function setStatus(msg) { statusEl.textContent = msg || ''; }
 
@@ -679,10 +685,10 @@ app.get("/admin/ui", (req, res) => {
     function renderConfig(cfg) {
       brandsEl.innerHTML = '';
       const meta = cfg?.meta || {};
-      openerEsEl.value = typeof meta.opener_es === "string" ? meta.opener_es : '';
-      openerEnEl.value = typeof meta.opener_en === "string" ? meta.opener_en : '';
-      langRulesEl.value = typeof meta.lang_rules === "string" ? meta.lang_rules : '';
-      mustAskEl.value = typeof meta.must_ask === "string" ? meta.must_ask : '';
+      openerEsEl.value = typeof meta.opener_es === "string" && meta.opener_es.trim() ? meta.opener_es : defaults.opener_es;
+      openerEnEl.value = typeof meta.opener_en === "string" && meta.opener_en.trim() ? meta.opener_en : defaults.opener_en;
+      langRulesEl.value = typeof meta.lang_rules === "string" && meta.lang_rules.trim() ? meta.lang_rules : defaults.lang_rules;
+      mustAskEl.value = typeof meta.must_ask === "string" && meta.must_ask.trim() ? meta.must_ask : defaults.must_ask;
       const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
