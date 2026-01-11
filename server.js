@@ -273,6 +273,17 @@ function roleBrandQuestions(brandK, roleK) {
 }
 
 function buildInstructions(ctx) {
+  const metaCfg = roleConfig?.meta || {};
+  const applyTemplate = (tpl) => {
+    if (!tpl) return "";
+    return String(tpl)
+      .replace(/{name}/gi, (ctx.applicant || "").split(/\s+/)[0] || "")
+      .replace(/{brand}/gi, ctx.brand || DEFAULT_BRAND)
+      .replace(/{role}/gi, ctx.spokenRole || displayRole(ctx.role));
+  };
+  const openerEs = applyTemplate(metaCfg.opener_es) || `Hola${(ctx.applicant || "").split(/\s+/)[0] ? " " + (ctx.applicant || "").split(/\s+/)[0] : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés un minuto para hablar?`;
+  const openerEn = applyTemplate(metaCfg.opener_en) || `Hi ${(ctx.applicant || "").split(/\s+/)[0] || "there"}, I'm calling about your application for ${ctx.spokenRole || displayRole(ctx.role)} at ${ctx.brand}. Do you have a minute to talk?`;
+  const langNote = metaCfg.lang_rules ? `Notas de idioma: ${metaCfg.lang_rules}` : "";
   const rKey = roleKey(ctx.role);
   const bKey = brandKey(ctx.brand);
   const spokenRole = ctx.spokenRole || displayRole(ctx.role);
@@ -292,7 +303,7 @@ Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesion
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- Primer turno (bilingüe): "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. If you prefer, we can continue in English. Do you have a few minutes to talk?" (SIEMPRE menciona el restaurante). Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
+- Primer turno (bilingüe): "${openerEs}". Si responde en inglés o dice "English", repetí el opener en inglés: "${openerEn}". SIEMPRE menciona el restaurante. Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
 - Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
 
 Contexto:
@@ -305,6 +316,7 @@ Contexto:
 ${brandNotes}
 ${roleNotes}
 ${cvCue}
+${langNote}
 
 Reglas:
 - Una pregunta abierta por vez; preguntás y esperás.
@@ -549,12 +561,36 @@ app.get("/admin/ui", (req, res) => {
       <button class="secondary" id="add-brand">+ Add brand</button>
     </div>
 
+    <div class="brand-card general-card" style="background:#fffaf2;border-color:#f0d9b5;">
+      <div class="brand-header" style="margin-bottom:8px;">
+        <div>
+          <strong>Mensajes base</strong>
+          <div class="small">Personalizá los openers y notas de idioma (podés usar {name}, {brand}, {role}).</div>
+        </div>
+      </div>
+      <div class="row">
+        <label>Mensaje inicial ES</label>
+        <textarea id="opener-es" placeholder="Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?"></textarea>
+      </div>
+      <div class="row">
+        <label>Mensaje inicial EN</label>
+        <textarea id="opener-en" placeholder="Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?"></textarea>
+      </div>
+      <div class="row">
+        <label>Notas de idioma / reglas</label>
+        <textarea id="lang-rules" placeholder="Ej: si responde en inglés, mantener toda la entrevista en inglés."></textarea>
+      </div>
+    </div>
+
     <div id="brands"></div>
   </main>
   <script>
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const brandsEl = document.getElementById('brands');
+    const openerEsEl = document.getElementById('opener-es');
+    const openerEnEl = document.getElementById('opener-en');
+    const langRulesEl = document.getElementById('lang-rules');
     let state = { config: {} };
 
     function setStatus(msg) { statusEl.textContent = msg || ''; }
@@ -633,6 +669,10 @@ app.get("/admin/ui", (req, res) => {
 
     function renderConfig(cfg) {
       brandsEl.innerHTML = '';
+      const meta = cfg?.meta || {};
+      openerEsEl.value = meta.opener_es || '';
+      openerEnEl.value = meta.opener_en || '';
+      langRulesEl.value = meta.lang_rules || '';
       const brands = Object.keys(cfg || {});
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
@@ -664,8 +704,15 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function collectConfig() {
-      const cfg = {};
+      const cfg = {
+        meta: {
+          opener_es: openerEsEl.value || '',
+          opener_en: openerEnEl.value || '',
+          lang_rules: langRulesEl.value || ''
+        }
+      };
       brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
+        if (bCard.classList.contains('general-card')) return;
         const bName = (bCard.querySelector('.brand-name').value || '').trim();
         if (!bName) return;
         const roles = {};
