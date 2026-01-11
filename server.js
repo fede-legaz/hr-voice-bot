@@ -490,73 +490,236 @@ app.get("/admin/ui", (req, res) => {
   <meta charset="utf-8" />
   <title>HRBOT Config</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 0; background: #f5f7fb; color: #111; }
-    header { padding: 16px 24px; background: #1f4b99; color: white; font-size: 18px; }
-    main { max-width: 900px; margin: 24px auto; background: white; padding: 24px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); }
-    label { display: block; margin-bottom: 8px; font-weight: 600; }
-    input[type="password"], textarea { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #cdd4e0; font-family: monospace; }
-    textarea { min-height: 320px; resize: vertical; }
-    button { background: #1f4b99; color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+    :root {
+      --bg: #f5f7fb;
+      --card: #ffffff;
+      --primary: #1f4b99;
+      --muted: #56607a;
+      --border: #cdd4e0;
+      --shadow: 0 8px 24px rgba(0,0,0,0.06);
+    }
+    * { box-sizing: border-box; }
+    body { font-family: "Inter", system-ui, -apple-system, sans-serif; margin: 0; padding: 0; background: var(--bg); color: #0f172a; }
+    header { padding: 16px 24px; background: var(--primary); color: white; font-size: 18px; font-weight: 700; }
+    main { max-width: 1100px; margin: 24px auto 48px; background: var(--card); padding: 24px; border-radius: 14px; box-shadow: var(--shadow); }
+    h2 { margin: 8px 0 16px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    input[type="password"], input[type="text"], textarea { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); font-family: "Inter", system-ui, sans-serif; }
+    textarea { min-height: 80px; resize: vertical; }
+    button { background: var(--primary); color: white; border: none; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700; box-shadow: 0 4px 12px rgba(31,75,153,0.25); transition: transform 0.05s ease; }
+    button:active { transform: translateY(1px); }
+    button.secondary { background: transparent; color: var(--primary); border: 1px solid var(--primary); box-shadow: none; }
+    button.danger { background: #c0392b; box-shadow: 0 4px 12px rgba(192,57,43,0.25); }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .row { margin-bottom: 16px; }
-    .status { margin-top: 8px; font-size: 14px; }
+    .row { margin-bottom: 14px; }
+    .status { margin-left: 12px; font-size: 14px; color: var(--muted); }
+    .brand-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #fdfdff; }
+    .brand-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+    .roles { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 12px; }
+    .role-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; }
+    .inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .question { display: flex; gap: 8px; align-items: center; }
+    .question input { flex: 1; }
+    .small { font-size: 13px; color: var(--muted); }
+    .token-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   </style>
 </head>
 <body>
   <header>HRBOT Config</header>
   <main>
-    <div class="row">
-      <label>Admin token</label>
-      <input type="password" id="token" placeholder="Bearer token" />
-    </div>
-    <div class="row">
-      <button id="load">Load config</button>
-      <button id="save">Save</button>
+    <div class="token-row">
+      <div style="flex:1">
+        <label>Admin token</label>
+        <input type="password" id="token" placeholder="Bearer token" />
+      </div>
+      <div>
+        <button id="load">Load config</button>
+      </div>
+      <div>
+        <button id="save">Save</button>
+      </div>
       <span class="status" id="status"></span>
     </div>
-    <div class="row">
-      <label>roles.json</label>
-      <textarea id="config"></textarea>
+
+    <div class="row inline" style="justify-content: space-between; margin-top: 10px;">
+      <div>
+        <strong>Brands & roles</strong>
+        <div class="small">Edit preguntas por marca/rol, idioma, alias y si el rol es físico.</div>
+      </div>
+      <button class="secondary" id="add-brand">+ Add brand</button>
     </div>
+
+    <div id="brands"></div>
   </main>
   <script>
     const statusEl = document.getElementById('status');
-    const cfgEl = document.getElementById('config');
     const tokenEl = document.getElementById('token');
-    async function loadConfig() {
-      statusEl.textContent = 'Loading...';
-      try {
-        const resp = await fetch('/admin/config', {
-          headers: { Authorization: 'Bearer ' + tokenEl.value }
-        });
-        const data = await resp.json();
-        if (!resp.ok) throw new Error(data.error || 'load failed');
-        cfgEl.value = JSON.stringify(data.config || {}, null, 2);
-        statusEl.textContent = 'Loaded (' + (data.source || 'defaults') + ')';
-      } catch (err) {
-        statusEl.textContent = 'Error: ' + err.message;
+    const brandsEl = document.getElementById('brands');
+    let state = { config: {} };
+
+    function setStatus(msg) { statusEl.textContent = msg || ''; }
+
+    function brandTemplate(name = '') {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'brand-card';
+      wrapper.innerHTML = \`
+        <div class="brand-header">
+          <div style="flex:1; min-width:220px;">
+            <label>Brand</label>
+            <input type="text" class="brand-name" value="\${name}" placeholder="ej. campo / yes / mexi" />
+          </div>
+          <div class="inline">
+            <button class="secondary add-role">+ Add role</button>
+            <button class="secondary delete-brand">Remove brand</button>
+          </div>
+        </div>
+        <div class="roles"></div>
+      \`;
+      const rolesBox = wrapper.querySelector('.roles');
+      wrapper.querySelector('.add-role').onclick = () => {
+        rolesBox.appendChild(roleTemplate());
+      };
+      wrapper.querySelector('.delete-brand').onclick = () => {
+        if (confirm('Remove this brand?')) wrapper.remove();
+      };
+      return wrapper;
+    }
+
+    function roleTemplate(roleName = '', data = {}) {
+      const card = document.createElement('div');
+      card.className = 'role-card';
+      const aliases = Array.isArray(data.aliases) ? data.aliases.join(', ') : '';
+      const qs = Array.isArray(data.questions) && data.questions.length ? data.questions : [''];
+      card.innerHTML = \`
+        <div class="inline" style="justify-content: space-between;">
+          <input type="text" class="role-name" value="\${roleName}" placeholder="Role (ej. server / runner)" />
+          <button class="secondary remove-role">✕</button>
+        </div>
+        <div class="inline">
+          <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
+          <label><input type="checkbox" class="chk-english" \${data.englishRequired ? 'checked' : ''} /> Requiere inglés</label>
+          <label><input type="checkbox" class="chk-physical" \${data.physical ? 'checked' : ''} /> Rol físico</label>
+        </div>
+        <div>
+          <label>Aliases (coma separados)</label>
+          <input type="text" class="role-aliases" value="\${aliases}" placeholder="cajero, cashier, front" />
+        </div>
+        <div>
+          <label>Notas</label>
+          <textarea class="role-notes" placeholder="Contexto o aclaraciones">\${data.notes || ''}</textarea>
+        </div>
+        <div>
+          <label>Preguntas</label>
+          <div class="questions"></div>
+          <button class="secondary add-question" type="button">+ Add pregunta</button>
+        </div>
+      \`;
+      card.querySelector('.remove-role').onclick = () => card.remove();
+      const qBox = card.querySelector('.questions');
+      function addQ(val = '') {
+        const row = document.createElement('div');
+        row.className = 'question';
+        row.innerHTML = \`
+          <input type="text" class="q-text" value="\${val}" placeholder="Pregunta abierta" />
+          <button class="secondary btn-del-q" type="button">✕</button>
+        \`;
+        row.querySelector('.btn-del-q').onclick = () => row.remove();
+        qBox.appendChild(row);
+      }
+      qs.forEach(addQ);
+      card.querySelector('.add-question').onclick = () => addQ('');
+      return card;
+    }
+
+    function renderConfig(cfg) {
+      brandsEl.innerHTML = '';
+      const brands = Object.keys(cfg || {});
+      if (!brands.length) {
+        brandsEl.appendChild(brandTemplate(''));
+        return;
+      }
+      for (const brandKey of brands) {
+        const bCard = brandTemplate(brandKey);
+        const rolesBox = bCard.querySelector('.roles');
+        const roles = cfg[brandKey] || {};
+        for (const roleName of Object.keys(roles)) {
+          rolesBox.appendChild(roleTemplate(roleName, roles[roleName] || {}));
+        }
+        brandsEl.appendChild(bCard);
       }
     }
-    async function saveConfig() {
-      statusEl.textContent = 'Saving...';
+
+    async function loadConfig() {
+      setStatus('Loading...');
       try {
+        const resp = await fetch('/admin/config', { headers: { Authorization: 'Bearer ' + tokenEl.value } });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || 'load failed');
+        state.config = data.config || {};
+        renderConfig(state.config);
+        setStatus('Loaded (' + (data.source || 'defaults') + ')');
+      } catch (err) {
+        setStatus('Error: ' + err.message);
+      }
+    }
+
+    function collectConfig() {
+      const cfg = {};
+      brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
+        const bName = (bCard.querySelector('.brand-name').value || '').trim();
+        if (!bName) return;
+        const roles = {};
+        bCard.querySelectorAll('.role-card').forEach((rCard) => {
+          const rName = (rCard.querySelector('.role-name').value || '').trim();
+          if (!rName) return;
+          const aliases = (rCard.querySelector('.role-aliases').value || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const questions = Array.from(rCard.querySelectorAll('.q-text'))
+            .map((q) => (q.value || '').trim())
+            .filter(Boolean);
+          roles[rName] = {
+            active: rCard.querySelector('.chk-active').checked,
+            englishRequired: rCard.querySelector('.chk-english').checked,
+            physical: rCard.querySelector('.chk-physical').checked,
+            aliases,
+            notes: (rCard.querySelector('.role-notes').value || '').trim(),
+            questions
+          };
+        });
+        cfg[bName] = roles;
+      });
+      return cfg;
+    }
+
+    async function saveConfig() {
+      setStatus('Saving...');
+      try {
+        const body = JSON.stringify(collectConfig(), null, 2);
         const resp = await fetch('/admin/config', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + tokenEl.value
-          },
-          body: cfgEl.value
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'save failed');
-        statusEl.textContent = 'Saved.';
+        setStatus('Saved.');
       } catch (err) {
-        statusEl.textContent = 'Error: ' + err.message;
+        setStatus('Error: ' + err.message);
       }
     }
+
     document.getElementById('load').onclick = loadConfig;
     document.getElementById('save').onclick = saveConfig;
+    document.getElementById('add-brand').onclick = () => {
+      brandsEl.appendChild(brandTemplate(''));
+    };
+    const urlToken = new URLSearchParams(window.location.search).get('token');
+    if (urlToken) {
+      tokenEl.value = urlToken;
+      loadConfig();
+    }
   </script>
 </body>
 </html>
