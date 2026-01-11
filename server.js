@@ -670,10 +670,10 @@ app.get("/admin/ui", (req, res) => {
     function renderConfig(cfg) {
       brandsEl.innerHTML = '';
       const meta = cfg?.meta || {};
-      openerEsEl.value = meta.opener_es || '';
-      openerEnEl.value = meta.opener_en || '';
-      langRulesEl.value = meta.lang_rules || '';
-      const brands = Object.keys(cfg || {});
+      openerEsEl.value = typeof meta.opener_es === "string" ? meta.opener_es : '';
+      openerEnEl.value = typeof meta.opener_en === "string" ? meta.opener_en : '';
+      langRulesEl.value = typeof meta.lang_rules === "string" ? meta.lang_rules : '';
+      const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
         return;
