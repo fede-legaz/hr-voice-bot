@@ -290,7 +290,6 @@ function buildInstructions(ctx) {
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
   const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
-  const metaCfg = roleConfig?.meta || {};
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
   let cvSummaryClean = (ctx.cvSummary || "").trim();
