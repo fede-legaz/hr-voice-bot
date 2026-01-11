@@ -452,7 +452,10 @@ function getRoleConfig(brand, role) {
   const brandEntry = roleConfig[bKey];
   if (!brandEntry) return null;
   for (const key of Object.keys(brandEntry)) {
-    if (normalizeKey(key) === rKey) return brandEntry[key];
+    const entry = brandEntry[key] || {};
+    if (normalizeKey(key) === rKey) return entry;
+    const aliases = Array.isArray(entry.aliases) ? entry.aliases.map((a) => normalizeKey(a)) : [];
+    if (aliases.includes(rKey)) return entry;
   }
   return null;
 }

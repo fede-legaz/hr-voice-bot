@@ -47,6 +47,21 @@
       ],
       "notes": "Rol físico, mucho movimiento.",
       "physical": true
+    },
+    "mantenimiento campo": {
+      "englishRequired": false,
+      "questions": [
+        "¿Te desempeñás bien con herramientas? ¿Qué tipo de mantenimientos has hecho (plomería básica, electricidad, pintura)?",
+        "¿Tenés movilidad/auto para moverte entre locales si se requiere?",
+        "¿Estás cómodo con tareas físicas (mover equipos, subir/bajar escaleras) y con trabajo en horarios variables?"
+      ],
+      "notes": "Rol de mantenimiento general; puede requerir traslados y tareas físicas.",
+      "physical": true,
+      "aliases": [
+        "handyman",
+        "mantenimiento",
+        "maintenance"
+      ]
     }
   },
   "yes": {
