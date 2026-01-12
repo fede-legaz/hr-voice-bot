@@ -715,6 +715,7 @@ app.get("/admin/ui", (req, res) => {
         label.textContent = disp;
         keyLabel.textContent = key;
       }
+      wrapper._updateLabels = updateLabels;
       header.onclick = () => {
         const meta = wrapper.querySelector('.brand-meta');
         const roles = wrapper.querySelector('.roles');
@@ -840,6 +841,7 @@ app.get("/admin/ui", (req, res) => {
         bCard.querySelector('.brand-display').value = metaB.displayName || '';
         bCard.querySelector('.brand-address').value = metaB.address || '';
         bCard.querySelector('.brand-aliases').value = Array.isArray(metaB.aliases) ? metaB.aliases.join(', ') : '';
+        if (typeof bCard._updateLabels === "function") bCard._updateLabels();
         const rolesBox = bCard.querySelector('.roles');
         const roles = cfg[brandKey] || {};
         for (const roleName of Object.keys(roles)) {
