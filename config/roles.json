@@ -104,6 +104,97 @@
       "physical": true
     }
   },
+  "yes_pizza": {
+    "_meta": {
+      "displayName": "Yes! Cafe & Pizza (MiMo / 79th St)",
+      "address": "731 NE 79th St, Miami, FL 33138, US",
+      "aliases": [
+        "yes pizza",
+        "yes cafe pizza",
+        "yes cafe & pizza",
+        "yes pizza 79",
+        "yes cafe pizza mimo 79th st"
+      ]
+    },
+    "front / cashier": {
+      "englishRequired": true,
+      "questions": [
+        "Inglés requerido: ¿cómo te manejás con clientes en inglés?",
+        "¿Tenés experiencia en caja/POS y atención al público?",
+        "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+      ],
+      "notes": "Fast casual, atención al público.",
+      "physical": false
+    },
+    "cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+        "¿Experiencia en plancha?",
+        "Volumen de tickets/hora donde trabajaste."
+      ],
+      "notes": "Cocina rápida, plancha es clave.",
+      "physical": true
+    },
+    "pizzero": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como pizzero? ¿Qué estilo y cuánto tiempo?",
+        "¿Sabés hacer la masa desde cero?"
+      ],
+      "notes": "Masa desde cero es importante.",
+      "physical": true
+    },
+    "prep cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como prep? ¿Podés seguir recetas?",
+        "¿Qué mis en place hacías?"
+      ],
+      "notes": "Leer/seguir recetas.",
+      "physical": true
+    }
+  },
+  "yes_71": {
+    "_meta": {
+      "displayName": "Yes! Cafe – Miami Beach (71st St)",
+      "address": "601 71st St, Miami Beach, FL 33141, US",
+      "aliases": [
+        "yes cafe miami beach",
+        "yes cafe 71",
+        "yes 71"
+      ]
+    },
+    "front / cashier": {
+      "englishRequired": true,
+      "questions": [
+        "Inglés requerido: ¿cómo te manejás con clientes en inglés?",
+        "¿Tenés experiencia en caja/POS y atención al público?",
+        "¿Hiciste cafés/shakes/smoothies? Barista es un plus."
+      ],
+      "notes": "Fast casual, atención al público.",
+      "physical": false
+    },
+    "cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Qué estaciones manejaste (plancha, frita, fría, sartén)? ¿Trabajaste bajo presión?",
+        "¿Experiencia en plancha?",
+        "Volumen de tickets/hora donde trabajaste."
+      ],
+      "notes": "Cocina rápida, plancha es clave.",
+      "physical": true
+    },
+    "prep cook": {
+      "englishRequired": false,
+      "questions": [
+        "¿Experiencia como prep? ¿Podés seguir recetas?",
+        "¿Qué mis en place hacías?"
+      ],
+      "notes": "Leer/seguir recetas.",
+      "physical": true
+    }
+  },
   "mexi": {
     "front / cashier": {
       "englishRequired": true,
@@ -141,6 +232,28 @@
         "¿Trabajaste plancha en un trailer/food truck?"
       ],
       "notes": "Atiende público + cocina en trailer.",
+      "physical": true
+    }
+  },
+  "mexi_trailer": {
+    "_meta": {
+      "displayName": "Mexi Cafe On Wheels (Food Truck)",
+      "address": "731 NE 79th St, Miami, FL 33138, US",
+      "aliases": [
+        "mexi trailer",
+        "trailer",
+        "food truck",
+        "on wheels"
+      ]
+    },
+    "food truck employee": {
+      "englishRequired": true,
+      "questions": [
+        "¿Experiencia atendiendo público y cocinando a la vez?",
+        "¿Trabajaste plancha en un trailer/food truck?",
+        "¿Te sentís cómodo trabajando solo y manejando caja y cocina al mismo tiempo?"
+      ],
+      "notes": "Un solo operador: atiende y cocina; ritmo de calle.",
       "physical": true
     }
   }
