@@ -165,6 +165,10 @@ function normalizeKey(value) {
 }
 
 function resolveAddress(brand, providedAddress) {
+  const bKey = brandKey(brand);
+  const brandEntry = roleConfig?.[bKey];
+  const brandMeta = brandEntry && brandEntry._meta;
+  if (brandMeta?.address) return brandMeta.address;
   if (providedAddress) return providedAddress;
   const key = normalizeKey(brand || "");
   return ADDRESS_BY_BRAND[key] || ADDRESS_BY_BRAND[normalizeKey(DEFAULT_BRAND)];
@@ -200,11 +204,39 @@ function roleKey(role) {
 }
 
 function roleNeedsEnglish(roleK) {
+  if (roleConfig) {
+    for (const [brandK, val] of Object.entries(roleConfig)) {
+      if (brandK === "meta") continue;
+      for (const [rk, entry] of Object.entries(val)) {
+        if (rk === "_meta") continue;
+        const norm = normalizeKey(rk);
+        const aliases = Array.isArray(entry?.aliases) ? entry.aliases.map((a) => normalizeKey(a)) : [];
+        if (norm === roleK || aliases.includes(roleK)) {
+          if (typeof entry?.englishRequired === "boolean") return entry.englishRequired;
+        }
+      }
+    }
+  }
   return ["cashier", "server", "runner", "hostess", "barista", "foodtruck"].includes(roleK);
 }
 
 function displayRole(role) {
   const k = roleKey(role);
+  if (roleConfig) {
+    // try to find displayName
+    for (const [brandK, val] of Object.entries(roleConfig)) {
+      if (brandK === "meta") continue;
+      for (const [rk, entry] of Object.entries(val)) {
+        if (rk === "_meta") continue;
+        const norm = normalizeKey(rk);
+        const aliases = Array.isArray(entry?.aliases) ? entry.aliases.map((a) => normalizeKey(a)) : [];
+        if (norm === k || aliases.includes(k)) {
+          if (entry?.displayName) return entry.displayName;
+          break;
+        }
+      }
+    }
+  }
   switch (k) {
     case "cashier": return "cajero (front)";
     case "hostess": return "hostess";
@@ -222,6 +254,14 @@ function displayRole(role) {
 
 function brandKey(brand) {
   const b = normalizeKey(brand);
+  if (roleConfig) {
+    for (const [key, val] of Object.entries(roleConfig)) {
+      if (key === "meta") continue;
+      const meta = val && val._meta;
+      const aliases = Array.isArray(meta?.aliases) ? meta.aliases.map((a) => normalizeKey(a)) : [];
+      if (aliases.includes(b)) return key;
+    }
+  }
   if (b.includes("campo")) return "campo";
   if (b.includes("mexi") && b.includes("trailer")) return "mexitrailer";
   if (b.includes("mexi")) return "mexi";
@@ -453,6 +493,7 @@ function getRoleConfig(brand, role) {
   const brandEntry = roleConfig[bKey];
   if (!brandEntry) return null;
   for (const key of Object.keys(brandEntry)) {
+    if (key === "_meta") continue;
     const entry = brandEntry[key] || {};
     if (normalizeKey(key) === rKey) return entry;
     const aliases = Array.isArray(entry.aliases) ? entry.aliases.map((a) => normalizeKey(a)) : [];
@@ -616,12 +657,27 @@ app.get("/admin/ui", (req, res) => {
       wrapper.innerHTML = \`
         <div class="brand-header">
           <div style="flex:1; min-width:220px;">
-            <label>Brand</label>
+            <label>Brand (clave)</label>
             <input type="text" class="brand-name" value="\${name}" placeholder="ej. campo / yes / mexi" />
+            <div class="small">Se usa internamente para matchear.</div>
           </div>
           <div class="inline">
             <button class="secondary add-role">+ Add role</button>
             <button class="secondary delete-brand">Remove brand</button>
+          </div>
+        </div>
+        <div class="inline" style="gap:10px;">
+          <div style="flex:1; min-width:200px;">
+            <label>Nombre para mostrar</label>
+            <input type="text" class="brand-display" placeholder="Ej. New Campo Argentino" />
+          </div>
+          <div style="flex:1; min-width:200px;">
+            <label>Dirección</label>
+            <input type="text" class="brand-address" placeholder="Ej. 6954 Collins Ave, Miami Beach, FL 33141, US" />
+          </div>
+          <div style="flex:1; min-width:200px;">
+            <label>Aliases de marca (coma separados)</label>
+            <input type="text" class="brand-aliases" placeholder="campo, new campo argentino" />
           </div>
         </div>
         <div class="roles"></div>
@@ -645,6 +701,10 @@ app.get("/admin/ui", (req, res) => {
         <div class="inline" style="justify-content: space-between;">
           <input type="text" class="role-name" value="\${roleName}" placeholder="Role (ej. server / runner)" />
           <button class="secondary remove-role">✕</button>
+        </div>
+        <div>
+          <label>Nombre para mostrar</label>
+          <input type="text" class="role-display" value="\${data.displayName || ''}" placeholder="Ej. server/runner" />
         </div>
         <div class="inline">
           <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
@@ -696,9 +756,14 @@ app.get("/admin/ui", (req, res) => {
       }
       for (const brandKey of brands) {
         const bCard = brandTemplate(brandKey);
+        const metaB = cfg[brandKey]?._meta || {};
+        bCard.querySelector('.brand-display').value = metaB.displayName || '';
+        bCard.querySelector('.brand-address').value = metaB.address || '';
+        bCard.querySelector('.brand-aliases').value = Array.isArray(metaB.aliases) ? metaB.aliases.join(', ') : '';
         const rolesBox = bCard.querySelector('.roles');
         const roles = cfg[brandKey] || {};
         for (const roleName of Object.keys(roles)) {
+          if (roleName === "_meta") continue;
           rolesBox.appendChild(roleTemplate(roleName, roles[roleName] || {}));
         }
         brandsEl.appendChild(bCard);
@@ -733,6 +798,14 @@ app.get("/admin/ui", (req, res) => {
         const bName = (bCard.querySelector('.brand-name').value || '').trim();
         if (!bName) return;
         const roles = {};
+        const metaB = {
+          displayName: (bCard.querySelector('.brand-display').value || '').trim(),
+          address: (bCard.querySelector('.brand-address').value || '').trim(),
+          aliases: (bCard.querySelector('.brand-aliases').value || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        };
         bCard.querySelectorAll('.role-card').forEach((rCard) => {
           const rName = (rCard.querySelector('.role-name').value || '').trim();
           if (!rName) return;
@@ -748,10 +821,12 @@ app.get("/admin/ui", (req, res) => {
             englishRequired: rCard.querySelector('.chk-english').checked,
             physical: rCard.querySelector('.chk-physical').checked,
             aliases,
+            displayName: (rCard.querySelector('.role-display').value || '').trim(),
             notes: (rCard.querySelector('.role-notes').value || '').trim(),
             questions
           };
         });
+        roles._meta = metaB;
         cfg[bName] = roles;
       });
       return cfg;
