@@ -570,15 +570,22 @@ app.get("/admin/ui", (req, res) => {
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     .row { margin-bottom: 14px; }
     .status { margin-left: 12px; font-size: 14px; color: var(--muted); }
-    .brand-card { border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; background: #fdfdff; }
-    .brand-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-    .roles { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit,minmax(300px,1fr)); gap: 12px; }
-    .role-card { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; }
+    .brand-card { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px; background: #fdfdff; overflow: hidden; }
+    .brand-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 12px 16px; cursor: pointer; background: #eff3ff; }
+    .brand-meta { padding: 0 16px 12px; }
+    .roles { margin: 12px 16px 16px; display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }
+    .role-card { border: 1px solid var(--border); border-radius: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
+    .role-header { padding: 10px 12px; background: #f7f9ff; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+    .role-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+    .pill { padding: 4px 10px; border-radius: 999px; background: #eef2ff; color: #1f4b99; font-weight: 600; font-size: 12px; }
     .inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
     .question { display: flex; gap: 8px; align-items: center; }
     .question input { flex: 1; }
     .small { font-size: 13px; color: var(--muted); }
     .token-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .chevron { font-size: 12px; opacity: 0.7; }
+    .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    .muted { color: var(--muted); font-size: 13px; }
   </style>
 </head>
 <body>
@@ -656,28 +663,37 @@ app.get("/admin/ui", (req, res) => {
       wrapper.className = 'brand-card';
       wrapper.innerHTML = \`
         <div class="brand-header">
-          <div style="flex:1; min-width:220px;">
-            <label>Brand (clave)</label>
-            <input type="text" class="brand-name" value="\${name}" placeholder="ej. campo / yes / mexi" />
-            <div class="small">Se usa internamente para matchear.</div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="chevron">▼</span>
+            <div>
+              <div><strong class="brand-label"></strong></div>
+              <div class="muted small">Brand (clave): <span class="brand-key-label"></span></div>
+            </div>
           </div>
           <div class="inline">
             <button class="secondary add-role">+ Add role</button>
             <button class="secondary delete-brand">Remove brand</button>
           </div>
         </div>
-        <div class="inline" style="gap:10px;">
-          <div style="flex:1; min-width:200px;">
-            <label>Nombre para mostrar</label>
-            <input type="text" class="brand-display" placeholder="Ej. New Campo Argentino" />
-          </div>
-          <div style="flex:1; min-width:200px;">
-            <label>Dirección</label>
-            <input type="text" class="brand-address" placeholder="Ej. 6954 Collins Ave, Miami Beach, FL 33141, US" />
-          </div>
-          <div style="flex:1; min-width:200px;">
-            <label>Aliases de marca (coma separados)</label>
-            <input type="text" class="brand-aliases" placeholder="campo, new campo argentino" />
+        <div class="brand-meta">
+          <div class="inline" style="gap:10px;">
+            <div style="flex:1; min-width:200px;">
+              <label>Brand (clave)</label>
+              <input type="text" class="brand-name" value="\${name}" placeholder="ej. campo / yes / mexi" />
+              <div class="small">Se usa internamente para matchear.</div>
+            </div>
+            <div style="flex:1; min-width:200px;">
+              <label>Nombre para mostrar</label>
+              <input type="text" class="brand-display" placeholder="Ej. New Campo Argentino" />
+            </div>
+            <div style="flex:1; min-width:200px;">
+              <label>Dirección</label>
+              <input type="text" class="brand-address" placeholder="Ej. 6954 Collins Ave, Miami Beach, FL 33141, US" />
+            </div>
+            <div style="flex:1; min-width:200px;">
+              <label>Aliases de marca (coma separados)</label>
+              <input type="text" class="brand-aliases" placeholder="campo, new campo argentino" />
+            </div>
           </div>
         </div>
         <div class="roles"></div>
@@ -689,6 +705,28 @@ app.get("/admin/ui", (req, res) => {
       wrapper.querySelector('.delete-brand').onclick = () => {
         if (confirm('Remove this brand?')) wrapper.remove();
       };
+      const header = wrapper.querySelector('.brand-header');
+      const chevron = header.querySelector('.chevron');
+      const label = header.querySelector('.brand-label');
+      const keyLabel = header.querySelector('.brand-key-label');
+      function updateLabels() {
+        const key = (wrapper.querySelector('.brand-name').value || '').trim() || '(sin clave)';
+        const disp = (wrapper.querySelector('.brand-display').value || '').trim() || '(sin nombre)';
+        label.textContent = disp;
+        keyLabel.textContent = key;
+      }
+      header.onclick = () => {
+        const meta = wrapper.querySelector('.brand-meta');
+        const roles = wrapper.querySelector('.roles');
+        const hidden = meta.style.display === 'none';
+        meta.style.display = hidden ? '' : 'none';
+        roles.style.display = hidden ? '' : 'none';
+        chevron.textContent = hidden ? '▼' : '▶';
+      };
+      updateLabels();
+      wrapper.querySelectorAll('.brand-name, .brand-display').forEach((el) => {
+        el.addEventListener('input', updateLabels);
+      });
       return wrapper;
     }
 
@@ -698,34 +736,76 @@ app.get("/admin/ui", (req, res) => {
       const aliases = Array.isArray(data.aliases) ? data.aliases.join(', ') : '';
       const qs = Array.isArray(data.questions) && data.questions.length ? data.questions : [''];
       card.innerHTML = \`
-        <div class="inline" style="justify-content: space-between;">
-          <input type="text" class="role-name" value="\${roleName}" placeholder="Role (ej. server / runner)" />
-          <button class="secondary remove-role">✕</button>
+        <div class="role-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="chevron">▼</span>
+            <div>
+              <strong class="role-label"></strong>
+              <div class="muted small role-key-label"></div>
+            </div>
+          </div>
+          <div class="inline">
+            <span class="pill" style="background:\${data.englishRequired ? '#e0f2ff' : '#f4f4f4'}; color:\${data.englishRequired ? '#1d4ed8' : '#555'};">EN</span>
+            <span class="pill" style="background:\${data.physical ? '#ffe8e0' : '#f4f4f4'}; color:\${data.physical ? '#c0392b' : '#555'};">Físico</span>
+            <button class="secondary remove-role">✕</button>
+          </div>
         </div>
-        <div>
-          <label>Nombre para mostrar</label>
-          <input type="text" class="role-display" value="\${data.displayName || ''}" placeholder="Ej. server/runner" />
-        </div>
-        <div class="inline">
-          <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
-          <label><input type="checkbox" class="chk-english" \${data.englishRequired ? 'checked' : ''} /> Requiere inglés</label>
-          <label><input type="checkbox" class="chk-physical" \${data.physical ? 'checked' : ''} /> Rol físico</label>
-        </div>
-        <div>
-          <label>Aliases (coma separados)</label>
-          <input type="text" class="role-aliases" value="\${aliases}" placeholder="cajero, cashier, front" />
-        </div>
-        <div>
-          <label>Notas</label>
-          <textarea class="role-notes" placeholder="Contexto o aclaraciones">\${data.notes || ''}</textarea>
-        </div>
-        <div>
-          <label>Preguntas</label>
-          <div class="questions"></div>
-          <button class="secondary add-question" type="button">+ Add pregunta</button>
+        <div class="role-body">
+          <div class="inline" style="justify-content: space-between;">
+            <div style="flex:1;">
+              <label>Role (clave)</label>
+              <input type="text" class="role-name" value="\${roleName}" placeholder="Role (ej. server / runner)" />
+              <div class="small">Clave interna; usar el texto que llega en payload o alias.</div>
+            </div>
+            <div style="flex:1;">
+              <label>Nombre para mostrar</label>
+              <input type="text" class="role-display" value="\${data.displayName || ''}" placeholder="Ej. server/runner" />
+            </div>
+          </div>
+          <div class="inline">
+            <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
+            <label><input type="checkbox" class="chk-english" \${data.englishRequired ? 'checked' : ''} /> Requiere inglés</label>
+            <label><input type="checkbox" class="chk-physical" \${data.physical ? 'checked' : ''} /> Rol físico</label>
+          </div>
+          <div>
+            <label>Aliases (coma separados)</label>
+            <input type="text" class="role-aliases" value="\${aliases}" placeholder="cajero, cashier, front" />
+          </div>
+          <div>
+            <label>Notas</label>
+            <textarea class="role-notes" placeholder="Contexto o aclaraciones">\${data.notes || ''}</textarea>
+          </div>
+          <div>
+            <div class="flex-between">
+              <label>Preguntas</label>
+              <button class="secondary add-question" type="button">+ Add pregunta</button>
+            </div>
+            <div class="questions"></div>
+          </div>
         </div>
       \`;
-      card.querySelector('.remove-role').onclick = () => card.remove();
+      const removeBtn = card.querySelector('.remove-role');
+      removeBtn.onclick = () => card.remove();
+      const header = card.querySelector('.role-header');
+      const chevron = header.querySelector('.chevron');
+      const roleLabel = header.querySelector('.role-label');
+      const roleKeyLabel = header.querySelector('.role-key-label');
+      function updateRoleLabels() {
+        const key = (card.querySelector('.role-name').value || '').trim() || '(sin rol)';
+        const disp = (card.querySelector('.role-display').value || '').trim() || key;
+        roleLabel.textContent = disp;
+        roleKeyLabel.textContent = key;
+      }
+      header.onclick = () => {
+        const body = card.querySelector('.role-body');
+        const hidden = body.style.display === 'none';
+        body.style.display = hidden ? '' : 'none';
+        chevron.textContent = hidden ? '▼' : '▶';
+      };
+      updateRoleLabels();
+      card.querySelectorAll('.role-name, .role-display').forEach((el) => {
+        el.addEventListener('input', updateRoleLabels);
+      });
       const qBox = card.querySelector('.questions');
       function addQ(val = '') {
         const row = document.createElement('div');
