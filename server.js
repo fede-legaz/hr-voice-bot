@@ -143,6 +143,8 @@ const ROLE_QUESTIONS = {
   }
 };
 
+const LATE_CLOSING_QUESTION = "En caso de requerirlo, ¿tenés problema para trabajar hasta la hora de cierre? Puede ser hasta la 1 o 2am.";
+
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
   "mexi cafe": "6300 Collins Ave, Miami Beach, FL 33141, US",
@@ -312,6 +314,30 @@ function roleBrandQuestions(brandK, roleK) {
   return qs;
 }
 
+function needsLateClosingQuestion(brandK, brandName) {
+  const norm = normalizeKey(brandName || "");
+  if (norm.includes("yes cafe")) return true;
+  if (norm.includes("mexi") && norm.includes("trailer")) return true;
+  if (!norm && (brandK === "yes" || brandK === "mexitrailer")) return true;
+  return false;
+}
+
+function withLateClosingQuestion(questions, brandK, brandName) {
+  const list = Array.isArray(questions) ? [...questions] : [];
+  if (!needsLateClosingQuestion(brandK, brandName)) return list;
+  const hasClosing = list.some((q) => {
+    const norm = normalizeKey(q || "");
+    return norm.includes("hora de cierre")
+      || norm.includes("hasta tarde")
+      || norm.includes("1 2am")
+      || norm.includes("1 2 am")
+      || norm.includes("1 o 2am")
+      || norm.includes("1 o 2 am");
+  });
+  if (!hasClosing) list.push(LATE_CLOSING_QUESTION);
+  return list;
+}
+
 function buildInstructions(ctx) {
   const metaCfg = roleConfig?.meta || {};
   const applyTemplate = (tpl) => {
@@ -337,7 +363,8 @@ function buildInstructions(ctx) {
   if (unusableCv) cvSummaryClean = "";
   const hasCv = !!cvSummaryClean;
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
-  const specificQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
+  const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
+  const specificQs = withLateClosingQuestion(baseQs, bKey, ctx.brand);
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si englishRequired es false, NO preguntes inglés ni hagas preguntas en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
