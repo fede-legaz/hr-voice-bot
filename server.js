@@ -146,6 +146,16 @@ const ROLE_QUESTIONS = {
 const LATE_CLOSING_QUESTION = "En caso de requerirlo, ¿estarías dispuesto a trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
 const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
+const HUNG_UP_THRESHOLD_SEC = 20;
+const OUTCOME_LABELS = {
+  NO_ANSWER: "No contestó",
+  DECLINED_RECORDING: "No aceptó la grabación",
+  CONSENT_TIMEOUT: "No respondió al consentimiento de grabación",
+  NO_SPEECH: "No emitió opinión",
+  HUNG_UP: "El candidato colgó",
+  CALL_DISCONNECTED: "Se desconectó la llamada",
+  TRANSCRIPTION_FAILED: "No se pudo transcribir el audio"
+};
 
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
@@ -476,6 +486,60 @@ function parseEnglishRequired(value) {
   if (v === "1" || v === "true" || v === "yes") return true;
   if (v === "0" || v === "false" || v === "no") return false;
   return DEFAULT_ENGLISH_REQUIRED;
+}
+
+function outcomeLabel(outcome) {
+  return OUTCOME_LABELS[outcome] || "";
+}
+
+function setOutcome(call, outcome, detail) {
+  if (!call) return;
+  if (!call.outcome) call.outcome = outcome;
+  if (detail && !call.noTranscriptReason) call.noTranscriptReason = detail;
+}
+
+function inferIncompleteOutcome(call) {
+  if (!call || call.outcome) return;
+  if (!call.userSpoke) {
+    setOutcome(call, "NO_SPEECH", outcomeLabel("NO_SPEECH"));
+    return;
+  }
+  if (typeof call.durationSec === "number" && call.durationSec > 0 && call.durationSec <= HUNG_UP_THRESHOLD_SEC) {
+    setOutcome(call, "HUNG_UP", outcomeLabel("HUNG_UP"));
+    return;
+  }
+  setOutcome(call, "CALL_DISCONNECTED", outcomeLabel("CALL_DISCONNECTED"));
+}
+
+function buildCallFromPayload(payload, extra = {}) {
+  const brand = payload?.brand || DEFAULT_BRAND;
+  const roleClean = sanitizeRole(payload?.role || DEFAULT_ROLE);
+  const englishRequired = parseEnglishRequired(payload?.englishRequired);
+  const address = resolveAddress(brand, payload?.address || null);
+  return {
+    callSid: extra.callSid || null,
+    to: normalizePhone(extra.to || payload?.to || ""),
+    from: null,
+    brand,
+    role: roleClean,
+    spokenRole: displayRole(roleClean),
+    englishRequired,
+    address,
+    applicant: payload?.applicant || "",
+    cvSummary: payload?.cv_summary || "",
+    resumeUrl: payload?.resume_url || "",
+    recordingStarted: false,
+    transcriptText: "",
+    scoring: null,
+    recordingPath: null,
+    recordingToken: null,
+    whatsappSent: false,
+    outcome: null,
+    noTranscriptReason: null,
+    incomplete: true,
+    startedAt: Date.now(),
+    durationSec: null
+  };
 }
 
 // --- in-memory stores with TTL ---
@@ -1122,6 +1186,8 @@ app.post("/consent", express.urlencoded({ extended: false }), (req, res) => {
     return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
   }
   const payload = entry.payload || {};
+  const callSid = req.body?.CallSid || "";
+  const to = normalizePhone(req.body?.To || payload.to || "");
 
   const yes = isConsentYes({ speech, digits });
   const no = isConsentNo({ speech, digits });
@@ -1174,6 +1240,20 @@ ${paramTags}
 
   if (no || attempt >= 2) {
     voiceCtxByToken.delete(token);
+    const alreadySent = callSid && noAnswerSentBySid.has(callSid);
+    if (!alreadySent) {
+      const call = buildCallFromPayload(payload, { callSid, to });
+      setOutcome(call, no ? "DECLINED_RECORDING" : "CONSENT_TIMEOUT");
+      call.incomplete = true;
+      call.scoring = null;
+      try {
+        await sendWhatsappReport(call);
+        call.whatsappSent = true;
+      } catch (err) {
+        console.error("[consent] whatsapp failed", err);
+      }
+      if (callSid) noAnswerSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
+    }
     const es = lang !== "en";
     const twiml = es
       ? `<?xml version="1.0" encoding="UTF-8"?>
@@ -1699,7 +1779,7 @@ DECÍ ESTO Y CALLATE:
         call.hangupTimer = setTimeout(() => {
           if (!call.userSpoke) {
             console.log("[hangup] no user speech detected; hanging up");
-            markNoAnswer(call, "timeout_no_speech").catch(err => console.error("[no-answer] failed", err));
+            markNoSpeech(call, "timeout_no_speech").catch(err => console.error("[no-speech] failed", err));
           }
         }, 15000);
       }
@@ -1744,7 +1824,7 @@ DECÍ ESTO Y CALLATE:
   twilioWs.on("close", () => {
     call.durationSec = Math.round((Date.now() - call.startedAt) / 1000);
     if (!call.userSpoke) {
-      markNoAnswer(call, "closed_no_speech").catch(err => console.error("[no-answer] failed", err));
+      markNoSpeech(call, "closed_no_speech").catch(err => console.error("[no-speech] failed", err));
     }
     // maybeSendNoAnswerSms is now handled via markNoAnswer / call-status
     try { if (openaiWs.readyState === WebSocket.OPEN) openaiWs.close(); } catch {}
@@ -1976,8 +2056,17 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const stayDetail = ex.stay_detail ? ` (${ex.stay_detail})` : "";
 
   if (!scoring) {
+    const outcome = outcomeLabel(call?.outcome) || note || "Entrevista incompleta";
+    const detail = note && note !== outcome ? note : "";
     return [
-      `📵 Candidato no contestó: *${applicant}* | ${call.brand} | ${role} | callId: ${call.callSid || "n/a"}`
+      `⚠️ *ENTREVISTA INCOMPLETA – ${call.brand.toUpperCase()}*`,
+      ``,
+      `- *CANDIDATO:* ${applicant}`,
+      `- *PUESTO:* ${role}`,
+      `- *RESULTADO:* ${outcome}`,
+      detail ? `- *DETALLE:* ${detail}` : "",
+      call.callSid ? `\`callId: ${call.callSid}\`` : "",
+      duration ? `\`DURACIÓN: ${duration}\`` : ""
     ].filter(Boolean).join("\n");
   }
 
@@ -2159,7 +2248,7 @@ async function markNoAnswer(call, reason) {
   try {
     if (!call) return;
     if (call.callSid && noAnswerSentBySid.has(call.callSid)) return;
-    call.outcome = "NO_ANSWER";
+    setOutcome(call, "NO_ANSWER", outcomeLabel("NO_ANSWER"));
     call.noAnswerReason = reason || "No contestó";
     call.incomplete = true;
     call.scoring = null;
@@ -2174,9 +2263,8 @@ async function markNoAnswer(call, reason) {
     if (toNumber) {
       await sendSms(toNumber, smsMsg);
     }
-    const waMsg = `📵 Candidato no contestó: *${call.applicant || "Candidato"}* | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
     try {
-      await sendWhatsappMessage({ body: waMsg });
+      await sendWhatsappReport(call);
       call.whatsappSent = true;
     } catch (err) {
       console.error("[no-answer] whatsapp failed", err);
@@ -2184,6 +2272,32 @@ async function markNoAnswer(call, reason) {
     if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
   } catch (err) {
     console.error("[no-answer] error", err);
+  }
+}
+
+async function markNoSpeech(call, reason) {
+  try {
+    if (!call) return;
+    if (call.callSid && noAnswerSentBySid.has(call.callSid)) return;
+    setOutcome(call, "NO_SPEECH", outcomeLabel("NO_SPEECH"));
+    call.noAnswerReason = reason || "No emitió opinión";
+    call.incomplete = true;
+    call.scoring = null;
+    call.whatsappSent = false;
+    if (call.hangupTimer) {
+      clearTimeout(call.hangupTimer);
+      call.hangupTimer = null;
+    }
+    await hangupCall(call);
+    try {
+      await sendWhatsappReport(call);
+      call.whatsappSent = true;
+    } catch (err) {
+      console.error("[no-speech] whatsapp failed", err);
+    }
+    if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
+  } catch (err) {
+    console.error("[no-speech] error", err);
   }
 }
 
@@ -2222,12 +2336,16 @@ async function maybeScoreAndSend(call) {
       call.transcriptText = transcriptText;
     } catch (err) {
       console.error("[transcription] failed", err);
+      setOutcome(call, "TRANSCRIPTION_FAILED", outcomeLabel("TRANSCRIPTION_FAILED"));
     }
   }
   const words = (transcriptText || "").trim().split(/\s+/).filter(Boolean).length;
   if (!transcriptText || transcriptText.trim().length < 30 || words < 8) {
     call.scoring = null;
-    call.noTranscriptReason = "No se pudo usar el audio (muy corto o inaudible).";
+    inferIncompleteOutcome(call);
+    if (!call.noTranscriptReason) {
+      call.noTranscriptReason = "No se pudo usar el audio (muy corto o inaudible).";
+    }
     console.warn("[scoring] skipped: transcript unusable");
   } else {
     try {
