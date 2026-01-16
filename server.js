@@ -143,7 +143,9 @@ const ROLE_QUESTIONS = {
   }
 };
 
-const LATE_CLOSING_QUESTION = "En caso de requerirlo, ¿tenés problema para trabajar hasta la hora de cierre? Puede ser hasta la 1 o 2am.";
+const LATE_CLOSING_QUESTION = "En caso de requerirlo, ¿estarías dispuesto a trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
+const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
+const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
 
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
@@ -314,27 +316,46 @@ function roleBrandQuestions(brandK, roleK) {
   return qs;
 }
 
-function needsLateClosingQuestion(brandK, brandName) {
-  const norm = normalizeKey(brandName || "");
-  if (norm.includes("yes cafe")) return true;
-  if (norm.includes("mexi") && norm.includes("trailer")) return true;
-  if (!norm && (brandK === "yes" || brandK === "mexitrailer")) return true;
+function needsLateClosingQuestion(brandK, brandName, roleK) {
+  const normBrand = normalizeKey(brandName || "");
+  const isYes = brandK === "yes" || normBrand.includes("yes cafe");
+  const isMexiTrailer = brandK === "mexitrailer" || (normBrand.includes("mexi") && normBrand.includes("trailer"));
+  if (isYes && (roleK === "cashier" || roleK === "cook")) return true;
+  if (isMexiTrailer && roleK === "foodtruck") return true;
   return false;
 }
 
-function withLateClosingQuestion(questions, brandK, brandName) {
+function withLateClosingQuestion(questions, brandK, brandName, roleK) {
   const list = Array.isArray(questions) ? [...questions] : [];
-  if (!needsLateClosingQuestion(brandK, brandName)) return list;
+  if (!needsLateClosingQuestion(brandK, brandName, roleK)) return list;
   const hasClosing = list.some((q) => {
     const norm = normalizeKey(q || "");
     return norm.includes("hora de cierre")
       || norm.includes("hasta tarde")
+      || norm.includes("turno noche")
+      || norm.includes("turno de noche")
+      || norm.includes("madrugada")
       || norm.includes("1 2am")
       || norm.includes("1 2 am")
       || norm.includes("1 o 2am")
       || norm.includes("1 o 2 am");
   });
   if (!hasClosing) list.push(LATE_CLOSING_QUESTION);
+  return list;
+}
+
+function withEnglishRequiredQuestions(questions, needsEnglish) {
+  const list = Array.isArray(questions) ? [...questions] : [];
+  if (!needsEnglish) return list;
+  const hasLevel = list.some((q) => normalizeKey(q || "").includes("ingles"));
+  const hasEnglishQuestion = list.some((q) => {
+    const norm = normalizeKey(q || "");
+    return norm.includes("can you")
+      || norm.includes("in english")
+      || norm.includes("describe your last job");
+  });
+  if (!hasLevel) list.push(ENGLISH_LEVEL_QUESTION);
+  if (!hasEnglishQuestion) list.push(ENGLISH_CHECK_QUESTION);
   return list;
 }
 
@@ -364,9 +385,10 @@ function buildInstructions(ctx) {
   const hasCv = !!cvSummaryClean;
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
-  const specificQs = withLateClosingQuestion(baseQs, bKey, ctx.brand);
+  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey);
+  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
   return `
-Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si englishRequired es false, NO preguntes inglés ni hagas preguntas en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
+Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, NO preguntes inglés ni hagas preguntas en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
@@ -377,7 +399,7 @@ Contexto:
 - Restaurante: ${ctx.brand}
 - Puesto: ${ctx.role}
 - Dirección: ${ctx.address}
-- Inglés requerido: ${ctx.englishRequired ? "sí" : "no"}
+- Inglés requerido: ${needsEnglish ? "sí" : "no"}
 - Candidato: ${ctx.applicant || "no informado"}
 - Resumen CV (si hay): ${ctx.cvSummary || "sin CV"}
 ${brandNotes}
@@ -399,7 +421,7 @@ Reglas:
 - OBLIGATORIO: preguntá si está viviendo en Miami/EE.UU. de forma permanente o temporal. Si dice temporal, preguntá cuánto tiempo planea quedarse (sin presionar fechas exactas).
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
-- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si englishRequired es false, NO preguntes inglés.
+- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, NO preguntes inglés.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
