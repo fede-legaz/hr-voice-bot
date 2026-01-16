@@ -1175,7 +1175,7 @@ function isConsentNo({ speech, digits }) {
   return /\b(no|prefiero no|no gracias|don'?t|do not)\b/.test(norm);
 }
 
-app.post("/consent", express.urlencoded({ extended: false }), (req, res) => {
+app.post("/consent", express.urlencoded({ extended: false }), async (req, res) => {
   const token = String(req.query?.token || "").trim();
   const attempt = Number(req.query?.attempt || "1");
   const lang = (req.query?.lang || "es").toString();
