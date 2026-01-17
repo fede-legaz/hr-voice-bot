@@ -143,7 +143,8 @@ const ROLE_QUESTIONS = {
   }
 };
 
-const LATE_CLOSING_QUESTION = "En caso de requerirlo, ¿estarías dispuesto a trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
+const LATE_CLOSING_QUESTION_ES = "En caso de ser requerido, ¿podés trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
+const LATE_CLOSING_QUESTION_EN = "If required, are you able to work the night shift, which may go until 1 or 2am?";
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
 const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
 const HUNG_UP_THRESHOLD_SEC = 20;
@@ -330,14 +331,15 @@ function needsLateClosingQuestion(brandK, brandName, roleK) {
   const normBrand = normalizeKey(brandName || "");
   const isYes = brandK === "yes" || normBrand.includes("yes cafe");
   const isMexiTrailer = brandK === "mexitrailer" || (normBrand.includes("mexi") && normBrand.includes("trailer"));
-  if (isYes && (roleK === "cashier" || roleK === "cook")) return true;
+  if (isYes && (roleK === "cashier" || roleK === "cook" || roleK === "pizzero")) return true;
   if (isMexiTrailer && roleK === "foodtruck") return true;
   return false;
 }
 
-function withLateClosingQuestion(questions, brandK, brandName, roleK) {
+function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref) {
   const list = Array.isArray(questions) ? [...questions] : [];
   if (!needsLateClosingQuestion(brandK, brandName, roleK)) return list;
+  const question = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
   const hasClosing = list.some((q) => {
     const norm = normalizeKey(q || "");
     return norm.includes("hora de cierre")
@@ -345,12 +347,20 @@ function withLateClosingQuestion(questions, brandK, brandName, roleK) {
       || norm.includes("turno noche")
       || norm.includes("turno de noche")
       || norm.includes("madrugada")
+      || norm.includes("night shift")
+      || norm.includes("late shift")
+      || norm.includes("closing time")
+      || norm.includes("closing shift")
       || norm.includes("1 2am")
       || norm.includes("1 2 am")
       || norm.includes("1 o 2am")
-      || norm.includes("1 o 2 am");
+      || norm.includes("1 o 2 am")
+      || norm.includes("1 or 2am")
+      || norm.includes("1 or 2 am")
+      || norm.includes("1-2am")
+      || norm.includes("1-2 am");
   });
-  if (!hasClosing) list.push(LATE_CLOSING_QUESTION);
+  if (!hasClosing) list.push(question);
   return list;
 }
 
@@ -399,7 +409,7 @@ function buildInstructions(ctx) {
   const hasCv = !!cvSummaryClean;
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
-  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey);
+  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref);
   const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
   return `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, no preguntes por el nivel de inglés ni hagas la pregunta de inglés; si el candidato prefiere inglés, hacé toda la entrevista en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
@@ -1587,8 +1597,8 @@ const openaiWs = new WebSocket(
               interrupt_response: true,
               // Hacerlo menos sensible a ruido ambiente
               threshold: 0.95,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 1100
+              prefix_padding_ms: 500,
+              silence_duration_ms: 1700
             }
           },
           output: {
@@ -1694,19 +1704,23 @@ DECÍ ESTO Y CALLATE:
     }
 
     if (evt.type === "input_audio_buffer.committed") {
-      if (!call.heardSpeech) return;
+      const hadSpeechFlag = call.heardSpeech;
       call.heardSpeech = false;
 
-      const minBytes = 1200; // ~0.15s de audio (160-byte frames)
-      const minDurationMs = 200;
+      const minBytes = 800; // ~0.1s de audio (160-byte frames)
+      const minDurationMs = 120;
       const speechDurationMs = call.speechStartedAt ? Date.now() - call.speechStartedAt : 0;
-      if (call.speechByteCount < minBytes && speechDurationMs < minDurationMs) {
-        // Ignore tiny bursts/noise
+      if (hadSpeechFlag && call.speechByteCount < minBytes && speechDurationMs < minDurationMs) {
+        // Ignore tiny bursts/noise only when VAD actually flagged speech
         call.userSpoke = false;
         call.speechByteCount = 0;
         call.speechStartedAt = null;
         return;
       }
+
+      call.userSpoke = true;
+      call.speechByteCount = 0;
+      call.speechStartedAt = null;
 
       const commitId = evt.item_id || null;
       if (commitId && commitId === call.lastCommitId) return;
