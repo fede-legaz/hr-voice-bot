@@ -386,6 +386,10 @@ function buildInstructions(ctx) {
   const spokenRole = ctx.spokenRole || displayRole(ctx.role);
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
+  const langPref = ctx.lang === "en" ? "en" : "es";
+  const languageNote = langPref === "en"
+    ? "Idioma actual: inglés. Toda la entrevista en inglés; no mezcles español salvo que el candidato lo pida."
+    : "Idioma actual: español. Entrevista en español. Si el candidato pide inglés o responde en inglés, cambiá a inglés y no mezcles.";
   const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
   const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
@@ -398,7 +402,7 @@ function buildInstructions(ctx) {
   const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey);
   const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
   return `
-Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, NO preguntes inglés ni hagas preguntas en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
+Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, no preguntes por el nivel de inglés ni hagas la pregunta de inglés; si el candidato prefiere inglés, hacé toda la entrevista en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
@@ -410,6 +414,7 @@ Contexto:
 - Puesto: ${ctx.role}
 - Dirección: ${ctx.address}
 - Inglés requerido: ${needsEnglish ? "sí" : "no"}
+- Idioma base: ${langPref === "en" ? "inglés" : "español"}
 - Candidato: ${ctx.applicant || "no informado"}
 - Resumen CV (si hay): ${ctx.cvSummary || "sin CV"}
 ${brandNotes}
@@ -419,6 +424,7 @@ ${metaCfg.must_ask ? `Obligatorio cubrir: ${metaCfg.must_ask}` : ""}
 ${langNote}
 
 Reglas:
+- ${languageNote}
 - Una pregunta abierta por vez; preguntás y esperás.
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
 - No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
@@ -431,7 +437,7 @@ Reglas:
 - OBLIGATORIO: preguntá si está viviendo en Miami/EE.UU. de forma permanente o temporal. Si dice temporal, preguntá cuánto tiempo planea quedarse (sin presionar fechas exactas).
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
-- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, NO preguntes inglés.
+- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, no evalúes nivel de inglés.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
@@ -1581,8 +1587,8 @@ const openaiWs = new WebSocket(
               interrupt_response: true,
               // Hacerlo menos sensible a ruido ambiente
               threshold: 0.95,
-              prefix_padding_ms: 500,
-              silence_duration_ms: 1700
+              prefix_padding_ms: 300,
+              silence_duration_ms: 1100
             }
           },
           output: {
@@ -1691,8 +1697,10 @@ DECÍ ESTO Y CALLATE:
       if (!call.heardSpeech) return;
       call.heardSpeech = false;
 
-      const minBytes = 2400; // ~0.3s de audio (160-byte frames)
-      if (call.speechByteCount < minBytes) {
+      const minBytes = 1200; // ~0.15s de audio (160-byte frames)
+      const minDurationMs = 200;
+      const speechDurationMs = call.speechStartedAt ? Date.now() - call.speechStartedAt : 0;
+      if (call.speechByteCount < minBytes && speechDurationMs < minDurationMs) {
         // Ignore tiny bursts/noise
         call.userSpoke = false;
         call.speechByteCount = 0;
@@ -1717,7 +1725,10 @@ DECÍ ESTO Y CALLATE:
       return;
     }
 
-    if (evt.type === "error") console.error("[OpenAI] error", evt);
+    if (evt.type === "error") {
+      if (evt.error?.code === "response_cancel_not_active") return;
+      console.error("[OpenAI] error", evt);
+    }
   });
 
   twilioWs.on("message", (msg) => {
