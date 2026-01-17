@@ -143,7 +143,7 @@ const ROLE_QUESTIONS = {
   }
 };
 
-const LATE_CLOSING_QUESTION_ES = "En caso de ser requerido, ¿podés trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
+const LATE_CLOSING_QUESTION_ES = "En caso de ser requerido, ¿podes trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
 const LATE_CLOSING_QUESTION_EN = "If required, are you able to work the night shift, which may go until 1 or 2am?";
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
 const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
@@ -397,6 +397,11 @@ function buildInstructions(ctx) {
   const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
   const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
   const langPref = ctx.lang === "en" ? "en" : "es";
+  const needsLateClosing = needsLateClosingQuestion(bKey, ctx.brand, rKey);
+  const lateClosingQuestion = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+  const lateClosingRule = needsLateClosing
+    ? `OBLIGATORIO: preguntá exactamente: "${lateClosingQuestion}"`
+    : "";
   const languageNote = langPref === "en"
     ? "Idioma actual: inglés. Toda la entrevista en inglés; no mezcles español salvo que el candidato lo pida."
     : "Idioma actual: español. Entrevista en español. Si el candidato pide inglés o responde en inglés, cambiá a inglés y no mezcles.";
@@ -435,6 +440,7 @@ ${langNote}
 
 Reglas:
 - ${languageNote}
+${lateClosingRule ? `- ${lateClosingRule}` : ""}
 - Una pregunta abierta por vez; preguntás y esperás.
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
 - No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
