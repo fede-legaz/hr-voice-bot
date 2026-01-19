@@ -23,6 +23,7 @@ const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
 const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
+const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
@@ -726,6 +727,14 @@ function getRoleConfig(brand, role) {
   return null;
 }
 
+function requireConfig(req, res, next) {
+  if (!CONFIG_TOKEN) return res.status(403).json({ error: "config token not set" });
+  const auth = req.headers.authorization || "";
+  const expected = `Bearer ${CONFIG_TOKEN}`;
+  if (auth !== expected) return res.status(401).json({ error: "unauthorized" });
+  next();
+}
+
 function requireAdmin(req, res, next) {
   if (!ADMIN_TOKEN) return res.status(403).json({ error: "admin token not set" });
   const auth = req.headers.authorization || "";
@@ -742,19 +751,27 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false }));
 
-// Admin config endpoints (protect with ADMIN_TOKEN)
-app.get("/admin/config", requireAdmin, (req, res) => {
+// Config endpoints (protect with CALL_BEARER_TOKEN)
+app.get("/admin/config", requireConfig, (req, res) => {
   if (!roleConfig) return res.json({ config: null, source: "defaults" });
   return res.json({ config: roleConfig, source: "file" });
 });
 
-app.post("/admin/config", requireAdmin, async (req, res) => {
+app.post("/admin/config", requireConfig, async (req, res) => {
   try {
     const body = req.body;
     const config = body?.config ?? body;
     const serialized = typeof config === "string" ? config : JSON.stringify(config, null, 2);
     const parsed = JSON.parse(serialized);
-    await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
+    const existingPrompt = roleConfig?.meta?.system_prompt;
+    if (!parsed.meta) parsed.meta = {};
+    if (typeof existingPrompt === "string") {
+      parsed.meta.system_prompt = existingPrompt;
+    } else {
+      delete parsed.meta.system_prompt;
+    }
+    const normalized = JSON.stringify(parsed, null, 2);
+    await fs.promises.writeFile(rolesConfigPath, normalized, "utf8");
     roleConfig = parsed;
     return res.json({ ok: true });
   } catch (err) {
@@ -763,7 +780,7 @@ app.post("/admin/config", requireAdmin, async (req, res) => {
   }
 });
 
-app.post("/admin/preview", requireAdmin, (req, res) => {
+app.post("/admin/preview", requireConfig, (req, res) => {
   try {
     const body = req.body || {};
     const brand = body.brand || DEFAULT_BRAND;
@@ -785,6 +802,28 @@ app.post("/admin/preview", requireAdmin, (req, res) => {
   } catch (err) {
     console.error("[admin/preview] failed", err);
     return res.status(400).json({ error: "preview_failed", detail: err.message });
+  }
+});
+
+// System prompt endpoints (protect with ADMIN_TOKEN)
+app.get("/admin/system-prompt", requireAdmin, (req, res) => {
+  const prompt = roleConfig?.meta?.system_prompt || "";
+  return res.json({ ok: true, system_prompt: prompt });
+});
+
+app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const prompt = typeof body.system_prompt === "string" ? body.system_prompt : "";
+    if (!roleConfig) roleConfig = { meta: {} };
+    if (!roleConfig.meta) roleConfig.meta = {};
+    roleConfig.meta.system_prompt = prompt;
+    const serialized = JSON.stringify(roleConfig, null, 2);
+    await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/system-prompt] failed", err);
+    return res.status(400).json({ error: "system_prompt_failed", detail: err.message });
   }
 });
 
@@ -837,24 +876,40 @@ app.get("/admin/ui", (req, res) => {
     .muted { color: var(--muted); font-size: 13px; }
     .preview-output { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
     .system-prompt { min-height: 260px; }
+    .login-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at top, #eef3ff, #f5f7fb 60%); padding: 24px; }
+    .login-card { width: min(420px, 92vw); background: var(--card); border-radius: 18px; padding: 28px; border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; }
+    .login-title { font-size: 22px; font-weight: 800; }
+    .login-sub { color: var(--muted); font-size: 14px; }
+    textarea.locked { background: #f2f4f8; color: #6b7280; }
   </style>
 </head>
 <body>
-  <header>HRBOT Config</header>
-  <main>
-    <div class="token-row">
-      <div style="flex:1">
-        <label>Clave admin</label>
-        <input type="password" id="token" placeholder="ADMIN" />
+  <div id="login-screen" class="login-screen">
+    <div class="login-card">
+      <div class="login-title">HRBOT Admin</div>
+      <div class="login-sub">Ingresá tu clave para ver la configuración.</div>
+      <div class="row">
+        <label>Clave</label>
+        <input type="password" id="login-token" placeholder="YB key" />
       </div>
-      <div>
-        <button id="load">Load config</button>
+      <div class="row inline" style="justify-content: space-between;">
+        <button id="login-btn">Entrar</button>
+        <span class="status" id="login-status"></span>
       </div>
-      <div>
-        <button id="save">Save</button>
-      </div>
-      <span class="status" id="status"></span>
     </div>
+  </div>
+
+  <div id="app" style="display:none;">
+    <header>HRBOT Config</header>
+    <main>
+      <div class="token-row">
+        <input type="hidden" id="token" />
+        <div class="inline">
+          <button id="load">Reload</button>
+          <button id="save">Save</button>
+        </div>
+        <span class="status" id="status"></span>
+      </div>
 
     <div class="row inline" style="justify-content: space-between; margin-top: 10px;">
       <div>
@@ -891,6 +946,16 @@ app.get("/admin/ui", (req, res) => {
         <label>System prompt (editable)</label>
         <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
         <div class="small">Placeholders útiles: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {first_name_or_blank}.</div>
+      </div>
+      <div class="row inline" style="gap:10px;">
+        <div style="flex:1; min-width:220px;">
+          <label>Clave ADMIN (solo para editar System prompt)</label>
+          <input type="password" id="admin-token" placeholder="ADMIN" />
+        </div>
+        <div style="margin-top:22px;">
+          <button class="secondary" id="admin-unlock" type="button">Unlock</button>
+        </div>
+        <span class="status" id="admin-status"></span>
       </div>
     </div>
 
@@ -952,7 +1017,13 @@ app.get("/admin/ui", (req, res) => {
 
     <div id="brands"></div>
   </main>
+  </div>
   <script>
+    const appEl = document.getElementById('app');
+    const loginScreenEl = document.getElementById('login-screen');
+    const loginTokenEl = document.getElementById('login-token');
+    const loginBtnEl = document.getElementById('login-btn');
+    const loginStatusEl = document.getElementById('login-status');
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const brandsEl = document.getElementById('brands');
@@ -961,6 +1032,9 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     const systemPromptEl = document.getElementById('system-prompt');
+    const adminTokenEl = document.getElementById('admin-token');
+    const adminUnlockEl = document.getElementById('admin-unlock');
+    const adminStatusEl = document.getElementById('admin-status');
     const previewBrandEl = document.getElementById('preview-brand');
     const previewRoleEl = document.getElementById('preview-role');
     const previewApplicantEl = document.getElementById('preview-applicant');
@@ -971,6 +1045,9 @@ app.get("/admin/ui", (req, res) => {
     const previewOutputEl = document.getElementById('preview-output');
     const previewStatusEl = document.getElementById('preview-status');
     let state = { config: {} };
+    let adminToken = '';
+    let systemPromptUnlocked = false;
+    let lastLoadError = '';
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
@@ -982,6 +1059,20 @@ app.get("/admin/ui", (req, res) => {
 
     function setStatus(msg) { statusEl.textContent = msg || ''; }
     function setPreviewStatus(msg) { previewStatusEl.textContent = msg || ''; }
+    function setLoginStatus(msg) { loginStatusEl.textContent = msg || ''; }
+    function setAdminStatus(msg) { adminStatusEl.textContent = msg || ''; }
+
+    function lockSystemPrompt() {
+      systemPromptUnlocked = false;
+      systemPromptEl.readOnly = true;
+      systemPromptEl.classList.add('locked');
+    }
+
+    function unlockSystemPrompt() {
+      systemPromptUnlocked = true;
+      systemPromptEl.readOnly = false;
+      systemPromptEl.classList.remove('locked');
+    }
 
     function brandTemplate(name = '') {
       const wrapper = document.createElement('div');
@@ -1156,6 +1247,10 @@ app.get("/admin/ui", (req, res) => {
       langRulesEl.value = typeof meta.lang_rules === "string" && meta.lang_rules.trim() ? meta.lang_rules : defaults.lang_rules;
       mustAskEl.value = typeof meta.must_ask === "string" && meta.must_ask.trim() ? meta.must_ask : defaults.must_ask;
       systemPromptEl.value = typeof meta.system_prompt === "string" && meta.system_prompt.trim() ? meta.system_prompt : defaults.system_prompt;
+      if (!systemPromptUnlocked) {
+        lockSystemPrompt();
+        setAdminStatus('Bloqueado');
+      }
       const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
@@ -1237,20 +1332,25 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'load failed');
         state.config = data.config || {};
         renderConfig(state.config);
+        lastLoadError = '';
         setStatus('Loaded (' + (data.source || 'defaults') + ')');
+        return true;
       } catch (err) {
+        lastLoadError = err.message || '';
         setStatus('Error: ' + err.message);
+        return false;
       }
     }
 
     function collectConfig() {
+      const preservedPrompt = state?.config?.meta?.system_prompt || '';
       const cfg = {
         meta: {
           opener_es: openerEsEl.value || '',
           opener_en: openerEnEl.value || '',
           lang_rules: langRulesEl.value || '',
           must_ask: mustAskEl.value || '',
-          system_prompt: systemPromptEl.value || ''
+          system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt
         }
       };
       brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
@@ -1292,6 +1392,20 @@ app.get("/admin/ui", (req, res) => {
       return cfg;
     }
 
+    async function saveSystemPrompt() {
+      if (!systemPromptUnlocked || !adminToken) return;
+      const body = JSON.stringify({ system_prompt: systemPromptEl.value || '' });
+      const resp = await fetch('/admin/system-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + adminToken },
+        body
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'system prompt save failed');
+      if (!state.config.meta) state.config.meta = {};
+      state.config.meta.system_prompt = systemPromptEl.value || '';
+    }
+
     async function saveConfig() {
       if (!confirm('¿Seguro que querés guardar estos cambios?')) return;
       setStatus('Saving...');
@@ -1304,9 +1418,54 @@ app.get("/admin/ui", (req, res) => {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'save failed');
+        if (systemPromptUnlocked) {
+          await saveSystemPrompt();
+        }
         setStatus('Saved.');
       } catch (err) {
         setStatus('Error: ' + err.message);
+      }
+    }
+
+    async function unlockAdmin() {
+      const key = (adminTokenEl.value || '').trim();
+      if (!key) {
+        setAdminStatus('Ingresá la clave ADMIN');
+        return;
+      }
+      setAdminStatus('Verificando...');
+      try {
+        const resp = await fetch('/admin/system-prompt', {
+          headers: { Authorization: 'Bearer ' + key }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'admin inválido');
+        adminToken = key;
+        unlockSystemPrompt();
+        if (typeof data.system_prompt === "string") {
+          systemPromptEl.value = data.system_prompt;
+        }
+        setAdminStatus('Admin OK');
+      } catch (err) {
+        setAdminStatus('Error: ' + err.message);
+      }
+    }
+
+    async function login() {
+      const key = (loginTokenEl.value || '').trim();
+      if (!key) {
+        setLoginStatus('Ingresá la clave');
+        return;
+      }
+      setLoginStatus('Verificando...');
+      tokenEl.value = key;
+      const ok = await loadConfig();
+      if (ok) {
+        setLoginStatus('');
+        loginScreenEl.style.display = 'none';
+        appEl.style.display = 'block';
+      } else {
+        setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
       }
     }
 
@@ -1316,11 +1475,18 @@ app.get("/admin/ui", (req, res) => {
       brandsEl.appendChild(brandTemplate(''));
     };
     document.getElementById('preview-generate').onclick = generatePreview;
+    adminUnlockEl.onclick = unlockAdmin;
+    loginBtnEl.onclick = login;
+    loginTokenEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') login();
+    });
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
-      tokenEl.value = urlToken;
-      loadConfig();
+      loginTokenEl.value = urlToken;
+      login();
     }
+    lockSystemPrompt();
+    setAdminStatus('Bloqueado');
   </script>
 </body>
 </html>
