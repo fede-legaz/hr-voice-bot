@@ -2463,13 +2463,13 @@ async function placeOutboundCall(payload) {
     },
     body: params
   });
-  const data = await resp.json();
+  const respData = await resp.json();
   if (!resp.ok) {
-    console.error("[placeOutboundCall] twilio_call_failed", resp.status, data);
+    console.error("[placeOutboundCall] twilio_call_failed", resp.status, respData);
     throw new Error("twilio_call_failed");
   }
-  console.log("[placeOutboundCall] queued", { sid: data.sid, status: data.status });
-  return data;
+  console.log("[placeOutboundCall] queued", { sid: respData.sid, status: respData.status });
+  return respData;
 }
 
 async function sendSms(to, body) {
