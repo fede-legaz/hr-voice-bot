@@ -23,7 +23,7 @@ const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
 const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || CALL_BEARER_TOKEN;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -189,6 +189,13 @@ function resolveAddress(brand, providedAddress) {
   return ADDRESS_BY_BRAND[key] || ADDRESS_BY_BRAND[normalizeKey(DEFAULT_BRAND)];
 }
 
+function resolveBrandDisplay(brand) {
+  const bKey = brandKey(brand);
+  const brandEntry = roleConfig?.[bKey];
+  const brandMeta = brandEntry && brandEntry._meta;
+  return brandMeta?.displayName || brand || DEFAULT_BRAND;
+}
+
 function toWss(httpUrl) {
   if (httpUrl.startsWith("https://")) return "wss://" + httpUrl.slice("https://".length);
   if (httpUrl.startsWith("http://")) return "ws://" + httpUrl.slice("http://".length);
@@ -218,10 +225,14 @@ function roleKey(role) {
   return "general";
 }
 
-function roleNeedsEnglish(roleK) {
+function roleNeedsEnglish(roleK, brand) {
   if (roleConfig) {
-    for (const [brandK, val] of Object.entries(roleConfig)) {
-      if (brandK === "meta") continue;
+    const brandK = brand ? brandKey(brand) : null;
+    const entries = brandK && roleConfig[brandK]
+      ? [[brandK, roleConfig[brandK]]]
+      : Object.entries(roleConfig);
+    for (const [bKey, val] of entries) {
+      if (bKey === "meta") continue;
       for (const [rk, entry] of Object.entries(val)) {
         if (rk === "_meta") continue;
         const norm = normalizeKey(rk);
@@ -235,12 +246,16 @@ function roleNeedsEnglish(roleK) {
   return ["cashier", "server", "runner", "hostess", "barista", "foodtruck"].includes(roleK);
 }
 
-function displayRole(role) {
+function displayRole(role, brand) {
   const k = roleKey(role);
   if (roleConfig) {
-    // try to find displayName
-    for (const [brandK, val] of Object.entries(roleConfig)) {
-      if (brandK === "meta") continue;
+    // try to find displayName (prefer brand-specific)
+    const brandK = brand ? brandKey(brand) : null;
+    const entries = brandK && roleConfig[brandK]
+      ? [[brandK, roleConfig[brandK]]]
+      : Object.entries(roleConfig);
+    for (const [bKey, val] of entries) {
+      if (bKey === "meta") continue;
       for (const [rk, entry] of Object.entries(val)) {
         if (rk === "_meta") continue;
         const norm = normalizeKey(rk);
@@ -272,7 +287,11 @@ function brandKey(brand) {
   if (roleConfig) {
     for (const [key, val] of Object.entries(roleConfig)) {
       if (key === "meta") continue;
+      const normKey = normalizeKey(key);
+      if (normKey === b) return key;
       const meta = val && val._meta;
+      const display = normalizeKey(meta?.displayName || "");
+      if (display && display === b) return key;
       const aliases = Array.isArray(meta?.aliases) ? meta.aliases.map((a) => normalizeKey(a)) : [];
       if (aliases.includes(b)) return key;
     }
@@ -379,68 +398,31 @@ function withEnglishRequiredQuestions(questions, needsEnglish) {
   return list;
 }
 
-function buildInstructions(ctx) {
-  const metaCfg = roleConfig?.meta || {};
-  const applyTemplate = (tpl) => {
-    if (!tpl) return "";
-    return String(tpl)
-      .replace(/{name}/gi, (ctx.applicant || "").split(/\s+/)[0] || "")
-      .replace(/{brand}/gi, ctx.brand || DEFAULT_BRAND)
-      .replace(/{role}/gi, ctx.spokenRole || displayRole(ctx.role));
-  };
-  const openerEs = applyTemplate(metaCfg.opener_es) || `Hola${(ctx.applicant || "").split(/\s+/)[0] ? " " + (ctx.applicant || "").split(/\s+/)[0] : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés un minuto para hablar?`;
-  const openerEn = applyTemplate(metaCfg.opener_en) || `Hi ${(ctx.applicant || "").split(/\s+/)[0] || "there"}, I'm calling about your application for ${ctx.spokenRole || displayRole(ctx.role)} at ${ctx.brand}. Do you have a minute to talk?`;
-  const langNote = metaCfg.lang_rules ? `Notas de idioma: ${metaCfg.lang_rules}` : "";
-  const rKey = roleKey(ctx.role);
-  const bKey = brandKey(ctx.brand);
-  const spokenRole = ctx.spokenRole || displayRole(ctx.role);
-  const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
-  const needsEnglish = !!ctx.englishRequired || roleNeedsEnglish(rKey);
-  const langPref = ctx.lang === "en" ? "en" : "es";
-  const needsLateClosing = needsLateClosingQuestion(bKey, ctx.brand, rKey);
-  const lateClosingQuestion = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
-  const lateClosingRule = needsLateClosing
-    ? `OBLIGATORIO: preguntá exactamente: "${lateClosingQuestion}"`
-    : "";
-  const languageNote = langPref === "en"
-    ? "Idioma actual: inglés. Toda la entrevista en inglés; no mezcles español salvo que el candidato lo pida."
-    : "Idioma actual: español. Entrevista en español. Si el candidato pide inglés o responde en inglés, cambiá a inglés y no mezcles.";
-  const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
-  const roleNotes = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
-  const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
-  let cvSummaryClean = (ctx.cvSummary || "").trim();
-  const unusableCv = !cvSummaryClean || cvSummaryClean.length < 10 || /sin\s+cv|no\s+pude\s+leer|cv\s+adjunto|no\s+texto|datos\s+cv/i.test(cvSummaryClean);
-  if (unusableCv) cvSummaryClean = "";
-  const hasCv = !!cvSummaryClean;
-  const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
-  const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
-  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref);
-  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
-  return `
+const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `
 Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, no preguntes por el nivel de inglés ni hagas la pregunta de inglés; si el candidato prefiere inglés, hacé toda la entrevista en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
 Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- Primer turno (bilingüe): "${openerEs}". Si responde en inglés o dice "English", repetí el opener en inglés: "${openerEn}". SIEMPRE menciona el restaurante. Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
-- Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
+- Primer turno (bilingüe): "{opener_es}". Si responde en inglés o dice "English", repetí el opener en inglés: "{opener_en}". SIEMPRE menciona el restaurante. Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
+- Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para {spoken_role}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
 
 Contexto:
-- Restaurante: ${ctx.brand}
-- Puesto: ${ctx.role}
-- Dirección: ${ctx.address}
-- Inglés requerido: ${needsEnglish ? "sí" : "no"}
-- Idioma base: ${langPref === "en" ? "inglés" : "español"}
-- Candidato: ${ctx.applicant || "no informado"}
-- Resumen CV (si hay): ${ctx.cvSummary || "sin CV"}
-${brandNotes}
-${roleNotes}
-${cvCue}
-${metaCfg.must_ask ? `Obligatorio cubrir: ${metaCfg.must_ask}` : ""}
-${langNote}
+- Restaurante: {brand}
+- Puesto: {role_raw}
+- Dirección: {address}
+- Inglés requerido: {english_required}
+- Idioma base: {lang_name}
+- Candidato: {applicant}
+- Resumen CV (si hay): {cv_summary}
+{brand_notes}
+{role_notes}
+{cv_hint}
+{must_ask_line}
+{lang_rules_line}
 
 Reglas:
-- ${languageNote}
-${lateClosingRule ? `- ${lateClosingRule}` : ""}
+- {language_note}
+{late_closing_rule_line}
 - Una pregunta abierta por vez; preguntás y esperás.
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
 - No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
@@ -451,43 +433,43 @@ ${lateClosingRule ? `- ${lateClosingRule}` : ""}
  - Si hay CV usable, referenciá el último trabajo del CV, confirma tareas/fechas, y repreguntá. Si el CV no es usable (ej. vacío, “datos cv”, “cv adjunto”, “no pude leer”), no lo menciones y usá preguntas genéricas de experiencia.
 - SIEMPRE preguntá por zona y cómo llega (en TODAS las posiciones). No saltees la pregunta de zona/logística.
 - OBLIGATORIO: preguntá si está viviendo en Miami/EE.UU. de forma permanente o temporal. Si dice temporal, preguntá cuánto tiempo planea quedarse (sin presionar fechas exactas).
-- Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones.
-- Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
-- Si inglés es requerido (${needsEnglish ? "sí" : "no"}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, no evalúes nivel de inglés.
+- Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en {address}" (solo si hay dirección). No inventes direcciones.
+- Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en {address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
+- Si inglés es requerido ({english_required}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, no evalúes nivel de inglés.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
-- Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi ${firstName || "there"}, I'm calling about your application for ${spokenRole} at ${ctx.brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
+- Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
 - Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá explícitamente: "¿Te sentís más cómodo si seguimos la entrevista en inglés?" y, si dice que sí, cambiá a inglés para el resto.
 - Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá en inglés: "Would you prefer we continue the interview in English?" y, si dice que sí, cambiá a inglés para el resto.
-- Si el candidato responde en inglés (aunque sea "hello", "yes", "hi"), preguntá en inglés de inmediato: "Would you prefer we continue the interview in English?" Si responde en inglés o afirma, repetí el opener en inglés ("Hi ${firstName || "there"}, I'm calling about your application for ${spokenRole} at ${ctx.brand}. Do you have a few minutes to talk?") y seguí toda la entrevista en inglés sin volver al español, salvo que explícitamente pida español.
+- Si el candidato responde en inglés (aunque sea "hello", "yes", "hi"), preguntá en inglés de inmediato: "Would you prefer we continue the interview in English?" Si responde en inglés o afirma, repetí el opener en inglés ("Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?") y seguí toda la entrevista en inglés sin volver al español, salvo que explícitamente pida español.
 - Si escuchás "hello", "hi", "who is this" u otra respuesta en inglés, repetí el opener en inglés de inmediato y quedate en inglés para toda la entrevista, salvo que el candidato pida seguir en español. ESTO ES MANDATORIO.
 - Preguntá SIEMPRE (no omitir): expectativa salarial abierta ("¿Tenés alguna expectativa salarial por hora?") y si está viviendo en Miami de forma permanente o temporal ("¿Estás viviendo en Miami ahora o es algo temporal?").
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
-- Usá solo el primer nombre si está: "Hola ${firstName || "¿cómo te llamás?"}". Podés repetirlo ocasionalmente para personalizar.
+- Usá solo el primer nombre si está: "Hola {first_name_or_question}". Podés repetirlo ocasionalmente para personalizar.
 - CV: nombra al menos un empleo del CV y repreguntá tareas y por qué se fue (por ejemplo, si ves "El Patio" o "Don Carlos" en el CV, preguntá qué hacía allí y por qué salió).
 - Si el candidato interrumpe el opener con un saludo/“hola” o te contesta antes de pedir permiso, repetí el opener una sola vez con su nombre y volvé a pedir si puede hablar (sin decir “ok”).
 - Si te interrumpen antes de terminar el opener (ej. dicen “hola” mientras hablás), repetí el opener completo una sola vez con su nombre y el restaurante, y pedí permiso de nuevo.
 - Después de “Perfecto, mi nombre es Mariana y yo hago la entrevista inicial”, no te quedes esperando: en ese mismo turno seguí con la primera pregunta de experiencia.
 - No inventes datos (horarios, sueldo, beneficios, turnos, managers). Si preguntan por horarios/sueldo/beneficios/detalles del local que no tenés, respondé breve: "Yo hago la entrevista inicial; esos detalles te los confirma el manager en la próxima etapa", y retomá tus preguntas.
-- Si atiende otra persona o no sabés si es el postulante, preguntá: "¿Con quién hablo? ¿Se encuentra ${firstName || "el postulante"}?" Si no está, pedí un mejor momento o corta con un cierre amable sin seguir el cuestionario.
+- Si atiende otra persona o no sabés si es el postulante, preguntá: "¿Con quién hablo? ¿Se encuentra {first_name_or_postulante}?" Si no está, pedí un mejor momento o corta con un cierre amable sin seguir el cuestionario.
 - Checklist obligatorio que debes cubrir siempre (adaptalo a conversación, pero no lo saltees): saludo con nombre, experiencia/tareas (incluyendo CV si hay), zona y cómo llega, disponibilidad, expectativa salarial, prueba (sin prometer), inglés si es requerido (nivel + pregunta en inglés), cierre.
 - Preguntas específicas para este rol/local (metelas de forma natural):
-${specificQs.map(q => `- ${q}`).join("\n")}
+{specific_questions}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola${firstName ? ` ${firstName}` : ""}, te llamo por una entrevista de trabajo en ${ctx.brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, pedí hablar con él/ella o un mejor momento y cortá.
-   Si dice que sí y es el postulante: "Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
+1) Apertura: "Hola{first_name_or_blank}, te llamo por una entrevista de trabajo en {brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, pedí hablar con él/ella o un mejor momento y cortá.
+   Si dice que sí y es el postulante: "Perfecto, aplicaste para {spoken_role}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
    Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
 2) Experiencia:
    - Si hay CV, arrancá con él: "En tu CV veo que tu último trabajo fue en <extraelo del CV>. ¿Qué tareas hacías ahí en un día normal?" y luego repreguntá breve sobre tareas (caja/pedidos/runner/café/pagos según aplique).
-   - Si no hay CV o no se ve claro: (si no lo preguntaste ya) "Contame rápido tu experiencia en ${spokenRole}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
+   - Si no hay CV o no se ve claro: (si no lo preguntaste ya) "Contame rápido tu experiencia en {spoken_role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
    - Repreguntá breve sobre tareas: "¿Qué hacías ahí? ¿Caja, pedidos, runner, café, pagos?"
    - "¿Por qué te fuiste?"
    - Si hay CV: "En el CV veo que estuviste en <lo que diga el CV>. ¿Cuánto tiempo? ¿Qué hacías exactamente? ¿Por qué te fuiste?"
 3) Cercanía + movilidad:
    - "¿En qué zona vivís?"
-   - "¿Te queda cómodo llegar al local? Estamos en ${ctx.address}." (solo si hay dirección)
+   - "¿Te queda cómodo llegar al local? Estamos en {address}." (solo si hay dirección)
    - Si vive lejos: "¿Tenés movilidad/auto para llegar?"
    - Preguntá de forma abierta: "¿Estás viviendo en Miami ahora o es algo temporal?"
 4) Disponibilidad: "¿Cómo es tu disponibilidad normalmente? Semana, fines de semana, día/noche… lo que puedas."
@@ -500,6 +482,103 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
    - Si en el CV menciona inglés/idiomas, mencioná que lo viste y verificá.
 Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por WhatsApp." (no prometas prueba ni confirmes fecha).
 `.trim();
+
+function renderPromptTemplate(template, vars) {
+  if (!template) return "";
+  const mapped = {};
+  for (const [key, value] of Object.entries(vars || {})) {
+    mapped[key.toLowerCase()] = value;
+  }
+  return String(template).replace(/{([a-z0-9_]+)}/gi, (match, key) => {
+    const lookup = key.toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(mapped, lookup)) return match;
+    const value = mapped[lookup];
+    return value === undefined || value === null ? "" : String(value);
+  });
+}
+
+function buildInstructions(ctx) {
+  const metaCfg = roleConfig?.meta || {};
+  const brandDisplay = resolveBrandDisplay(ctx.brand);
+  const applyTemplate = (tpl) => {
+    if (!tpl) return "";
+    return String(tpl)
+      .replace(/{name}/gi, (ctx.applicant || "").split(/\s+/)[0] || "")
+      .replace(/{brand}/gi, brandDisplay)
+      .replace(/{role}/gi, ctx.spokenRole || displayRole(ctx.role, ctx.brand));
+  };
+  const openerEs = applyTemplate(metaCfg.opener_es) || `Hola${(ctx.applicant || "").split(/\s+/)[0] ? " " + (ctx.applicant || "").split(/\s+/)[0] : ""}, te llamo por una entrevista de trabajo en ${brandDisplay}. ¿Tenés un minuto para hablar?`;
+  const openerEn = applyTemplate(metaCfg.opener_en) || `Hi ${(ctx.applicant || "").split(/\s+/)[0] || "there"}, I'm calling about your application for ${ctx.spokenRole || displayRole(ctx.role, ctx.brand)} at ${brandDisplay}. Do you have a minute to talk?`;
+  const langNote = metaCfg.lang_rules ? `Notas de idioma: ${metaCfg.lang_rules}` : "";
+  const rKey = roleKey(ctx.role);
+  const bKey = brandKey(ctx.brand);
+  const spokenRole = ctx.spokenRole || displayRole(ctx.role, ctx.brand);
+  const firstName = (ctx.applicant || "").split(/\s+/)[0] || "";
+  const needsEnglish = typeof ctx.englishRequired === "boolean"
+    ? ctx.englishRequired
+    : roleNeedsEnglish(rKey, ctx.brand);
+  const langPref = ctx.lang === "en" ? "en" : "es";
+  const needsLateClosing = needsLateClosingQuestion(bKey, ctx.brand, rKey);
+  const lateClosingQuestion = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+  const lateClosingRule = needsLateClosing
+    ? `OBLIGATORIO: preguntá exactamente: "${lateClosingQuestion}"`
+    : "";
+  const languageNote = langPref === "en"
+    ? "Idioma actual: inglés. Toda la entrevista en inglés; no mezcles español salvo que el candidato lo pida."
+    : "Idioma actual: español. Entrevista en español. Si el candidato pide inglés o responde en inglés, cambiá a inglés y no mezcles.";
+  const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
+  const roleNotesBase = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
+  const roleNotesCfg = cfg.notes ? `Notas rol (config): ${cfg.notes}` : "";
+  const roleNotes = roleNotesCfg ? `${roleNotesBase}\n${roleNotesCfg}` : roleNotesBase;
+  const brandNotes = BRAND_NOTES[normalizeKey(ctx.brand)] ? `Contexto local: ${BRAND_NOTES[normalizeKey(ctx.brand)]}` : "";
+  let cvSummaryClean = (ctx.cvSummary || "").trim();
+  const unusableCv = !cvSummaryClean || cvSummaryClean.length < 10 || /sin\s+cv|no\s+pude\s+leer|cv\s+adjunto|no\s+texto|datos\s+cv/i.test(cvSummaryClean);
+  if (unusableCv) cvSummaryClean = "";
+  const hasCv = !!cvSummaryClean;
+  const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
+  const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
+  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref);
+  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
+  const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
+  const promptVars = {
+    name: firstName,
+    first_name: firstName,
+    first_name_or_blank: firstName ? ` ${firstName}` : "",
+    first_name_or_there: firstName || "there",
+    first_name_or_question: firstName || "¿cómo te llamás?",
+    first_name_or_postulante: firstName || "el postulante",
+    brand: brandDisplay,
+    brand_display: brandDisplay,
+    role: ctx.role,
+    role_raw: ctx.role,
+    role_display: spokenRole,
+    spoken_role: spokenRole,
+    address: ctx.address,
+    english_required: needsEnglish ? "sí" : "no",
+    english_required_en: needsEnglish ? "yes" : "no",
+    lang: langPref,
+    lang_name: langPref === "en" ? "inglés" : "español",
+    applicant: ctx.applicant || "no informado",
+    cv_summary: ctx.cvSummary || "sin CV",
+    cv_summary_clean: cvSummaryClean,
+    cv_hint: cvCue,
+    brand_notes: brandNotes,
+    role_notes: roleNotes,
+    must_ask: metaCfg.must_ask || "",
+    must_ask_line: metaCfg.must_ask ? `Obligatorio cubrir: ${metaCfg.must_ask}` : "",
+    lang_rules: metaCfg.lang_rules || "",
+    lang_rules_line: langNote,
+    language_note: languageNote,
+    opener_es: openerEs,
+    opener_en: openerEn,
+    late_closing_question: lateClosingQuestion,
+    late_closing_required: needsLateClosing ? "sí" : "no",
+    late_closing_rule: lateClosingRule,
+    late_closing_rule_line: lateClosingRule ? `- ${lateClosingRule}` : "",
+    specific_questions: specificQs.map(q => `- ${q}`).join("\n"),
+    specific_questions_inline: specificQs.join("; ")
+  };
+  return renderPromptTemplate(promptTemplate, promptVars).trim();
 }
 
 function parseEnglishRequired(value) {
@@ -508,6 +587,16 @@ function parseEnglishRequired(value) {
   if (v === "1" || v === "true" || v === "yes") return true;
   if (v === "0" || v === "false" || v === "no") return false;
   return DEFAULT_ENGLISH_REQUIRED;
+}
+
+function resolveEnglishRequired(brand, role, payload) {
+  const cfg = getRoleConfig(brand, role);
+  if (cfg && typeof cfg.englishRequired === "boolean") return cfg.englishRequired;
+  const hasExplicit = !!payload && Object.prototype.hasOwnProperty.call(payload, "englishRequired");
+  if (hasExplicit && payload.englishRequired !== null && payload.englishRequired !== undefined && payload.englishRequired !== "") {
+    return parseEnglishRequired(payload.englishRequired);
+  }
+  return roleNeedsEnglish(roleKey(role), brand);
 }
 
 function outcomeLabel(outcome) {
@@ -536,7 +625,7 @@ function inferIncompleteOutcome(call) {
 function buildCallFromPayload(payload, extra = {}) {
   const brand = payload?.brand || DEFAULT_BRAND;
   const roleClean = sanitizeRole(payload?.role || DEFAULT_ROLE);
-  const englishRequired = parseEnglishRequired(payload?.englishRequired);
+  const englishRequired = resolveEnglishRequired(brand, roleClean, payload || {});
   const address = resolveAddress(brand, payload?.address || null);
   return {
     callSid: extra.callSid || null,
@@ -544,7 +633,7 @@ function buildCallFromPayload(payload, extra = {}) {
     from: null,
     brand,
     role: roleClean,
-    spokenRole: displayRole(roleClean),
+    spokenRole: displayRole(roleClean, brand),
     englishRequired,
     address,
     applicant: payload?.applicant || "",
@@ -623,7 +712,7 @@ loadRoleConfig();
 
 function getRoleConfig(brand, role) {
   if (!roleConfig) return null;
-  const bKey = normalizeKey(brand || "");
+  const bKey = brandKey(brand || "");
   const rKey = normalizeKey(role || "");
   const brandEntry = roleConfig[bKey];
   if (!brandEntry) return null;
@@ -674,6 +763,31 @@ app.post("/admin/config", requireAdmin, async (req, res) => {
   }
 });
 
+app.post("/admin/preview", requireAdmin, (req, res) => {
+  try {
+    const body = req.body || {};
+    const brand = body.brand || DEFAULT_BRAND;
+    const role = body.role || DEFAULT_ROLE;
+    const englishRequired = resolveEnglishRequired(brand, role, body);
+    const address = body.address || resolveAddress(brand, null);
+    const ctx = {
+      brand,
+      role,
+      spokenRole: body.spokenRole || displayRole(role, brand),
+      englishRequired,
+      address,
+      applicant: body.applicant || "",
+      cvSummary: body.cv_summary || body.cvSummary || "",
+      resumeUrl: body.resume_url || body.resumeUrl || "",
+      lang: body.lang === "en" ? "en" : "es"
+    };
+    return res.json({ ok: true, prompt: buildInstructions(ctx) });
+  } catch (err) {
+    console.error("[admin/preview] failed", err);
+    return res.status(400).json({ error: "preview_failed", detail: err.message });
+  }
+});
+
 app.get("/admin/ui", (req, res) => {
   res.type("text/html").send(`
 <!doctype html>
@@ -721,6 +835,8 @@ app.get("/admin/ui", (req, res) => {
     .chevron { font-size: 12px; opacity: 0.7; }
     .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
     .muted { color: var(--muted); font-size: 13px; }
+    .preview-output { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    .system-prompt { min-height: 260px; }
   </style>
 </head>
 <body>
@@ -728,8 +844,8 @@ app.get("/admin/ui", (req, res) => {
   <main>
     <div class="token-row">
       <div style="flex:1">
-        <label>Admin token</label>
-        <input type="password" id="token" placeholder="Bearer token" />
+        <label>Clave admin</label>
+        <input type="password" id="token" placeholder="ADMIN" />
       </div>
       <div>
         <button id="load">Load config</button>
@@ -771,6 +887,67 @@ app.get("/admin/ui", (req, res) => {
         <label>Preguntas/Checklist obligatorias (texto libre)</label>
         <textarea id="must-ask" placeholder="Ej: zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."></textarea>
       </div>
+      <div class="row">
+        <label>System prompt (editable)</label>
+        <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
+        <div class="small">Placeholders útiles: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {first_name_or_blank}.</div>
+      </div>
+    </div>
+
+    <div class="brand-card preview-card" style="background:#f5f9ff;border-color:#cfe0ff;">
+      <div class="brand-header" style="margin-bottom:8px;">
+        <div>
+          <strong>Preview instrucciones</strong>
+          <div class="small">Genera el prompt real que usa el bot con datos de ejemplo.</div>
+        </div>
+      </div>
+      <div class="row inline" style="gap:10px;">
+        <div style="flex:1; min-width:200px;">
+          <label>Brand</label>
+          <input type="text" id="preview-brand" placeholder="Ej. Yes! Cafe & Pizza (MiMo / 79th St)" />
+        </div>
+        <div style="flex:1; min-width:200px;">
+          <label>Role</label>
+          <input type="text" id="preview-role" placeholder="Ej. Cook / Cashier / Pizzero" />
+        </div>
+        <div style="flex:1; min-width:200px;">
+          <label>Nombre candidato</label>
+          <input type="text" id="preview-applicant" placeholder="Ej. Rafael Soto" />
+        </div>
+      </div>
+      <div class="row inline" style="gap:10px;">
+        <div style="flex:1; min-width:220px;">
+          <label>Dirección</label>
+          <input type="text" id="preview-address" placeholder="Se completa si hay en config" />
+        </div>
+        <div style="flex:1; min-width:160px;">
+          <label>Inglés requerido</label>
+          <select id="preview-english" style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); font-family: Inter, system-ui, sans-serif;">
+            <option value="auto">Auto (según config)</option>
+            <option value="yes">Sí</option>
+            <option value="no">No</option>
+          </select>
+        </div>
+        <div style="flex:1; min-width:140px;">
+          <label>Idioma</label>
+          <select id="preview-lang" style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); font-family: Inter, system-ui, sans-serif;">
+            <option value="es">Español</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <label>Resumen CV (opcional)</label>
+        <textarea id="preview-cv" placeholder="Pegá acá un resumen de CV para ver cómo lo usa."></textarea>
+      </div>
+      <div class="row inline" style="justify-content: space-between;">
+        <button class="secondary" id="preview-generate" type="button">Generate preview</button>
+        <span class="status" id="preview-status"></span>
+      </div>
+      <div class="row">
+        <label>Prompt generado</label>
+        <textarea id="preview-output" class="preview-output" readonly></textarea>
+      </div>
     </div>
 
     <div id="brands"></div>
@@ -783,15 +960,28 @@ app.get("/admin/ui", (req, res) => {
     const openerEnEl = document.getElementById('opener-en');
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
+    const systemPromptEl = document.getElementById('system-prompt');
+    const previewBrandEl = document.getElementById('preview-brand');
+    const previewRoleEl = document.getElementById('preview-role');
+    const previewApplicantEl = document.getElementById('preview-applicant');
+    const previewAddressEl = document.getElementById('preview-address');
+    const previewEnglishEl = document.getElementById('preview-english');
+    const previewLangEl = document.getElementById('preview-lang');
+    const previewCvEl = document.getElementById('preview-cv');
+    const previewOutputEl = document.getElementById('preview-output');
+    const previewStatusEl = document.getElementById('preview-status');
     let state = { config: {} };
+    const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
       lang_rules: "Si responde en inglés, mantener toda la entrevista en inglés.",
-      must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."
+      must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
+      system_prompt: defaultSystemPrompt
     };
 
     function setStatus(msg) { statusEl.textContent = msg || ''; }
+    function setPreviewStatus(msg) { previewStatusEl.textContent = msg || ''; }
 
     function brandTemplate(name = '') {
       const wrapper = document.createElement('div');
@@ -965,6 +1155,7 @@ app.get("/admin/ui", (req, res) => {
       openerEnEl.value = typeof meta.opener_en === "string" && meta.opener_en.trim() ? meta.opener_en : defaults.opener_en;
       langRulesEl.value = typeof meta.lang_rules === "string" && meta.lang_rules.trim() ? meta.lang_rules : defaults.lang_rules;
       mustAskEl.value = typeof meta.must_ask === "string" && meta.must_ask.trim() ? meta.must_ask : defaults.must_ask;
+      systemPromptEl.value = typeof meta.system_prompt === "string" && meta.system_prompt.trim() ? meta.system_prompt : defaults.system_prompt;
       const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
@@ -984,6 +1175,57 @@ app.get("/admin/ui", (req, res) => {
           rolesBox.appendChild(roleTemplate(roleName, roles[roleName] || {}));
         }
         brandsEl.appendChild(bCard);
+      }
+      setPreviewDefaults(cfg);
+    }
+
+    function setPreviewDefaults(cfg) {
+      if (!cfg) return;
+      const brandKeys = Object.keys(cfg).filter((k) => k !== "meta");
+      if (!brandKeys.length) return;
+      const firstBrandKey = brandKeys[0];
+      const metaB = cfg[firstBrandKey]?._meta || {};
+      if (previewBrandEl && !previewBrandEl.value) {
+        previewBrandEl.value = metaB.displayName || firstBrandKey;
+      }
+      if (previewRoleEl && !previewRoleEl.value) {
+        const roles = Object.keys(cfg[firstBrandKey] || {}).filter((k) => k !== "_meta");
+        if (roles.length) previewRoleEl.value = roles[0];
+      }
+      if (previewAddressEl && !previewAddressEl.value && metaB.address) {
+        previewAddressEl.value = metaB.address;
+      }
+    }
+
+    async function generatePreview() {
+      setPreviewStatus('Generando...');
+      if (previewOutputEl) previewOutputEl.value = '';
+      try {
+        const payload = {
+          brand: previewBrandEl.value || '',
+          role: previewRoleEl.value || '',
+          applicant: previewApplicantEl.value || '',
+          address: previewAddressEl.value || '',
+          cv_summary: previewCvEl.value || '',
+          lang: previewLangEl.value || 'es'
+        };
+        if (previewEnglishEl.value === 'yes') payload.englishRequired = true;
+        if (previewEnglishEl.value === 'no') payload.englishRequired = false;
+
+        const resp = await fetch('/admin/preview', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + tokenEl.value
+          },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'preview failed');
+        if (previewOutputEl) previewOutputEl.value = data.prompt || '';
+        setPreviewStatus('OK');
+      } catch (err) {
+        setPreviewStatus('Error: ' + err.message);
       }
     }
 
@@ -1007,7 +1249,8 @@ app.get("/admin/ui", (req, res) => {
           opener_es: openerEsEl.value || '',
           opener_en: openerEnEl.value || '',
           lang_rules: langRulesEl.value || '',
-          must_ask: mustAskEl.value || ''
+          must_ask: mustAskEl.value || '',
+          system_prompt: systemPromptEl.value || ''
         }
       };
       brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
@@ -1072,6 +1315,7 @@ app.get("/admin/ui", (req, res) => {
     document.getElementById('add-brand').onclick = () => {
       brandsEl.appendChild(brandTemplate(''));
     };
+    document.getElementById('preview-generate').onclick = generatePreview;
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
       tokenEl.value = urlToken;
@@ -1106,9 +1350,9 @@ async function hardStopNoAnswer({ callSid, to, brand, role, applicant, reason })
     from: null,
     brand: brand || DEFAULT_BRAND,
     role: role || DEFAULT_ROLE,
-    spokenRole: displayRole(role || DEFAULT_ROLE),
+    spokenRole: displayRole(role || DEFAULT_ROLE, brand),
     applicant: applicant || "",
-    englishRequired: roleNeedsEnglish(roleKey(role || DEFAULT_ROLE)),
+    englishRequired: roleNeedsEnglish(roleKey(role || DEFAULT_ROLE), brand),
     address: resolveAddress(brand || DEFAULT_BRAND, null),
     userSpoke: false,
     hangupTimer: null
@@ -1128,8 +1372,9 @@ app.post("/voice", (req, res) => {
   const callSid = req.body?.CallSid || "";
   const to = normalizePhone(req.body?.To || payload.to || "");
   const brand = payload.brand || DEFAULT_BRAND;
+  const brandDisplay = resolveBrandDisplay(brand);
   const role = payload.role || DEFAULT_ROLE;
-  const englishRequired = parseEnglishRequired(payload.englishRequired);
+  const englishRequired = resolveEnglishRequired(brand, role, payload || {});
   const address = resolveAddress(brand, payload.address || null);
   const applicant = payload.applicant || "";
   const cv_summary = payload.cv_summary || "";
@@ -1167,7 +1412,7 @@ app.post("/voice", (req, res) => {
   const introName = (applicant || "").split(/\s+/)[0] || "allí";
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, te llamo por una entrevista de trabajo en ${xmlEscapeAttr(brand)} para ${xmlEscapeAttr(displayRole(role))}. Soy Mariana. Si preferís en inglés, decí English.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, te llamo por una entrevista de trabajo en ${xmlEscapeAttr(brandDisplay)} para ${xmlEscapeAttr(displayRole(role, brand))}. Soy Mariana. Si preferís en inglés, decí English.</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2, english">
     <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
   </Gather>
@@ -1218,9 +1463,10 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
   if (wantsEnglish && !yes && !no) {
     const consentParams = new URLSearchParams({ token, attempt: String(attempt + 1), lang: "en" }).toString();
     const introName = (payload.applicant || "").split(/\s+/)[0] || "there";
+    const brandDisplay = resolveBrandDisplay(payload.brand || DEFAULT_BRAND);
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US" voice="Polly.Joanna-Neural">Hi ${xmlEscapeAttr(introName)}, I'm Mariana from ${xmlEscapeAttr(payload.brand || DEFAULT_BRAND)}. I'm calling about your application for ${xmlEscapeAttr(displayRole(payload.role || DEFAULT_ROLE))}.</Say>
+  <Say language="en-US" voice="Polly.Joanna-Neural">Hi ${xmlEscapeAttr(introName)}, I'm Mariana from ${xmlEscapeAttr(brandDisplay)}. I'm calling about your application for ${xmlEscapeAttr(displayRole(payload.role || DEFAULT_ROLE, payload.brand || DEFAULT_BRAND))}.</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="en-US" hints="yes, no, 1, 2, sure, ok">
     <Say language="en-US" voice="Polly.Joanna-Neural">To share the result with the team, is it okay if we record this call? Say yes or no. Or press 1 for yes, 2 for no.</Say>
   </Gather>
@@ -1354,7 +1600,7 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
       callSid,
       brand: DEFAULT_BRAND,
       role: DEFAULT_ROLE,
-      spokenRole: displayRole(DEFAULT_ROLE),
+      spokenRole: displayRole(DEFAULT_ROLE, DEFAULT_BRAND),
       to,
       applicant: "",
       englishRequired: DEFAULT_ENGLISH_REQUIRED,
@@ -1389,28 +1635,30 @@ app.post("/call", async (req, res) => {
       return res.status(401).json({ error: "unauthorized" });
     }
 
+    const body = req.body || {};
     const {
       to,
       brand = DEFAULT_BRAND,
       role = DEFAULT_ROLE,
-      englishRequired = DEFAULT_ENGLISH_REQUIRED,
       address,
       applicant = "",
       cv_summary = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
-    } = req.body || {};
+    } = body;
 
     const roleClean = sanitizeRole(role);
     const toNorm = normalizePhone(to);
     const fromNorm = normalizePhone(from);
+
+    const englishReqBool = resolveEnglishRequired(brand, roleClean, body);
 
     console.log("[/call] inbound", {
       to: toNorm,
       from: fromNorm,
       brand,
       role: roleClean,
-      englishRequired: !!englishRequired,
+      englishRequired: englishReqBool,
       address: address || resolveAddress(brand, null),
       applicant,
       cvLen: (cv_summary || "").length
@@ -1424,7 +1672,6 @@ app.post("/call", async (req, res) => {
     }
 
     const resolvedAddress = address || resolveAddress(brand, null);
-    const englishReqBool = parseEnglishRequired(englishRequired);
 
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
@@ -1495,7 +1742,7 @@ wss.on("connection", (twilioWs, req) => {
   let applicant = url.searchParams.get("applicant") || "";
   let cvSummary = url.searchParams.get("cv_summary") || "";
   let resumeUrl = url.searchParams.get("resume_url") || "";
-  let spokenRole = displayRole(role);
+  let spokenRole = displayRole(role, brand);
 
   console.log("[media-stream] connect", {
     brand,
@@ -1630,7 +1877,7 @@ const openaiWs = new WebSocket(
     call.started = true;
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
-    const spokenRole = call.spokenRole || displayRole(call.role || "");
+    const spokenRole = call.spokenRole || displayRole(call.role || "", call.brand);
     const openerLine =
       call.lang === "en"
         ? (firstName
@@ -1780,7 +2027,7 @@ DECÍ ESTO Y CALLATE:
         applicant = sp.applicant || applicant;
         cvSummary = sp.cv_summary || cvSummary;
         resumeUrl = sp.resume_url || resumeUrl;
-        spokenRole = displayRole(role);
+        spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
       }
 
@@ -2073,7 +2320,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
   const applicant = call.applicant || "No informado";
   const tel = call.to || call.from || "No informado";
-  const role = call.spokenRole || displayRole(call.role || "");
+  const role = call.spokenRole || displayRole(call.role || "", call.brand);
   const area = ex.area || "No informada";
   const duration = formatDuration(call.durationSec);
   const englishLevel = ex.english_level || "No informado";
@@ -2159,22 +2406,22 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
 }
 
 async function placeOutboundCall(payload) {
+  const data = payload || {};
   const {
     to,
     from = TWILIO_VOICE_FROM,
     brand = DEFAULT_BRAND,
     role = DEFAULT_ROLE,
-    englishRequired = DEFAULT_ENGLISH_REQUIRED,
     address,
     applicant = "",
     cv_summary = "",
     resume_url = ""
-  } = payload || {};
+  } = data;
 
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
   const roleClean = sanitizeRole(role);
-  const englishReqBool = parseEnglishRequired(englishRequired);
+  const englishReqBool = resolveEnglishRequired(brand, roleClean, data);
 
   if (!toNorm || !fromNorm) throw new Error("missing to/from");
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !PUBLIC_BASE_URL) {
@@ -2289,7 +2536,7 @@ async function markNoAnswer(call, reason) {
       call.hangupTimer = null;
     }
     await hangupCall(call);
-    const smsMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role)} | callId: ${call.callSid || "n/a"}`;
+    const smsMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role, call.brand)} | callId: ${call.callSid || "n/a"}`;
     const toNumber = call.to || call.from;
     if (toNumber) {
       await sendSms(toNumber, smsMsg);
