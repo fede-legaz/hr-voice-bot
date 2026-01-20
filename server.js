@@ -6,16 +6,30 @@ const WebSocket = require("ws");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { Pool } = require("pg");
+const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL || "";
+const DATABASE_SSL = process.env.DATABASE_SSL !== "0";
+const SPACES_ENDPOINT = process.env.SPACES_ENDPOINT || "";
+const SPACES_REGION = process.env.SPACES_REGION || "";
+const SPACES_BUCKET = process.env.SPACES_BUCKET || "";
+const SPACES_KEY = process.env.SPACES_KEY || "";
+const SPACES_SECRET = process.env.SPACES_SECRET || "";
+const SPACES_PUBLIC_URL = (process.env.SPACES_PUBLIC_URL || "").replace(/\/+$/, "");
+const SPACES_PUBLIC = process.env.SPACES_PUBLIC === "1";
 
 const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-4o-mini-realtime-preview-2024-12-17";
 const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
 const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
 const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
+const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
+const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.AUDIO_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
 const VOICE = process.env.VOICE || "marin";
 const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
 
@@ -651,6 +665,8 @@ function buildCallFromPayload(payload, extra = {}) {
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
+    audioUrl: payload?.audio_url || "",
+    cvUrl: payload?.cv_url || "",
     outcome: null,
     noTranscriptReason: null,
     incomplete: true,
@@ -687,6 +703,20 @@ let roleConfig = null;
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
 const rolesConfigPath = path.join(__dirname, "config", "roles.json");
+const dbPool = DATABASE_URL
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      ssl: DATABASE_SSL ? { rejectUnauthorized: false } : undefined
+    })
+  : null;
+const spacesEnabled = !!(SPACES_BUCKET && SPACES_KEY && SPACES_SECRET && SPACES_ENDPOINT);
+const s3Client = spacesEnabled
+  ? new S3Client({
+      region: SPACES_REGION || "us-east-1",
+      endpoint: SPACES_ENDPOINT,
+      credentials: { accessKeyId: SPACES_KEY, secretAccessKey: SPACES_SECRET }
+    })
+  : null;
 
 function cleanup() {
   const now = Date.now();
@@ -908,6 +938,139 @@ function estimateDataUrlBytes(dataUrl) {
   return Math.ceil((base64.length * 3) / 4);
 }
 
+async function dbQuery(sql, params = []) {
+  if (!dbPool) return null;
+  return dbPool.query(sql, params);
+}
+
+async function initDb() {
+  if (!dbPool) return;
+  try {
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS cvs (
+        id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        brand TEXT,
+        brand_key TEXT,
+        role TEXT,
+        role_key TEXT,
+        applicant TEXT,
+        phone TEXT,
+        cv_text TEXT,
+        cv_url TEXT,
+        source TEXT
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS calls (
+        call_sid TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        brand TEXT,
+        brand_key TEXT,
+        role TEXT,
+        role_key TEXT,
+        applicant TEXT,
+        phone TEXT,
+        score INTEGER,
+        recommendation TEXT,
+        summary TEXT,
+        warmth INTEGER,
+        fluency INTEGER,
+        english TEXT,
+        english_detail TEXT,
+        experience TEXT,
+        area TEXT,
+        availability TEXT,
+        salary TEXT,
+        trial TEXT,
+        stay_plan TEXT,
+        stay_detail TEXT,
+        mobility TEXT,
+        outcome TEXT,
+        outcome_detail TEXT,
+        duration_sec INTEGER,
+        audio_url TEXT,
+        english_required BOOLEAN,
+        cv_id TEXT,
+        cv_text TEXT,
+        cv_url TEXT
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_brand ON calls (brand_key);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_score ON calls (score);`);
+
+    console.log("[db] ready");
+  } catch (err) {
+    console.error("[db] init failed", err);
+  }
+}
+initDb();
+
+function getSpacesPublicBaseUrl() {
+  if (SPACES_PUBLIC_URL) return SPACES_PUBLIC_URL;
+  if (SPACES_BUCKET && SPACES_REGION) {
+    return `https://${SPACES_BUCKET}.${SPACES_REGION}.digitaloceanspaces.com`;
+  }
+  return "";
+}
+
+function normalizeSpacesKey(value = "") {
+  if (!value) return "";
+  if (value.startsWith("s3://")) {
+    const rest = value.slice("s3://".length);
+    if (rest.startsWith(`${SPACES_BUCKET}/`)) return rest.slice(SPACES_BUCKET.length + 1);
+    return rest;
+  }
+  return value;
+}
+
+async function resolveStoredUrl(value, ttlSeconds = 3600) {
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (!s3Client || !SPACES_BUCKET) return value;
+  const key = normalizeSpacesKey(value);
+  const publicBase = getSpacesPublicBaseUrl();
+  if (publicBase || SPACES_PUBLIC) {
+    return `${publicBase}/${key}`;
+  }
+  const cmd = new GetObjectCommand({ Bucket: SPACES_BUCKET, Key: key });
+  return getSignedUrl(s3Client, cmd, { expiresIn: ttlSeconds });
+}
+
+function parseDataUrl(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string") return null;
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) return null;
+  const mime = match[1];
+  const buffer = Buffer.from(match[2], "base64");
+  return { mime, buffer };
+}
+
+function sanitizeFilename(name = "") {
+  if (!name) return "file";
+  return name.replace(/[^\w.\-]+/g, "_");
+}
+
+async function uploadToSpaces({ key, body, contentType }) {
+  if (!s3Client || !SPACES_BUCKET) return "";
+  const params = {
+    Bucket: SPACES_BUCKET,
+    Key: key,
+    Body: body,
+    ContentType: contentType || "application/octet-stream"
+  };
+  if (SPACES_PUBLIC || SPACES_PUBLIC_URL) {
+    params.ACL = "public-read";
+  }
+  await s3Client.send(new PutObjectCommand(params));
+  return key;
+}
+
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
@@ -988,7 +1151,7 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/admin/calls", requireConfig, (req, res) => {
+app.get("/admin/calls", requireConfig, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
   const recParam = (req.query?.recommendation || "").toString().toLowerCase();
@@ -996,6 +1159,16 @@ app.get("/admin/calls", requireConfig, (req, res) => {
   const minScore = Number(req.query?.minScore);
   const maxScore = Number(req.query?.maxScore);
   const limit = Math.min(Number(req.query?.limit) || 200, 500);
+
+  if (dbPool) {
+    try {
+      const calls = await fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit });
+      return res.json({ ok: true, calls });
+    } catch (err) {
+      console.error("[admin/calls] db failed", err);
+      return res.status(500).json({ error: "db_failed" });
+    }
+  }
 
   let list = callHistory.slice();
   if (brandParam) {
@@ -1019,29 +1192,47 @@ app.get("/admin/calls", requireConfig, (req, res) => {
     list = list.filter((c) => (c.applicant || "").toLowerCase().includes(qParam) || (c.phone || "").includes(qParam));
   }
 
-  const results = list.slice(0, limit).map((entry) => {
-    if (!entry) return entry;
+  const results = [];
+  for (const entry of list.slice(0, limit)) {
+    if (!entry) continue;
     if ((!entry.cv_text || !entry.cv_text.trim()) && entry.cv_id) {
       const cvEntry = cvStoreById.get(entry.cv_id);
       if (cvEntry) {
-        return {
+        const audioUrl = await resolveStoredUrl(entry.audio_url || "");
+        const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+        results.push({
           ...entry,
           cv_text: cvEntry.cv_text || "",
           applicant: entry.applicant || cvEntry.applicant || "",
-          phone: entry.phone || cvEntry.phone || ""
-        };
+          phone: entry.phone || cvEntry.phone || "",
+          audio_url: audioUrl || entry.audio_url || "",
+          cv_url: cvUrl || entry.cv_url || cvEntry.cv_url || ""
+        });
+        continue;
       }
     }
-    return entry;
-  });
+    const audioUrl = await resolveStoredUrl(entry.audio_url || "");
+    const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+    results.push({ ...entry, audio_url: audioUrl || entry.audio_url || "", cv_url: cvUrl || entry.cv_url || "" });
+  }
   return res.json({ ok: true, calls: results });
 });
 
-app.get("/admin/cv", requireConfig, (req, res) => {
+app.get("/admin/cv", requireConfig, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
   const qParam = (req.query?.q || "").toString().toLowerCase();
   const limit = Math.min(Number(req.query?.limit) || 200, 500);
+
+  if (dbPool) {
+    try {
+      const cvs = await fetchCvFromDb({ brandParam, roleParam, qParam, limit });
+      return res.json({ ok: true, cvs });
+    } catch (err) {
+      console.error("[admin/cv] db failed", err);
+      return res.status(500).json({ error: "db_failed" });
+    }
+  }
 
   let list = cvStore.slice();
   if (brandParam) {
@@ -1058,18 +1249,44 @@ app.get("/admin/cv", requireConfig, (req, res) => {
     });
   }
 
-  return res.json({ ok: true, cvs: list.slice(0, limit) });
+  const results = [];
+  for (const entry of list.slice(0, limit)) {
+    if (!entry) continue;
+    const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+    results.push({ ...entry, cv_url: cvUrl || entry.cv_url || "" });
+  }
+  return res.json({ ok: true, cvs: results });
 });
 
-app.post("/admin/cv", requireConfig, (req, res) => {
+app.post("/admin/cv", requireConfig, async (req, res) => {
   try {
     const body = req.body || {};
+    let cvUrl = "";
+    const fileDataUrl = body.cv_file_data_url || "";
+    const fileName = body.cv_file_name || body.file_name || "";
+    if (fileDataUrl) {
+      const size = estimateDataUrlBytes(fileDataUrl);
+      if (size > CV_UPLOAD_MAX_BYTES) {
+        return res.status(400).json({ error: "cv_file_too_large" });
+      }
+      const parsed = parseDataUrl(fileDataUrl);
+      if (parsed && spacesEnabled) {
+        const ext = path.extname(fileName || "") || (parsed.mime === "application/pdf" ? ".pdf" : ".bin");
+        const id = body.id || randomToken();
+        const key = `cvs/${id}/${sanitizeFilename(path.basename(fileName || `cv${ext}`))}`;
+        await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
+        cvUrl = key;
+        body.id = id;
+      }
+    }
     const entry = buildCvEntry(body);
     if (!entry.cv_text) {
       return res.status(400).json({ error: "missing_cv_text" });
     }
+    if (cvUrl) entry.cv_url = cvUrl;
     recordCvEntry(entry);
-    return res.json({ ok: true, cv: entry });
+    const resolvedUrl = await resolveStoredUrl(entry.cv_url || "");
+    return res.json({ ok: true, cv: { ...entry, cv_url: resolvedUrl || entry.cv_url || "" } });
   } catch (err) {
     console.error("[admin/cv] failed", err);
     return res.status(400).json({ error: "cv_failed", detail: err.message });
@@ -1841,6 +2058,10 @@ app.get("/admin/ui", (req, res) => {
     let resultsTimer = null;
     let cvTimer = null;
     let currentCvSource = '';
+    let currentCvFileDataUrl = '';
+    let currentCvFileName = '';
+    let currentCvFileType = '';
+    let currentCvId = '';
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -2693,6 +2914,15 @@ app.get("/admin/ui", (req, res) => {
       return canvas.toDataURL('image/jpeg', OCR_JPEG_QUALITY);
     }
 
+    async function readFileAsDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result || '');
+        reader.onerror = () => reject(new Error('No se pudo leer el archivo.'));
+        reader.readAsDataURL(file);
+      });
+    }
+
     async function runOcr(images) {
       if (!tokenEl.value) throw new Error('Necesitás autenticarte para usar OCR.');
       const resp = await fetch('/admin/ocr', {
@@ -2708,6 +2938,10 @@ app.get("/admin/ui", (req, res) => {
     async function handleCvFile(file) {
       if (!file) return;
       currentCvSource = file.name || '';
+      currentCvFileName = file.name || '';
+      currentCvFileType = file.type || '';
+      currentCvFileDataUrl = '';
+      currentCvId = '';
       setCvStatus('Leyendo CV...');
       try {
         let text = '';
@@ -2719,12 +2953,15 @@ app.get("/admin/ui", (req, res) => {
             const images = await renderPdfToImages(pdf, OCR_MAX_PAGES);
             text = await runOcr(images);
           }
+          currentCvFileDataUrl = await readFileAsDataUrl(file);
         } else if (file.type.startsWith('image/')) {
           setCvStatus('Leyendo imagen con OCR...');
           const dataUrl = await fileToDataUrl(file);
           text = await runOcr([dataUrl]);
+          currentCvFileDataUrl = dataUrl;
         } else if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
           text = await file.text();
+          currentCvFileDataUrl = '';
         } else {
           throw new Error('Formato no soportado (PDF, imagen o TXT).');
         }
@@ -2760,7 +2997,16 @@ app.get("/admin/ui", (req, res) => {
           setCallStatus('Error: falta CV.');
           return;
         }
+        let cvId = payloadOverride?.cv_id || currentCvId || '';
+        if (!cvId && basePayload.cv_text) {
+          const saved = await saveCvEntry({ silent: true });
+          if (saved && saved.id) {
+            cvId = saved.id;
+            currentCvId = saved.id;
+          }
+        }
         const payload = payloadOverride ? { ...basePayload, ...payloadOverride } : basePayload;
+        if (cvId) payload.cv_id = cvId;
         if (!payload.cv_summary && payload.cv_text) {
           payload.cv_summary = truncateText(payload.cv_text, CV_CHAR_LIMIT);
         }
@@ -2840,13 +3086,31 @@ app.get("/admin/ui", (req, res) => {
         addCell(call.salary);
         addCell(call.summary || call.outcome_detail || '—');
         const cvTd = document.createElement('td');
-        if (call.cv_text) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'secondary';
-          btn.textContent = 'Ver CV';
-          btn.onclick = () => openCvModal(call.cv_text || '');
-          cvTd.appendChild(btn);
+        if (call.cv_text || call.cv_url) {
+          const wrap = document.createElement('div');
+          wrap.className = 'inline';
+          if (call.cv_text) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'secondary';
+            btn.textContent = 'Ver CV';
+            btn.onclick = () => openCvModal(call.cv_text || '');
+            wrap.appendChild(btn);
+          }
+          if (call.cv_url) {
+            const link = document.createElement('a');
+            link.href = call.cv_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = 'Archivo';
+            link.className = 'secondary';
+            link.style.textDecoration = 'none';
+            link.style.padding = '8px 12px';
+            link.style.borderRadius = '10px';
+            link.style.border = '1px solid var(--border)';
+            wrap.appendChild(link);
+          }
+          cvTd.appendChild(wrap);
         } else {
           cvTd.textContent = '—';
         }
@@ -2944,13 +3208,31 @@ app.get("/admin/ui", (req, res) => {
         addCell(item.applicant || '');
         addCell(item.phone || '');
         const cvTd = document.createElement('td');
-        if (item.cv_text) {
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'secondary';
-          btn.textContent = 'Ver CV';
-          btn.onclick = () => openCvModal(item.cv_text || '');
-          cvTd.appendChild(btn);
+        if (item.cv_text || item.cv_url) {
+          const wrap = document.createElement('div');
+          wrap.className = 'inline';
+          if (item.cv_text) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'secondary';
+            btn.textContent = 'Ver CV';
+            btn.onclick = () => openCvModal(item.cv_text || '');
+            wrap.appendChild(btn);
+          }
+          if (item.cv_url) {
+            const link = document.createElement('a');
+            link.href = item.cv_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = 'Archivo';
+            link.className = 'secondary';
+            link.style.textDecoration = 'none';
+            link.style.padding = '8px 12px';
+            link.style.borderRadius = '10px';
+            link.style.border = '1px solid var(--border)';
+            wrap.appendChild(link);
+          }
+          cvTd.appendChild(wrap);
         } else {
           cvTd.textContent = '—';
         }
@@ -2960,6 +3242,7 @@ app.get("/admin/ui", (req, res) => {
         callBtn.type = 'button';
         callBtn.textContent = 'Llamar';
         callBtn.onclick = () => {
+          currentCvId = item.id || '';
           callBrandEl.value = item.brandKey || item.brand || '';
           updateCallRoleOptions(callBrandEl.value);
           callRoleEl.value = item.roleKey || item.role || '';
@@ -3000,36 +3283,45 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function saveCvEntry({ silent } = {}) {
+      if (!silent) setCallStatus('Guardando CV...');
+      const payload = {
+        brand: callBrandEl.value || '',
+        role: callRoleEl.value || '',
+        applicant: callNameEl.value || '',
+        phone: callPhoneEl.value || '',
+        cv_text: callCvTextEl.value || '',
+        source: currentCvSource || '',
+        cv_file_data_url: currentCvFileDataUrl || '',
+        cv_file_name: currentCvFileName || ''
+      };
+      if (!payload.applicant.trim()) {
+        maybeFillNameFromCv(payload.cv_text || '');
+        payload.applicant = callNameEl.value || '';
+      }
+      if (!payload.applicant.trim()) {
+        if (!silent) setCallStatus('Error: falta nombre y apellido.');
+        return null;
+      }
+      if (!payload.cv_text.trim()) {
+        if (!silent) setCallStatus('Error: falta CV.');
+        return null;
+      }
+      const resp = await fetch('/admin/cv', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'cv save failed');
+      return data.cv || null;
+    }
+
     async function saveCv() {
-      setCallStatus('Guardando CV...');
       try {
-        const payload = {
-          brand: callBrandEl.value || '',
-          role: callRoleEl.value || '',
-          applicant: callNameEl.value || '',
-          phone: callPhoneEl.value || '',
-          cv_text: callCvTextEl.value || '',
-          source: currentCvSource || ''
-        };
-        if (!payload.applicant.trim()) {
-          maybeFillNameFromCv(payload.cv_text || '');
-          payload.applicant = callNameEl.value || '';
-        }
-        if (!payload.applicant.trim()) {
-          setCallStatus('Error: falta nombre y apellido.');
-          return;
-        }
-        if (!payload.cv_text.trim()) {
-          setCallStatus('Error: falta CV.');
-          return;
-        }
-        const resp = await fetch('/admin/cv', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
-          body: JSON.stringify(payload)
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.error || 'cv save failed');
+        const entry = await saveCvEntry({ silent: false });
+        if (!entry) return;
+        currentCvId = entry.id || '';
         setCallStatus('CV guardado.');
         loadCvList();
       } catch (err) {
@@ -3071,6 +3363,10 @@ app.get("/admin/ui", (req, res) => {
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
+    callBrandEl.addEventListener('change', () => { currentCvId = ''; });
+    callRoleEl.addEventListener('change', () => { currentCvId = ''; });
+    callNameEl.addEventListener('input', () => { currentCvId = ''; });
+    callPhoneEl.addEventListener('input', () => { currentCvId = ''; });
     callBtnEl.onclick = placeCall;
     cvSaveBtnEl.onclick = saveCv;
     resultsRefreshEl.onclick = loadResults;
@@ -3096,6 +3392,9 @@ app.get("/admin/ui", (req, res) => {
       event.preventDefault();
       cvDropEl.classList.remove('drag');
       handleCvFile(event.dataTransfer.files[0]);
+    });
+    callCvTextEl.addEventListener('input', () => {
+      currentCvId = '';
     });
     callCvTextEl.addEventListener('blur', () => {
       if (!callNameEl.value || !callNameEl.value.trim()) {
@@ -3438,12 +3737,13 @@ app.post("/call", async (req, res) => {
       applicant = "",
       cv_summary = "",
       cv_text = "",
-      cv_id = "",
+      cv_id: cvIdRaw = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
     } = body;
 
     const cvSummary = (cv_summary || cv_text || "").trim();
+    let cvId = cvIdRaw || "";
 
     const roleClean = sanitizeRole(role);
     const toNorm = normalizePhone(to);
@@ -3459,7 +3759,7 @@ app.post("/call", async (req, res) => {
       englishRequired: englishReqBool,
       address: address || resolveAddress(brand, null),
       applicant,
-      cvId: cv_id || "",
+      cvId,
       cvLen: cvSummary.length
     });
 
@@ -3472,9 +3772,21 @@ app.post("/call", async (req, res) => {
 
     const resolvedAddress = address || resolveAddress(brand, null);
 
+    if (!cvId && cvSummary && dbPool) {
+      const cvEntry = buildCvEntry({
+        brand,
+        role: roleClean,
+        applicant,
+        phone: toNorm,
+        cv_text: cv_text || cvSummary
+      });
+      recordCvEntry(cvEntry);
+      cvId = cvEntry.id;
+    }
+
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
-      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary: cvSummary, cv_id, resume_url },
+      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary: cvSummary, cv_id: cvId, resume_url },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
@@ -3489,7 +3801,7 @@ app.post("/call", async (req, res) => {
         address: resolvedAddress,
         applicant,
         cv_summary: cvSummary,
-        cv_id,
+        cv_id: cvId,
         resume_url
       },
       expiresAt: Date.now() + CALL_TTL_MS
@@ -3529,7 +3841,7 @@ app.post("/call", async (req, res) => {
           address: resolvedAddress,
           applicant,
           cv_summary: cvSummary,
-          cv_id,
+          cv_id: cvId,
           resume_url
         },
         { callSid: data.sid, to: toNorm }
@@ -3594,6 +3906,8 @@ wss.on("connection", (twilioWs, req) => {
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
+    audioUrl: "",
+    cvUrl: "",
     outcome: null,
     noAnswerReason: null,
     outcome: null,
@@ -3966,6 +4280,17 @@ async function handleRecordingStatus(call, { recordingUrl, recordingSid }) {
   }
   const dest = path.join(recordingsDir, `${recordingSid}.mp3`);
   await downloadRecordingWithRetry(`${recordingUrl}.mp3`, dest);
+  try {
+    const stats = await fs.promises.stat(dest);
+    if (spacesEnabled && stats.size <= AUDIO_UPLOAD_MAX_BYTES) {
+      const key = `audio/${call.callSid || recordingSid}.mp3`;
+      const body = await fs.promises.readFile(dest);
+      await uploadToSpaces({ key, body, contentType: "audio/mpeg" });
+      call.audioUrl = key;
+    }
+  } catch (err) {
+    console.error("[recording] spaces upload failed", err);
+  }
   const token = randomToken();
   tokens.set(token, { path: dest, expiresAt: Date.now() + TOKEN_TTL_MS });
   call.recordingPath = dest;
@@ -4176,10 +4501,11 @@ function buildCallHistoryEntry(call) {
     outcome_detail: call.noTranscriptReason || call.noAnswerReason || "",
     duration_sec: typeof call.durationSec === "number" ? call.durationSec : null,
     created_at: createdAt,
-    audio_url: call.recordingToken ? `${PUBLIC_BASE_URL}/r/${call.recordingToken}` : "",
+    audio_url: call.audioUrl || (call.recordingToken ? `${PUBLIC_BASE_URL}/r/${call.recordingToken}` : ""),
     english_required: !!call.englishRequired,
     cv_id: call.cvId || "",
-    cv_text: call.cvText || call.cvSummary || ""
+    cv_text: call.cvText || call.cvSummary || "",
+    cv_url: call.cvUrl || ""
   };
 }
 
@@ -4191,6 +4517,9 @@ function recordCallHistory(call) {
   if (existing) {
     Object.assign(existing, entry);
     scheduleCallHistorySave();
+    if (dbPool) {
+      upsertCallDb(existing).catch((err) => console.error("[call-history] db upsert failed", err));
+    }
     return;
   }
   entry._key = key;
@@ -4201,6 +4530,9 @@ function recordCallHistory(call) {
     if (removed && removed._key) callHistoryByKey.delete(removed._key);
   }
   scheduleCallHistorySave();
+  if (dbPool) {
+    upsertCallDb(entry).catch((err) => console.error("[call-history] db upsert failed", err));
+  }
 }
 
 function buildCvEntry(payload = {}) {
@@ -4212,6 +4544,7 @@ function buildCvEntry(payload = {}) {
   const cvText = (payload.cv_text || payload.cv_summary || "").trim();
   const source = (payload.source || payload.file_name || "").trim();
   const id = payload.id || randomToken();
+  const cvUrl = payload.cv_url || "";
   return {
     id,
     created_at: createdAt,
@@ -4223,6 +4556,7 @@ function buildCvEntry(payload = {}) {
     phone,
     cv_text: cvText,
     cv_len: cvText.length,
+    cv_url: cvUrl,
     source
   };
 }
@@ -4233,6 +4567,9 @@ function recordCvEntry(entry) {
   if (existing) {
     Object.assign(existing, entry);
     scheduleCvStoreSave();
+    if (dbPool) {
+      upsertCvDb(entry).catch((err) => console.error("[cv-store] db upsert failed", err));
+    }
     return;
   }
   cvStore.unshift(entry);
@@ -4242,6 +4579,290 @@ function recordCvEntry(entry) {
     if (removed && removed.id) cvStoreById.delete(removed.id);
   }
   scheduleCvStoreSave();
+  if (dbPool) {
+    upsertCvDb(entry).catch((err) => console.error("[cv-store] db upsert failed", err));
+  }
+}
+
+async function upsertCvDb(entry) {
+  if (!dbPool || !entry) return;
+  const sql = `
+    INSERT INTO cvs (
+      id, created_at, brand, brand_key, role, role_key, applicant, phone,
+      cv_text, cv_url, source
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      brand = EXCLUDED.brand,
+      brand_key = EXCLUDED.brand_key,
+      role = EXCLUDED.role,
+      role_key = EXCLUDED.role_key,
+      applicant = EXCLUDED.applicant,
+      phone = EXCLUDED.phone,
+      cv_text = EXCLUDED.cv_text,
+      cv_url = EXCLUDED.cv_url,
+      source = EXCLUDED.source
+  `;
+  const values = [
+    entry.id,
+    entry.created_at || new Date().toISOString(),
+    entry.brand || "",
+    entry.brandKey || "",
+    entry.role || "",
+    entry.roleKey || "",
+    entry.applicant || "",
+    entry.phone || "",
+    entry.cv_text || "",
+    entry.cv_url || "",
+    entry.source || ""
+  ];
+  await dbQuery(sql, values);
+}
+
+async function upsertCallDb(entry) {
+  if (!dbPool || !entry) return;
+  const callId = entry.callId || entry._key || randomToken();
+  const sql = `
+    INSERT INTO calls (
+      call_sid, created_at, brand, brand_key, role, role_key, applicant, phone,
+      score, recommendation, summary, warmth, fluency, english, english_detail,
+      experience, area, availability, salary, trial, stay_plan, stay_detail,
+      mobility, outcome, outcome_detail, duration_sec, audio_url,
+      english_required, cv_id, cv_text, cv_url
+    ) VALUES (
+      $1,$2,$3,$4,$5,$6,$7,$8,
+      $9,$10,$11,$12,$13,$14,$15,
+      $16,$17,$18,$19,$20,$21,$22,
+      $23,$24,$25,$26,$27,
+      $28,$29,$30,$31
+    )
+    ON CONFLICT (call_sid) DO UPDATE SET
+      brand = EXCLUDED.brand,
+      brand_key = EXCLUDED.brand_key,
+      role = EXCLUDED.role,
+      role_key = EXCLUDED.role_key,
+      applicant = EXCLUDED.applicant,
+      phone = EXCLUDED.phone,
+      score = EXCLUDED.score,
+      recommendation = EXCLUDED.recommendation,
+      summary = EXCLUDED.summary,
+      warmth = EXCLUDED.warmth,
+      fluency = EXCLUDED.fluency,
+      english = EXCLUDED.english,
+      english_detail = EXCLUDED.english_detail,
+      experience = EXCLUDED.experience,
+      area = EXCLUDED.area,
+      availability = EXCLUDED.availability,
+      salary = EXCLUDED.salary,
+      trial = EXCLUDED.trial,
+      stay_plan = EXCLUDED.stay_plan,
+      stay_detail = EXCLUDED.stay_detail,
+      mobility = EXCLUDED.mobility,
+      outcome = EXCLUDED.outcome,
+      outcome_detail = EXCLUDED.outcome_detail,
+      duration_sec = EXCLUDED.duration_sec,
+      audio_url = EXCLUDED.audio_url,
+      english_required = EXCLUDED.english_required,
+      cv_id = EXCLUDED.cv_id,
+      cv_text = EXCLUDED.cv_text,
+      cv_url = EXCLUDED.cv_url
+  `;
+  const values = [
+    callId,
+    entry.created_at || new Date().toISOString(),
+    entry.brand || "",
+    entry.brandKey || "",
+    entry.role || "",
+    entry.roleKey || "",
+    entry.applicant || "",
+    entry.phone || "",
+    entry.score !== null && entry.score !== undefined ? entry.score : null,
+    entry.recommendation || null,
+    entry.summary || "",
+    entry.warmth !== null && entry.warmth !== undefined ? entry.warmth : null,
+    entry.fluency !== null && entry.fluency !== undefined ? entry.fluency : null,
+    entry.english || "",
+    entry.english_detail || "",
+    entry.experience || "",
+    entry.area || "",
+    entry.availability || "",
+    entry.salary || "",
+    entry.trial || "",
+    entry.stay_plan || "",
+    entry.stay_detail || "",
+    entry.mobility || "",
+    entry.outcome || "",
+    entry.outcome_detail || "",
+    entry.duration_sec !== null && entry.duration_sec !== undefined ? entry.duration_sec : null,
+    entry.audio_url || "",
+    entry.english_required ? true : false,
+    entry.cv_id || "",
+    entry.cv_text || "",
+    entry.cv_url || ""
+  ];
+  await dbQuery(sql, values);
+}
+
+async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit }) {
+  if (!dbPool) return [];
+  const where = [];
+  const values = [];
+  if (brandParam) {
+    values.push(brandKey(brandParam));
+    where.push(`c.brand_key = $${values.length}`);
+  }
+  if (roleParam) {
+    values.push(normalizeKey(roleParam));
+    where.push(`c.role_key = $${values.length}`);
+  }
+  if (recParam) {
+    values.push(recParam);
+    where.push(`LOWER(c.recommendation) = $${values.length}`);
+  }
+  if (!Number.isNaN(minScore)) {
+    values.push(minScore);
+    where.push(`c.score >= $${values.length}`);
+  }
+  if (!Number.isNaN(maxScore)) {
+    values.push(maxScore);
+    where.push(`c.score <= $${values.length}`);
+  }
+  if (qParam) {
+    values.push(`%${qParam}%`);
+    where.push(`(LOWER(c.applicant) LIKE $${values.length} OR c.phone LIKE $${values.length})`);
+  }
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const sql = `
+    SELECT
+      c.call_sid,
+      c.created_at,
+      c.brand,
+      c.brand_key,
+      c.role,
+      c.role_key,
+      c.applicant,
+      c.phone,
+      c.score,
+      c.recommendation,
+      c.summary,
+      c.warmth,
+      c.fluency,
+      c.english,
+      c.english_detail,
+      c.experience,
+      c.area,
+      c.availability,
+      c.salary,
+      c.trial,
+      c.stay_plan,
+      c.stay_detail,
+      c.mobility,
+      c.outcome,
+      c.outcome_detail,
+      c.duration_sec,
+      c.audio_url,
+      c.english_required,
+      c.cv_id,
+      COALESCE(c.cv_text, cv.cv_text) AS cv_text,
+      COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
+      COALESCE(c.phone, cv.phone) AS phone_resolved
+    FROM calls c
+    LEFT JOIN cvs cv ON c.cv_id = cv.id
+    ${whereSql}
+    ORDER BY c.created_at DESC
+    LIMIT $${values.length}
+  `;
+  const result = await dbQuery(sql, values);
+  const rows = result?.rows || [];
+  const mapped = [];
+  for (const row of rows) {
+    const audioUrl = await resolveStoredUrl(row.audio_url || "");
+    const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    mapped.push({
+      callId: row.call_sid,
+      brand: row.brand || "",
+      brandKey: row.brand_key || "",
+      role: row.role || "",
+      roleKey: row.role_key || "",
+      applicant: row.applicant_resolved || row.applicant || "",
+      phone: row.phone_resolved || row.phone || "",
+      score: row.score !== null ? Number(row.score) : null,
+      recommendation: row.recommendation || null,
+      summary: row.summary || "",
+      warmth: row.warmth !== null ? Number(row.warmth) : null,
+      fluency: row.fluency !== null ? Number(row.fluency) : null,
+      english: row.english || "",
+      english_detail: row.english_detail || "",
+      experience: row.experience || "",
+      area: row.area || "",
+      availability: row.availability || "",
+      salary: row.salary || "",
+      trial: row.trial || "",
+      stay_plan: row.stay_plan || "",
+      stay_detail: row.stay_detail || "",
+      mobility: row.mobility || "",
+      outcome: row.outcome || "",
+      outcome_detail: row.outcome_detail || "",
+      duration_sec: row.duration_sec !== null ? Number(row.duration_sec) : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+      audio_url: audioUrl || "",
+      english_required: !!row.english_required,
+      cv_id: row.cv_id || "",
+      cv_text: row.cv_text || "",
+      cv_url: cvUrl || ""
+    });
+  }
+  return mapped;
+}
+
+async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
+  if (!dbPool) return [];
+  const where = [];
+  const values = [];
+  if (brandParam) {
+    values.push(brandKey(brandParam));
+    where.push(`brand_key = $${values.length}`);
+  }
+  if (roleParam) {
+    values.push(normalizeKey(roleParam));
+    where.push(`role_key = $${values.length}`);
+  }
+  if (qParam) {
+    values.push(`%${qParam}%`);
+    where.push(`(LOWER(applicant) LIKE $${values.length} OR phone LIKE $${values.length})`);
+  }
+  values.push(limit);
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const sql = `
+    SELECT id, created_at, brand, brand_key, role, role_key, applicant, phone, cv_text, cv_url, source
+    FROM cvs
+    ${whereSql}
+    ORDER BY created_at DESC
+    LIMIT $${values.length}
+  `;
+  const result = await dbQuery(sql, values);
+  const rows = result?.rows || [];
+  const mapped = [];
+  for (const row of rows) {
+    const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    mapped.push({
+      id: row.id,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+      brand: row.brand || "",
+      brandKey: row.brand_key || "",
+      role: row.role || "",
+      roleKey: row.role_key || "",
+      applicant: row.applicant || "",
+      phone: row.phone || "",
+      cv_text: row.cv_text || "",
+      cv_url: cvUrl || "",
+      source: row.source || ""
+    });
+  }
+  return mapped;
 }
 
 function formatWhatsapp(scoring, call, opts = {}) {
@@ -4340,6 +4961,17 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
   console.log("[whatsapp] sent", { sid: data.sid, hasMedia: !!mediaUrl });
 }
 
+async function getCallAudioMediaUrl(call) {
+  if (!call) return "";
+  if (call.audioUrl) {
+    return resolveStoredUrl(call.audioUrl, 24 * 60 * 60);
+  }
+  if (call.recordingToken) {
+    return `${PUBLIC_BASE_URL}/r/${call.recordingToken}`;
+  }
+  return "";
+}
+
 async function placeOutboundCall(payload) {
   const data = payload || {};
   const {
@@ -4351,10 +4983,11 @@ async function placeOutboundCall(payload) {
     applicant = "",
     cv_summary = "",
     cv_text = "",
-    cv_id = "",
+    cv_id: cvIdRaw = "",
     resume_url = ""
   } = data;
   const cvSummary = (cv_summary || cv_text || "").trim();
+  let cvId = cvIdRaw || "";
 
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
@@ -4367,6 +5000,17 @@ async function placeOutboundCall(payload) {
   }
 
   const resolvedAddress = address || resolveAddress(brand, null);
+  if (!cvId && cvSummary && dbPool) {
+    const cvEntry = buildCvEntry({
+      brand,
+      role: roleClean,
+      applicant,
+      phone: toNorm,
+      cv_text: cv_text || cvSummary
+    });
+    recordCvEntry(cvEntry);
+    cvId = cvEntry.id;
+  }
   const voiceToken = randomToken();
   voiceCtxByToken.set(voiceToken, {
     payload: {
@@ -4378,7 +5022,7 @@ async function placeOutboundCall(payload) {
       address: resolvedAddress,
       applicant,
       cv_summary: cvSummary,
-      cv_id,
+      cv_id: cvId,
       resume_url
     },
     expiresAt: Date.now() + CALL_TTL_MS
@@ -4530,12 +5174,13 @@ async function sendWhatsappReport(call) {
     console.error("[whatsapp] failed sending text", err);
     return;
   }
-  if (call.recordingToken) {
-    try {
-      await sendWhatsappMessage({ mediaUrl: `${PUBLIC_BASE_URL}/r/${call.recordingToken}` });
-    } catch (err) {
-      console.error("[whatsapp] failed sending audio", err);
+  try {
+    const mediaUrl = await getCallAudioMediaUrl(call);
+    if (mediaUrl) {
+      await sendWhatsappMessage({ mediaUrl });
     }
+  } catch (err) {
+    console.error("[whatsapp] failed sending audio", err);
   }
 }
 
