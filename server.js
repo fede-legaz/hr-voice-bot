@@ -664,6 +664,9 @@ const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
+const MAX_CALL_HISTORY = 500;
+const callHistory = [];
+const callHistoryByKey = new Map();
 let roleConfig = null;
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -827,67 +830,352 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
   }
 });
 
+app.get("/admin/calls", requireConfig, (req, res) => {
+  const brandParam = (req.query?.brand || "").toString();
+  const roleParam = (req.query?.role || "").toString();
+  const recParam = (req.query?.recommendation || "").toString().toLowerCase();
+  const qParam = (req.query?.q || "").toString().toLowerCase();
+  const minScore = Number(req.query?.minScore);
+  const maxScore = Number(req.query?.maxScore);
+  const limit = Math.min(Number(req.query?.limit) || 200, 500);
+
+  let list = callHistory.slice();
+  if (brandParam) {
+    const bKey = brandKey(brandParam);
+    list = list.filter((c) => c.brandKey === bKey);
+  }
+  if (roleParam) {
+    const rKey = normalizeKey(roleParam);
+    list = list.filter((c) => normalizeKey(c.roleKey || c.role) === rKey);
+  }
+  if (recParam) {
+    list = list.filter((c) => (c.recommendation || "").toLowerCase() === recParam);
+  }
+  if (!Number.isNaN(minScore)) {
+    list = list.filter((c) => typeof c.score === "number" && c.score >= minScore);
+  }
+  if (!Number.isNaN(maxScore)) {
+    list = list.filter((c) => typeof c.score === "number" && c.score <= maxScore);
+  }
+  if (qParam) {
+    list = list.filter((c) => (c.applicant || "").toLowerCase().includes(qParam) || (c.phone || "").includes(qParam));
+  }
+
+  return res.json({ ok: true, calls: list.slice(0, limit) });
+});
+
 app.get("/admin/ui", (req, res) => {
   res.type("text/html").send(`
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>HRBOT Config</title>
+  <title>HRBOT Console</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" />
   <style>
     :root {
-      --bg: #f5f7fb;
-      --card: #ffffff;
-      --primary: #1f4b99;
-      --muted: #56607a;
-      --border: #cdd4e0;
-      --shadow: 0 8px 24px rgba(0,0,0,0.06);
+      --bg: #f4efe6;
+      --panel: #ffffff;
+      --primary: #1e6d5c;
+      --primary-dark: #13443b;
+      --accent: #f4a261;
+      --ink: #1b1b1b;
+      --muted: #6a6f6b;
+      --border: #e4dac8;
+      --shadow: 0 12px 30px rgba(30, 45, 40, 0.12);
+      --glow: 0 0 0 2px rgba(30, 109, 92, 0.12);
     }
     * { box-sizing: border-box; }
-    body { font-family: "Inter", system-ui, -apple-system, sans-serif; margin: 0; padding: 0; background: var(--bg); color: #0f172a; }
-    header { padding: 16px 24px; background: var(--primary); color: white; font-size: 18px; font-weight: 700; }
-    main { max-width: 1100px; margin: 24px auto 48px; background: var(--card); padding: 24px; border-radius: 14px; box-shadow: var(--shadow); }
-    h2 { margin: 8px 0 16px; }
-    label { display: block; margin-bottom: 6px; font-weight: 600; }
-    input[type="password"], input[type="text"], textarea { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); font-family: "Inter", system-ui, sans-serif; }
-    textarea { min-height: 80px; resize: vertical; }
-    button { background: var(--primary); color: white; border: none; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 700; box-shadow: 0 4px 12px rgba(31,75,153,0.25); transition: transform 0.05s ease; }
+    body {
+      font-family: "DM Sans", "Helvetica Neue", sans-serif;
+      margin: 0;
+      padding: 0;
+      background: radial-gradient(circle at top left, #fff6e9 0%, #f4efe6 45%, #efe6d8 100%);
+      color: var(--ink);
+      min-height: 100vh;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.6), transparent 50%),
+        radial-gradient(circle at 80% 10%, rgba(244, 162, 97, 0.12), transparent 55%),
+        linear-gradient(120deg, rgba(30, 109, 92, 0.05), rgba(255, 255, 255, 0));
+      pointer-events: none;
+      z-index: -1;
+    }
+    h1, h2, h3, h4 { font-family: "Space Grotesk", sans-serif; margin: 0; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 13px; color: var(--muted); }
+    input[type="password"], input[type="text"], textarea, select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      font-family: "DM Sans", sans-serif;
+      background: #fff;
+      color: var(--ink);
+    }
+    textarea { min-height: 90px; resize: vertical; }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: 700;
+      box-shadow: 0 10px 20px rgba(30, 109, 92, 0.2);
+      transition: transform 0.05s ease, box-shadow 0.2s ease;
+    }
     button:active { transform: translateY(1px); }
-    button.secondary { background: transparent; color: var(--primary); border: 1px solid var(--primary); box-shadow: none; }
-    button.danger { background: #c0392b; box-shadow: 0 4px 12px rgba(192,57,43,0.25); }
+    button.secondary {
+      background: transparent;
+      color: var(--primary);
+      border: 1px solid var(--primary);
+      box-shadow: none;
+    }
+    button.secondary:hover { box-shadow: var(--glow); }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .row { margin-bottom: 14px; }
-    .status { margin-left: 12px; font-size: 14px; color: var(--muted); }
-    .brand-card { border: 1px solid var(--border); border-radius: 12px; margin-bottom: 16px; background: #fdfdff; overflow: hidden; }
-    .brand-header { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 12px 16px; cursor: pointer; background: #eff3ff; }
-    .brand-meta { padding: 0 16px 12px; }
-    .roles { margin: 12px 16px 16px; display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }
-    .role-card { border: 1px solid var(--border); border-radius: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; overflow: hidden; }
-    .role-header { padding: 10px 12px; background: #f7f9ff; display: flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; }
+    .app { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 280px;
+      background: linear-gradient(165deg, #0f3f35 0%, #1e6d5c 60%, #2b8a73 100%);
+      color: #f8f3ea;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .sidebar-brand { display: flex; flex-direction: column; gap: 4px; }
+    .brand-mark { font-size: 20px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
+    .brand-sub { font-size: 12px; color: rgba(248, 243, 234, 0.7); }
+    .nav { display: flex; flex-direction: column; gap: 12px; }
+    .nav-section-title { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: rgba(248, 243, 234, 0.6); margin-top: 6px; }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: transparent;
+      color: inherit;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      text-align: left;
+    }
+    .nav-item.active {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.35);
+    }
+    .brand-list { display: flex; flex-direction: column; gap: 8px; }
+    .brand-thumb {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.2);
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .brand-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    .nav-add { margin-top: 6px; font-size: 13px; }
+    .content {
+      flex: 1;
+      padding: 28px 32px 64px;
+    }
+    .content-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .eyebrow { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--muted); }
+    .header-actions { display: flex; align-items: center; gap: 10px; }
+    .status-line { margin: 8px 0 18px; color: var(--muted); font-size: 13px; min-height: 18px; }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: var(--shadow);
+      margin-bottom: 20px;
+      animation: fadeUp 0.4s ease both;
+      animation-delay: var(--delay, 0s);
+    }
+    .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
+    .divider { border-top: 1px solid var(--border); margin: 18px 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .row { margin-top: 12px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .small { font-size: 12px; color: var(--muted); }
+    .status { font-size: 12px; color: var(--muted); }
+    .brand-card { padding: 0; overflow: hidden; }
+    .brand-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      background: #f7f2e8;
+      cursor: pointer;
+    }
+    .brand-meta { padding: 16px; }
+    .roles { margin: 0 16px 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+    .role-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .role-header {
+      padding: 10px 12px;
+      background: #fbfaf7;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+    }
     .role-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .pill { padding: 4px 10px; border-radius: 999px; background: #eef2ff; color: #1f4b99; font-weight: 600; font-size: 12px; }
-    .inline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .pill { padding: 4px 10px; border-radius: 999px; background: #e7efe9; color: #1f4d3f; font-weight: 600; font-size: 11px; }
     .question { display: flex; gap: 8px; align-items: center; }
     .question input { flex: 1; }
-    .small { font-size: 13px; color: var(--muted); }
-    .token-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .chevron { font-size: 12px; opacity: 0.7; }
-    .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-    .muted { color: var(--muted); font-size: 13px; }
+    .logo-row { margin-top: 12px; }
+    .logo-drop {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fcfaf6;
+      cursor: pointer;
+    }
+    .logo-drop.drag { border-color: var(--primary); box-shadow: var(--glow); }
+    .logo-preview {
+      width: 64px;
+      height: 64px;
+      border-radius: 14px;
+      background: #efe6d8;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: var(--primary-dark);
+    }
+    .logo-preview img { width: 100%; height: 100%; object-fit: cover; }
+    .brand-logo-input { display: none; }
+    .drop-zone {
+      border: 1px dashed var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      background: #fbfaf7;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+    }
+    .drop-zone.drag { border-color: var(--primary); box-shadow: var(--glow); }
+    .drop-icon {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      background: rgba(30, 109, 92, 0.12);
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    .drop-file { display: none; }
     .preview-output { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
     .system-prompt { min-height: 260px; }
-    .login-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at top, #eef3ff, #f5f7fb 60%); padding: 24px; }
-    .login-card { width: min(420px, 92vw); background: var(--card); border-radius: 18px; padding: 28px; border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 12px; }
-    .login-title { font-size: 22px; font-weight: 800; }
+    textarea.locked { background: #f2f0ea; color: #6b7280; }
+    .table-wrapper {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: auto;
+      max-height: 540px;
+      background: #fff;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th {
+      position: sticky;
+      top: 0;
+      background: #fdf9f1;
+      text-align: left;
+      font-weight: 700;
+      z-index: 1;
+    }
+    .score-pill {
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 44px;
+    }
+    .score-high { background: rgba(30, 109, 92, 0.18); color: #155346; }
+    .score-mid { background: rgba(244, 162, 97, 0.2); color: #8a4a14; }
+    .score-low { background: rgba(206, 76, 50, 0.18); color: #7b2914; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .badge.advance { background: rgba(30, 109, 92, 0.16); color: #155346; }
+    .badge.review { background: rgba(244, 162, 97, 0.2); color: #8a4a14; }
+    .badge.reject { background: rgba(206, 76, 50, 0.18); color: #7b2914; }
+    .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .login-screen {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at top, #fff6e9, #f4efe6 60%);
+      padding: 24px;
+      z-index: 5;
+    }
+    .login-card {
+      width: min(420px, 92vw);
+      background: var(--panel);
+      border-radius: 20px;
+      padding: 28px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .login-title { font-size: 22px; font-weight: 700; font-family: "Space Grotesk", sans-serif; }
     .login-sub { color: var(--muted); font-size: 14px; }
-    textarea.locked { background: #f2f4f8; color: #6b7280; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @media (max-width: 980px) {
+      .app { flex-direction: column; }
+      .sidebar { width: 100%; }
+      .content { padding: 20px; }
+    }
   </style>
 </head>
 <body>
   <div id="login-screen" class="login-screen">
     <div class="login-card">
       <div class="login-title">HRBOT Admin</div>
-      <div class="login-sub">Ingresá tu clave para ver la configuración.</div>
+      <div class="login-sub">Ingresá tu clave para abrir la consola.</div>
       <div class="row">
         <label>Clave</label>
         <input type="password" id="login-token" placeholder="YB key" />
@@ -899,125 +1187,237 @@ app.get("/admin/ui", (req, res) => {
     </div>
   </div>
 
-  <div id="app" style="display:none;">
-    <header>HRBOT Config</header>
-    <main>
-      <div class="token-row">
-        <input type="hidden" id="token" />
-        <div class="inline">
-          <button id="load">Reload</button>
-          <button id="save">Save</button>
-        </div>
-        <span class="status" id="status"></span>
+  <div id="app" class="app" style="display:none;">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">HRBOT</div>
+        <div class="brand-sub">Hiring control center</div>
       </div>
+      <nav class="nav">
+        <button class="nav-item" id="nav-general" type="button">General</button>
+        <div class="nav-section-title">Restaurantes</div>
+        <div id="brand-list" class="brand-list"></div>
+        <button class="secondary nav-add" id="add-brand" type="button">+ Nuevo local</button>
+      </nav>
+    </aside>
 
-    <div class="row inline" style="justify-content: space-between; margin-top: 10px;">
-      <div>
-        <strong>Brands & roles</strong>
-        <div class="small">Edit preguntas por marca/rol, idioma, alias y si el rol es físico.</div>
-      </div>
-      <button class="secondary" id="add-brand">+ Add brand</button>
-    </div>
-
-    <div class="brand-card general-card" style="background:#fffaf2;border-color:#f0d9b5;">
-      <div class="brand-header" style="margin-bottom:8px;">
+    <section class="content">
+      <div class="content-header">
         <div>
-          <strong>Mensajes base</strong>
-          <div class="small">Personalizá los openers y notas de idioma (podés usar {name}, {brand}, {role}).</div>
+          <div class="eyebrow" id="view-label">Configuración</div>
+          <h1 id="view-title">General</h1>
+        </div>
+        <div class="header-actions">
+          <input type="hidden" id="token" />
+          <button class="secondary" id="load" type="button">Reload</button>
+          <button id="save" type="button">Save</button>
         </div>
       </div>
-      <div class="row">
-        <label>Mensaje inicial ES</label>
-        <textarea id="opener-es" placeholder="Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?"></textarea>
-      </div>
-      <div class="row">
-        <label>Mensaje inicial EN</label>
-        <textarea id="opener-en" placeholder="Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?"></textarea>
-      </div>
-      <div class="row">
-        <label>Notas de idioma / reglas</label>
-        <textarea id="lang-rules" placeholder="Ej: si responde en inglés, mantener toda la entrevista en inglés."></textarea>
-      </div>
-      <div class="row">
-        <label>Preguntas/Checklist obligatorias (texto libre)</label>
-        <textarea id="must-ask" placeholder="Ej: zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."></textarea>
-      </div>
-      <div class="row">
-        <label>System prompt (editable)</label>
-        <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
-        <div class="small">Placeholders útiles: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {first_name_or_blank}.</div>
-      </div>
-      <div class="row inline" style="gap:10px;">
-        <div style="flex:1; min-width:220px;">
-          <label>Clave ADMIN (solo para editar System prompt)</label>
-          <input type="password" id="admin-token" placeholder="ADMIN" />
-        </div>
-        <div style="margin-top:22px;">
-          <button class="secondary" id="admin-unlock" type="button">Unlock</button>
-        </div>
-        <span class="status" id="admin-status"></span>
-      </div>
-    </div>
+      <div class="status-line"><span id="status"></span></div>
 
-    <div class="brand-card preview-card" style="background:#f5f9ff;border-color:#cfe0ff;">
-      <div class="brand-header" style="margin-bottom:8px;">
-        <div>
-          <strong>Preview instrucciones</strong>
-          <div class="small">Genera el prompt real que usa el bot con datos de ejemplo.</div>
+      <section id="general-view" class="view">
+        <div class="panel" style="--delay:.05s;">
+          <div class="panel-title">Mensajes base</div>
+          <div class="panel-sub">Personalizá los openers y reglas globales (podés usar {name}, {brand}, {role}).</div>
+          <div class="grid">
+            <div>
+              <label>Mensaje inicial ES</label>
+              <textarea id="opener-es" placeholder="Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?"></textarea>
+            </div>
+            <div>
+              <label>Mensaje inicial EN</label>
+              <textarea id="opener-en" placeholder="Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?"></textarea>
+            </div>
+            <div>
+              <label>Notas de idioma / reglas</label>
+              <textarea id="lang-rules" placeholder="Ej: si responde en inglés, mantener toda la entrevista en inglés."></textarea>
+            </div>
+            <div>
+              <label>Checklist obligatoria</label>
+              <textarea id="must-ask" placeholder="Ej: zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."></textarea>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-title">System prompt</div>
+          <div class="panel-sub">Solo editable con clave ADMIN.</div>
+          <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
+          <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {first_name_or_blank}.</div>
+          <div class="inline" style="margin-top:12px;">
+            <div style="flex:1; min-width:220px;">
+              <label>Clave ADMIN</label>
+              <input type="password" id="admin-token" placeholder="ADMIN" />
+            </div>
+            <div style="margin-top:20px;">
+              <button class="secondary" id="admin-unlock" type="button">Unlock</button>
+            </div>
+            <span class="small" id="admin-status"></span>
+          </div>
         </div>
-      </div>
-      <div class="row inline" style="gap:10px;">
-        <div style="flex:1; min-width:200px;">
-          <label>Brand</label>
-          <input type="text" id="preview-brand" placeholder="Ej. Yes! Cafe & Pizza (MiMo / 79th St)" />
-        </div>
-        <div style="flex:1; min-width:200px;">
-          <label>Role</label>
-          <input type="text" id="preview-role" placeholder="Ej. Cook / Cashier / Pizzero" />
-        </div>
-        <div style="flex:1; min-width:200px;">
-          <label>Nombre candidato</label>
-          <input type="text" id="preview-applicant" placeholder="Ej. Rafael Soto" />
-        </div>
-      </div>
-      <div class="row inline" style="gap:10px;">
-        <div style="flex:1; min-width:220px;">
-          <label>Dirección</label>
-          <input type="text" id="preview-address" placeholder="Se completa si hay en config" />
-        </div>
-        <div style="flex:1; min-width:160px;">
-          <label>Inglés requerido</label>
-          <select id="preview-english" style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); font-family: Inter, system-ui, sans-serif;">
-            <option value="auto">Auto (según config)</option>
-            <option value="yes">Sí</option>
-            <option value="no">No</option>
-          </select>
-        </div>
-        <div style="flex:1; min-width:140px;">
-          <label>Idioma</label>
-          <select id="preview-lang" style="width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--border); font-family: Inter, system-ui, sans-serif;">
-            <option value="es">Español</option>
-            <option value="en">English</option>
-          </select>
-        </div>
-      </div>
-      <div class="row">
-        <label>Resumen CV (opcional)</label>
-        <textarea id="preview-cv" placeholder="Pegá acá un resumen de CV para ver cómo lo usa."></textarea>
-      </div>
-      <div class="row inline" style="justify-content: space-between;">
-        <button class="secondary" id="preview-generate" type="button">Generate preview</button>
-        <span class="status" id="preview-status"></span>
-      </div>
-      <div class="row">
-        <label>Prompt generado</label>
-        <textarea id="preview-output" class="preview-output" readonly></textarea>
-      </div>
-    </div>
+      </section>
 
-    <div id="brands"></div>
-  </main>
+      <section id="brand-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.06s;">
+          <div class="panel-title">Preview instrucciones</div>
+          <div class="panel-sub">Generá el prompt real con datos de ejemplo.</div>
+          <div class="grid">
+            <div>
+              <label>Local</label>
+              <input type="text" id="preview-brand" placeholder="Ej. Yes! Cafe & Pizza (MiMo / 79th St)" />
+            </div>
+            <div>
+              <label>Posición</label>
+              <input type="text" id="preview-role" placeholder="Ej. Cook / Cashier / Pizzero" />
+            </div>
+            <div>
+              <label>Nombre candidato</label>
+              <input type="text" id="preview-applicant" placeholder="Ej. Rafael Soto" />
+            </div>
+            <div>
+              <label>Dirección</label>
+              <input type="text" id="preview-address" placeholder="Se completa si hay en config" />
+            </div>
+            <div>
+              <label>Inglés requerido</label>
+              <select id="preview-english">
+                <option value="auto">Auto (según config)</option>
+                <option value="yes">Sí</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+            <div>
+              <label>Idioma</label>
+              <select id="preview-lang">
+                <option value="es">Español</option>
+                <option value="en">English</option>
+              </select>
+            </div>
+          </div>
+          <div class="row">
+            <label>Resumen CV (opcional)</label>
+            <textarea id="preview-cv" placeholder="Pegá acá un resumen de CV para ver cómo lo usa."></textarea>
+          </div>
+          <div class="inline" style="justify-content: space-between;">
+            <button class="secondary" id="preview-generate" type="button">Generate preview</button>
+            <span class="small" id="preview-status"></span>
+          </div>
+          <div class="row">
+            <label>Prompt generado</label>
+            <textarea id="preview-output" class="preview-output" readonly></textarea>
+          </div>
+        </div>
+
+        <div id="brands"></div>
+
+        <div class="panel" id="call-panel" style="--delay:.08s;">
+          <div class="panel-title">Call Desk</div>
+          <div class="panel-sub">Subí un CV y lanzá la llamada en un click.</div>
+          <div class="grid">
+            <div>
+              <label>Local</label>
+              <select id="call-brand"></select>
+            </div>
+            <div>
+              <label>Posición</label>
+              <select id="call-role"></select>
+            </div>
+            <div>
+              <label>Nombre candidato</label>
+              <input type="text" id="call-name" placeholder="Nombre y apellido" />
+            </div>
+            <div>
+              <label>Teléfono</label>
+              <input type="text" id="call-phone" placeholder="+1 305..." />
+            </div>
+          </div>
+          <div class="grid" style="margin-top:12px;">
+            <div>
+              <label>CV (PDF recomendado)</label>
+              <div id="cv-drop" class="drop-zone">
+                <div class="drop-icon">CV</div>
+                <div>
+                  <div><strong>Arrastrá el archivo</strong></div>
+                  <div class="small">Se extrae el texto automáticamente.</div>
+                </div>
+                <input type="file" id="cv-file" class="drop-file" accept=".pdf,.txt" />
+              </div>
+              <div class="small" id="cv-status"></div>
+            </div>
+            <div>
+              <label>CV extraído</label>
+              <textarea id="call-cv-text" placeholder="Acá vas a ver el texto leído del CV."></textarea>
+              <div class="small">Podés editar el texto antes de llamar.</div>
+            </div>
+          </div>
+          <div class="inline" style="margin-top:12px;">
+            <button id="call-btn" type="button">Llamar</button>
+            <span class="small" id="call-status"></span>
+          </div>
+        </div>
+
+        <div class="panel" id="results-panel" style="--delay:.1s;">
+          <div class="panel-title">Resultados por local</div>
+          <div class="panel-sub">Filtrá por posición, score y recomendación.</div>
+          <div class="grid">
+            <div>
+              <label>Posición</label>
+              <select id="results-role"></select>
+            </div>
+            <div>
+              <label>Recomendación</label>
+              <select id="results-rec">
+                <option value="">Todas</option>
+                <option value="advance">Avanzar</option>
+                <option value="review">Revisar</option>
+                <option value="reject">No avanzar</option>
+              </select>
+            </div>
+            <div>
+              <label>Puntaje mín.</label>
+              <input type="text" id="results-score-min" placeholder="0" />
+            </div>
+            <div>
+              <label>Puntaje máx.</label>
+              <input type="text" id="results-score-max" placeholder="100" />
+            </div>
+            <div>
+              <label>Buscar</label>
+              <input type="text" id="results-search" placeholder="Nombre o teléfono" />
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+              <button class="secondary" id="results-refresh" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:14px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Score</th>
+                  <th>Candidato</th>
+                  <th>Posición</th>
+                  <th>Calidez</th>
+                  <th>Fluidez</th>
+                  <th>Inglés</th>
+                  <th>Experiencia</th>
+                  <th>Zona</th>
+                  <th>Disponibilidad</th>
+                  <th>Se queda en EE.UU.</th>
+                  <th>Expectativa salarial</th>
+                  <th>Resumen</th>
+                  <th>Teléfono</th>
+                  <th>Fecha</th>
+                  <th>Audio</th>
+                  <th>Nivel</th>
+                </tr>
+              </thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="results-count" style="margin-top:8px;"></div>
+        </div>
+      </section>
+    </section>
   </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
     const loginScreenEl = document.getElementById('login-screen');
@@ -1026,6 +1426,12 @@ app.get("/admin/ui", (req, res) => {
     const loginStatusEl = document.getElementById('login-status');
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
+    const navGeneralEl = document.getElementById('nav-general');
+    const brandListEl = document.getElementById('brand-list');
+    const viewTitleEl = document.getElementById('view-title');
+    const viewLabelEl = document.getElementById('view-label');
+    const generalViewEl = document.getElementById('general-view');
+    const brandViewEl = document.getElementById('brand-view');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -1044,10 +1450,34 @@ app.get("/admin/ui", (req, res) => {
     const previewCvEl = document.getElementById('preview-cv');
     const previewOutputEl = document.getElementById('preview-output');
     const previewStatusEl = document.getElementById('preview-status');
+    const callBrandEl = document.getElementById('call-brand');
+    const callRoleEl = document.getElementById('call-role');
+    const callNameEl = document.getElementById('call-name');
+    const callPhoneEl = document.getElementById('call-phone');
+    const callCvTextEl = document.getElementById('call-cv-text');
+    const callBtnEl = document.getElementById('call-btn');
+    const callStatusEl = document.getElementById('call-status');
+    const cvDropEl = document.getElementById('cv-drop');
+    const cvFileEl = document.getElementById('cv-file');
+    const cvStatusEl = document.getElementById('cv-status');
+    const resultsRoleEl = document.getElementById('results-role');
+    const resultsRecEl = document.getElementById('results-rec');
+    const resultsScoreMinEl = document.getElementById('results-score-min');
+    const resultsScoreMaxEl = document.getElementById('results-score-max');
+    const resultsSearchEl = document.getElementById('results-search');
+    const resultsRefreshEl = document.getElementById('results-refresh');
+    const resultsBodyEl = document.getElementById('results-body');
+    const resultsCountEl = document.getElementById('results-count');
     let state = { config: {} };
     let adminToken = '';
     let systemPromptUnlocked = false;
     let lastLoadError = '';
+    let activeBrandKey = '';
+    let suppressSidebarSync = false;
+    let resultsTimer = null;
+    const CV_CHAR_LIMIT = 4000;
+    const MAX_LOGO_SIZE = 600 * 1024;
+    const MAX_PDF_PAGES = 8;
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
@@ -1057,10 +1487,17 @@ app.get("/admin/ui", (req, res) => {
       system_prompt: defaultSystemPrompt
     };
 
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+
     function setStatus(msg) { statusEl.textContent = msg || ''; }
     function setPreviewStatus(msg) { previewStatusEl.textContent = msg || ''; }
     function setLoginStatus(msg) { loginStatusEl.textContent = msg || ''; }
     function setAdminStatus(msg) { adminStatusEl.textContent = msg || ''; }
+    function setCallStatus(msg) { callStatusEl.textContent = msg || ''; }
+    function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
+    function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
 
     function lockSystemPrompt() {
       systemPromptUnlocked = false;
@@ -1074,41 +1511,95 @@ app.get("/admin/ui", (req, res) => {
       systemPromptEl.classList.remove('locked');
     }
 
+    function getBrandLabel(wrapper) {
+      const display = (wrapper.querySelector('.brand-display')?.value || '').trim();
+      const key = (wrapper.querySelector('.brand-name')?.value || '').trim();
+      const base = display || key || 'Logo';
+      return base.slice(0, 2).toUpperCase();
+    }
+
+    function setLogoPreview(wrapper, dataUrl) {
+      const preview = wrapper.querySelector('.logo-preview');
+      const hidden = wrapper.querySelector('.brand-logo');
+      if (!preview || !hidden) return;
+      hidden.value = dataUrl || '';
+      preview.innerHTML = '';
+      if (dataUrl) {
+        const img = document.createElement('img');
+        img.src = dataUrl;
+        img.alt = 'Logo';
+        preview.appendChild(img);
+      } else {
+        const span = document.createElement('span');
+        span.textContent = getBrandLabel(wrapper);
+        preview.appendChild(span);
+      }
+    }
+
+    function handleLogoFile(wrapper, file) {
+      if (!file) return;
+      if (!file.type.startsWith('image/')) {
+        alert('Solo imágenes PNG/JPG.');
+        return;
+      }
+      if (file.size > MAX_LOGO_SIZE) {
+        alert('El logo es muy pesado. Máx 600KB.');
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        setLogoPreview(wrapper, reader.result);
+        syncSidebar();
+      };
+      reader.readAsDataURL(file);
+    }
+
     function brandTemplate(name = '') {
       const wrapper = document.createElement('div');
-      wrapper.className = 'brand-card';
+      wrapper.className = 'panel brand-card';
+      wrapper.dataset.brandKey = name;
       wrapper.innerHTML = \`
         <div class="brand-header">
-          <div style="display:flex; align-items:center; gap:10px;">
-            <span class="chevron">▼</span>
-            <div>
-              <div><strong class="brand-label"></strong></div>
-              <div class="muted small">Brand (clave): <span class="brand-key-label"></span></div>
-            </div>
+          <div>
+            <div><strong class="brand-label"></strong></div>
+            <div class="muted small">Clave: <span class="brand-key-label"></span></div>
           </div>
           <div class="inline">
-            <button class="secondary add-role">+ Add role</button>
-            <button class="secondary delete-brand">Remove brand</button>
+            <button class="secondary add-role" type="button">+ Rol</button>
+            <button class="secondary delete-brand" type="button">Eliminar</button>
           </div>
         </div>
         <div class="brand-meta">
-          <div class="inline" style="gap:10px;">
-            <div style="flex:1; min-width:200px;">
+          <div class="grid">
+            <div>
               <label>Brand (clave)</label>
               <input type="text" class="brand-name" value="\${name}" placeholder="ej. campo / yes / mexi" />
               <div class="small">Se usa internamente para matchear.</div>
             </div>
-            <div style="flex:1; min-width:200px;">
+            <div>
               <label>Nombre para mostrar</label>
               <input type="text" class="brand-display" placeholder="Ej. New Campo Argentino" />
             </div>
-            <div style="flex:1; min-width:200px;">
+            <div>
               <label>Dirección</label>
               <input type="text" class="brand-address" placeholder="Ej. 6954 Collins Ave, Miami Beach, FL 33141, US" />
             </div>
-            <div style="flex:1; min-width:200px;">
-              <label>Aliases de marca (coma separados)</label>
+            <div>
+              <label>Aliases (coma separados)</label>
               <input type="text" class="brand-aliases" placeholder="campo, new campo argentino" />
+            </div>
+          </div>
+          <div class="logo-row">
+            <label>Logo</label>
+            <div class="logo-drop">
+              <input type="hidden" class="brand-logo" value="" />
+              <div class="logo-preview"></div>
+              <div>
+                <div><strong>Arrastrá el logo</strong></div>
+                <div class="small">PNG/JPG, máx 600KB.</div>
+              </div>
+              <input type="file" class="brand-logo-input" accept="image/*" />
+              <button class="secondary logo-clear" type="button">Quitar</button>
             </div>
           </div>
         </div>
@@ -1117,19 +1608,32 @@ app.get("/admin/ui", (req, res) => {
       const rolesBox = wrapper.querySelector('.roles');
       wrapper.querySelector('.add-role').onclick = () => {
         rolesBox.appendChild(roleTemplate());
+        updateRoleOptions();
       };
       wrapper.querySelector('.delete-brand').onclick = () => {
-        if (confirm('Remove this brand?')) wrapper.remove();
+        if (confirm('Eliminar este local?')) {
+          const wasActive = wrapper.dataset.brandKey === activeBrandKey;
+          wrapper.remove();
+          syncSidebar();
+          updateRoleOptions();
+          if (wasActive) setActiveView('');
+        }
       };
       const header = wrapper.querySelector('.brand-header');
-      const chevron = header.querySelector('.chevron');
-      const label = header.querySelector('.brand-label');
-      const keyLabel = header.querySelector('.brand-key-label');
+      const label = wrapper.querySelector('.brand-label');
+      const keyLabel = wrapper.querySelector('.brand-key-label');
       function updateLabels() {
-        const key = (wrapper.querySelector('.brand-name').value || '').trim() || '(sin clave)';
-        const disp = (wrapper.querySelector('.brand-display').value || '').trim() || '(sin nombre)';
+        const prevKey = wrapper.dataset.brandKey || '';
+        const key = (wrapper.querySelector('.brand-name').value || '').trim();
+        const disp = (wrapper.querySelector('.brand-display').value || '').trim() || key || '(sin nombre)';
+        wrapper.dataset.brandKey = key;
         label.textContent = disp;
-        keyLabel.textContent = key;
+        keyLabel.textContent = key || '(sin clave)';
+        setLogoPreview(wrapper, wrapper.querySelector('.brand-logo').value || '');
+        if (prevKey && activeBrandKey === prevKey && key && key !== prevKey) {
+          activeBrandKey = key;
+        }
+        syncSidebar();
       }
       wrapper._updateLabels = updateLabels;
       header.onclick = () => {
@@ -1138,12 +1642,36 @@ app.get("/admin/ui", (req, res) => {
         const hidden = meta.style.display === 'none';
         meta.style.display = hidden ? '' : 'none';
         roles.style.display = hidden ? '' : 'none';
-        chevron.textContent = hidden ? '▼' : '▶';
       };
-      updateLabels();
       wrapper.querySelectorAll('.brand-name, .brand-display').forEach((el) => {
         el.addEventListener('input', updateLabels);
       });
+      const logoDrop = wrapper.querySelector('.logo-drop');
+      const logoInput = wrapper.querySelector('.brand-logo-input');
+      const logoClear = wrapper.querySelector('.logo-clear');
+      logoDrop.addEventListener('click', (event) => {
+        if (event.target === logoClear) return;
+        logoInput.click();
+      });
+      logoInput.addEventListener('change', (event) => {
+        handleLogoFile(wrapper, event.target.files[0]);
+      });
+      logoDrop.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        logoDrop.classList.add('drag');
+      });
+      logoDrop.addEventListener('dragleave', () => logoDrop.classList.remove('drag'));
+      logoDrop.addEventListener('drop', (event) => {
+        event.preventDefault();
+        logoDrop.classList.remove('drag');
+        handleLogoFile(wrapper, event.dataTransfer.files[0]);
+      });
+      logoClear.addEventListener('click', (event) => {
+        event.stopPropagation();
+        setLogoPreview(wrapper, '');
+        syncSidebar();
+      });
+      updateLabels();
       return wrapper;
     }
 
@@ -1162,19 +1690,19 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="inline">
-            <span class="pill" style="background:\${data.englishRequired ? '#e0f2ff' : '#f4f4f4'}; color:\${data.englishRequired ? '#1d4ed8' : '#555'};">EN</span>
-            <span class="pill" style="background:\${data.physical ? '#ffe8e0' : '#f4f4f4'}; color:\${data.physical ? '#c0392b' : '#555'};">Físico</span>
-            <button class="secondary remove-role">✕</button>
+            <span class="pill" style="background:\${data.englishRequired ? '#dbeae3' : '#f3f0ea'}; color:\${data.englishRequired ? '#155346' : '#6a6f6b'};">EN</span>
+            <span class="pill" style="background:\${data.physical ? '#f6dfd5' : '#f3f0ea'}; color:\${data.physical ? '#8a3f25' : '#6a6f6b'};">Físico</span>
+            <button class="secondary remove-role" type="button">✕</button>
           </div>
         </div>
         <div class="role-body">
-          <div class="inline" style="justify-content: space-between;">
-            <div style="flex:1;">
+          <div class="grid">
+            <div>
               <label>Role (clave)</label>
               <input type="text" class="role-name" value="\${roleName}" placeholder="Role (ej. server / runner)" />
-              <div class="small">Clave interna; usar el texto que llega en payload o alias.</div>
+              <div class="small">Usar el texto que llega en payload o alias.</div>
             </div>
-            <div style="flex:1;">
+            <div>
               <label>Nombre para mostrar</label>
               <input type="text" class="role-display" value="\${data.displayName || ''}" placeholder="Ej. server/runner" />
             </div>
@@ -1193,7 +1721,7 @@ app.get("/admin/ui", (req, res) => {
             <textarea class="role-notes" placeholder="Contexto o aclaraciones">\${data.notes || ''}</textarea>
           </div>
           <div>
-            <div class="flex-between">
+            <div class="inline" style="justify-content: space-between;">
               <label>Preguntas</label>
               <button class="secondary add-question" type="button">+ Add pregunta</button>
             </div>
@@ -1202,7 +1730,10 @@ app.get("/admin/ui", (req, res) => {
         </div>
       \`;
       const removeBtn = card.querySelector('.remove-role');
-      removeBtn.onclick = () => card.remove();
+      removeBtn.onclick = () => {
+        card.remove();
+        updateRoleOptions();
+      };
       const header = card.querySelector('.role-header');
       const chevron = header.querySelector('.chevron');
       const roleLabel = header.querySelector('.role-label');
@@ -1212,6 +1743,7 @@ app.get("/admin/ui", (req, res) => {
         const disp = (card.querySelector('.role-display').value || '').trim() || key;
         roleLabel.textContent = disp;
         roleKeyLabel.textContent = key;
+        updateRoleOptions();
       }
       header.onclick = () => {
         const body = card.querySelector('.role-body');
@@ -1239,7 +1771,159 @@ app.get("/admin/ui", (req, res) => {
       return card;
     }
 
+    function getBrandCards() {
+      return Array.from(brandsEl.querySelectorAll('.brand-card'));
+    }
+
+    function getBrandCardByKey(key) {
+      return getBrandCards().find((card) => (card.dataset.brandKey || '') === key);
+    }
+
+    function getBrandDisplayByKey(key) {
+      const card = getBrandCardByKey(key);
+      if (!card) return key;
+      const display = (card.querySelector('.brand-display')?.value || '').trim();
+      return display || key;
+    }
+
+    function listBrandOptions() {
+      return getBrandCards()
+        .map((card) => {
+          const key = (card.querySelector('.brand-name')?.value || '').trim();
+          if (!key) return null;
+          const display = (card.querySelector('.brand-display')?.value || '').trim() || key;
+          const logo = (card.querySelector('.brand-logo')?.value || '').trim();
+          return { key, display, logo };
+        })
+        .filter(Boolean);
+    }
+
+    function listRolesForBrand(key) {
+      const card = getBrandCardByKey(key);
+      if (!card) return [];
+      return Array.from(card.querySelectorAll('.role-card'))
+        .map((roleCard) => {
+          const roleKey = (roleCard.querySelector('.role-name')?.value || '').trim();
+          if (!roleKey) return null;
+          const display = (roleCard.querySelector('.role-display')?.value || '').trim() || roleKey;
+          return { key: roleKey, display };
+        })
+        .filter(Boolean);
+    }
+
+    function syncSidebar() {
+      if (suppressSidebarSync) return;
+      const brandOptions = listBrandOptions();
+      brandListEl.innerHTML = '';
+      brandOptions.forEach((brand) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nav-item';
+        btn.dataset.brandKey = brand.key;
+        const thumb = document.createElement('div');
+        thumb.className = 'brand-thumb';
+        if (brand.logo) {
+          const img = document.createElement('img');
+          img.src = brand.logo;
+          img.alt = brand.display;
+          thumb.appendChild(img);
+        } else {
+          thumb.textContent = brand.display.slice(0, 2).toUpperCase();
+        }
+        const label = document.createElement('div');
+        label.textContent = brand.display;
+        btn.appendChild(thumb);
+        btn.appendChild(label);
+        btn.onclick = () => setActiveView(brand.key);
+        brandListEl.appendChild(btn);
+      });
+      updateNavActive();
+      updateCallBrandOptions();
+      updateRoleOptions();
+    }
+
+    function updateNavActive() {
+      navGeneralEl.classList.toggle('active', !activeBrandKey);
+      brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
+        btn.classList.toggle('active', btn.dataset.brandKey === activeBrandKey);
+      });
+    }
+
+    function setActiveView(key) {
+      activeBrandKey = key || '';
+      generalViewEl.style.display = activeBrandKey ? 'none' : 'block';
+      brandViewEl.style.display = activeBrandKey ? 'block' : 'none';
+      getBrandCards().forEach((card) => {
+        const show = activeBrandKey && card.dataset.brandKey === activeBrandKey;
+        card.style.display = show ? '' : 'none';
+      });
+      viewTitleEl.textContent = activeBrandKey ? getBrandDisplayByKey(activeBrandKey) : 'General';
+      viewLabelEl.textContent = activeBrandKey ? 'Restaurante' : 'Configuración';
+      updateNavActive();
+      updateCallBrandOptions();
+      updateRoleOptions();
+      setPreviewDefaults(activeBrandKey);
+      if (activeBrandKey) {
+        scheduleResultsLoad();
+      }
+    }
+
+    function updateCallBrandOptions() {
+      const options = listBrandOptions();
+      const prev = callBrandEl.value;
+      callBrandEl.innerHTML = '';
+      options.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt.key;
+        option.textContent = opt.display;
+        callBrandEl.appendChild(option);
+      });
+      if (activeBrandKey && options.some((opt) => opt.key === activeBrandKey)) {
+        callBrandEl.value = activeBrandKey;
+      } else if (prev && options.some((opt) => opt.key === prev)) {
+        callBrandEl.value = prev;
+      } else if (options[0]) {
+        callBrandEl.value = options[0].key;
+      }
+      updateCallRoleOptions(callBrandEl.value);
+    }
+
+    function updateCallRoleOptions(brandKey) {
+      const roles = listRolesForBrand(brandKey);
+      callRoleEl.innerHTML = '';
+      roles.forEach((role) => {
+        const opt = document.createElement('option');
+        opt.value = role.key;
+        opt.textContent = role.display;
+        callRoleEl.appendChild(opt);
+      });
+    }
+
+    function updateRoleOptions() {
+      updateCallRoleOptions(callBrandEl.value || activeBrandKey);
+      const roles = listRolesForBrand(activeBrandKey);
+      resultsRoleEl.innerHTML = '<option value="">Todas</option>';
+      roles.forEach((role) => {
+        const opt = document.createElement('option');
+        opt.value = role.key;
+        opt.textContent = role.display;
+        resultsRoleEl.appendChild(opt);
+      });
+    }
+
+    function setPreviewDefaults(brandKey) {
+      if (!brandKey) return;
+      const card = getBrandCardByKey(brandKey);
+      if (!card) return;
+      previewBrandEl.value = getBrandDisplayByKey(brandKey);
+      const roles = listRolesForBrand(brandKey);
+      if (roles.length) previewRoleEl.value = roles[0].key;
+      const addr = (card.querySelector('.brand-address')?.value || '').trim();
+      if (addr) previewAddressEl.value = addr;
+    }
+
     function renderConfig(cfg) {
+      suppressSidebarSync = true;
       brandsEl.innerHTML = '';
       const meta = cfg?.meta || {};
       openerEsEl.value = typeof meta.opener_es === "string" && meta.opener_es.trim() ? meta.opener_es : defaults.opener_es;
@@ -1254,41 +1938,31 @@ app.get("/admin/ui", (req, res) => {
       const brands = Object.keys(cfg || {}).filter((k) => k !== "meta");
       if (!brands.length) {
         brandsEl.appendChild(brandTemplate(''));
-        return;
-      }
-      for (const brandKey of brands) {
-        const bCard = brandTemplate(brandKey);
-        const metaB = cfg[brandKey]?._meta || {};
-        bCard.querySelector('.brand-display').value = metaB.displayName || '';
-        bCard.querySelector('.brand-address').value = metaB.address || '';
-        bCard.querySelector('.brand-aliases').value = Array.isArray(metaB.aliases) ? metaB.aliases.join(', ') : '';
-        if (typeof bCard._updateLabels === "function") bCard._updateLabels();
-        const rolesBox = bCard.querySelector('.roles');
-        const roles = cfg[brandKey] || {};
-        for (const roleName of Object.keys(roles)) {
-          if (roleName === "_meta") continue;
-          rolesBox.appendChild(roleTemplate(roleName, roles[roleName] || {}));
+      } else {
+        for (const brandKey of brands) {
+          const bCard = brandTemplate(brandKey);
+          const metaB = cfg[brandKey]?._meta || {};
+          bCard.querySelector('.brand-display').value = metaB.displayName || '';
+          bCard.querySelector('.brand-address').value = metaB.address || '';
+          bCard.querySelector('.brand-aliases').value = Array.isArray(metaB.aliases) ? metaB.aliases.join(', ') : '';
+          bCard.querySelector('.brand-logo').value = metaB.logo || '';
+          setLogoPreview(bCard, metaB.logo || '');
+          if (typeof bCard._updateLabels === "function") bCard._updateLabels();
+          const rolesBox = bCard.querySelector('.roles');
+          const roles = cfg[brandKey] || {};
+          for (const roleName of Object.keys(roles)) {
+            if (roleName === "_meta") continue;
+            rolesBox.appendChild(roleTemplate(roleName, roles[roleName] || {}));
+          }
+          brandsEl.appendChild(bCard);
         }
-        brandsEl.appendChild(bCard);
       }
-      setPreviewDefaults(cfg);
-    }
-
-    function setPreviewDefaults(cfg) {
-      if (!cfg) return;
-      const brandKeys = Object.keys(cfg).filter((k) => k !== "meta");
-      if (!brandKeys.length) return;
-      const firstBrandKey = brandKeys[0];
-      const metaB = cfg[firstBrandKey]?._meta || {};
-      if (previewBrandEl && !previewBrandEl.value) {
-        previewBrandEl.value = metaB.displayName || firstBrandKey;
-      }
-      if (previewRoleEl && !previewRoleEl.value) {
-        const roles = Object.keys(cfg[firstBrandKey] || {}).filter((k) => k !== "_meta");
-        if (roles.length) previewRoleEl.value = roles[0];
-      }
-      if (previewAddressEl && !previewAddressEl.value && metaB.address) {
-        previewAddressEl.value = metaB.address;
+      suppressSidebarSync = false;
+      syncSidebar();
+      if (activeBrandKey && getBrandCardByKey(activeBrandKey)) {
+        setActiveView(activeBrandKey);
+      } else {
+        setActiveView('');
       }
     }
 
@@ -1353,14 +2027,14 @@ app.get("/admin/ui", (req, res) => {
           system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt
         }
       };
-      brandsEl.querySelectorAll('.brand-card').forEach((bCard) => {
-        if (bCard.classList.contains('general-card')) return;
+      getBrandCards().forEach((bCard) => {
         const bName = (bCard.querySelector('.brand-name').value || '').trim();
         if (!bName) return;
         const roles = {};
         const metaB = {
           displayName: (bCard.querySelector('.brand-display').value || '').trim(),
           address: (bCard.querySelector('.brand-address').value || '').trim(),
+          logo: (bCard.querySelector('.brand-logo').value || '').trim(),
           aliases: (bCard.querySelector('.brand-aliases').value || '')
             .split(',')
             .map((s) => s.trim())
@@ -1451,6 +2125,178 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    function truncateText(text, limit) {
+      if (!text) return '';
+      if (text.length <= limit) return text;
+      return text.slice(0, limit) + '...';
+    }
+
+    async function extractPdfText(file) {
+      if (!window.pdfjsLib) throw new Error('PDF parser no disponible');
+      const buffer = await file.arrayBuffer();
+      const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
+      const pages = Math.min(pdf.numPages || 0, MAX_PDF_PAGES);
+      let text = '';
+      for (let i = 1; i <= pages; i += 1) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        const pageText = content.items.map((item) => item.str).join(' ');
+        text += pageText + '\\n';
+      }
+      return text.trim();
+    }
+
+    async function handleCvFile(file) {
+      if (!file) return;
+      setCvStatus('Leyendo CV...');
+      try {
+        let text = '';
+        if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+          text = await extractPdfText(file);
+        } else if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
+          text = await file.text();
+        } else {
+          throw new Error('Formato no soportado (solo PDF o TXT).');
+        }
+        callCvTextEl.value = truncateText(text, CV_CHAR_LIMIT);
+        setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
+      } catch (err) {
+        setCvStatus('Error: ' + err.message);
+      }
+    }
+
+    async function placeCall() {
+      setCallStatus('Enviando llamada...');
+      try {
+        const payload = {
+          to: callPhoneEl.value || '',
+          brand: callBrandEl.value || '',
+          role: callRoleEl.value || '',
+          applicant: callNameEl.value || '',
+          cv_summary: truncateText(callCvTextEl.value || '', CV_CHAR_LIMIT)
+        };
+        const resp = await fetch('/call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'call failed');
+        setCallStatus('Llamada encolada: ' + (data.callId || data.status || 'OK'));
+        scheduleResultsLoad();
+      } catch (err) {
+        setCallStatus('Error: ' + err.message);
+      }
+    }
+
+    function formatDate(value) {
+      if (!value) return '—';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return value;
+      return d.toLocaleString();
+    }
+
+    function recommendationBadge(rec) {
+      const span = document.createElement('span');
+      span.className = 'badge ' + (rec || 'review');
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      span.appendChild(dot);
+      const label = document.createElement('span');
+      if (rec === 'advance') label.textContent = 'Avanzar';
+      else if (rec === 'reject') label.textContent = 'No avanzar';
+      else label.textContent = 'Revisar';
+      span.appendChild(label);
+      return span;
+    }
+
+    function scorePill(score) {
+      const span = document.createElement('span');
+      span.className = 'score-pill';
+      if (typeof score !== 'number') {
+        span.textContent = '—';
+        span.classList.add('score-mid');
+        return span;
+      }
+      span.textContent = Math.round(score);
+      if (score >= 80) span.classList.add('score-high');
+      else if (score >= 60) span.classList.add('score-mid');
+      else span.classList.add('score-low');
+      return span;
+    }
+
+    function renderResults(calls) {
+      resultsBodyEl.innerHTML = '';
+      calls.forEach((call) => {
+        const tr = document.createElement('tr');
+        const addCell = (value) => {
+          const td = document.createElement('td');
+          td.textContent = value || '—';
+          tr.appendChild(td);
+        };
+        const scoreCell = document.createElement('td');
+        scoreCell.appendChild(scorePill(call.score));
+        tr.appendChild(scoreCell);
+        addCell(call.applicant);
+        addCell(call.role);
+        addCell(call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '—');
+        addCell(call.fluency !== null && call.fluency !== undefined ? String(call.fluency) : '—');
+        addCell(call.english || '—');
+        addCell(call.experience);
+        addCell(call.area);
+        addCell(call.availability);
+        const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '—';
+        addCell(stay);
+        addCell(call.salary);
+        addCell(call.summary || call.outcome_detail || '—');
+        addCell(call.phone);
+        addCell(formatDate(call.created_at));
+        const audioTd = document.createElement('td');
+        if (call.audio_url) {
+          const audio = document.createElement('audio');
+          audio.controls = true;
+          audio.preload = 'none';
+          audio.src = call.audio_url;
+          audioTd.appendChild(audio);
+        } else {
+          audioTd.textContent = '—';
+        }
+        tr.appendChild(audioTd);
+        const recTd = document.createElement('td');
+        recTd.appendChild(recommendationBadge(call.recommendation || 'review'));
+        tr.appendChild(recTd);
+        resultsBodyEl.appendChild(tr);
+      });
+      setResultsCount(calls.length ? calls.length + ' llamadas' : 'Sin llamadas todavía.');
+    }
+
+    async function loadResults() {
+      if (!activeBrandKey) return;
+      try {
+        const params = new URLSearchParams();
+        params.set('brand', activeBrandKey);
+        if (resultsRoleEl.value) params.set('role', resultsRoleEl.value);
+        if (resultsRecEl.value) params.set('recommendation', resultsRecEl.value);
+        if (resultsScoreMinEl.value) params.set('minScore', resultsScoreMinEl.value);
+        if (resultsScoreMaxEl.value) params.set('maxScore', resultsScoreMaxEl.value);
+        if (resultsSearchEl.value) params.set('q', resultsSearchEl.value);
+        const resp = await fetch('/admin/calls?' + params.toString(), {
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'calls failed');
+        renderResults(data.calls || []);
+      } catch (err) {
+        setResultsCount('Error: ' + err.message);
+      }
+    }
+
+    function scheduleResultsLoad() {
+      if (!activeBrandKey) return;
+      if (resultsTimer) clearTimeout(resultsTimer);
+      resultsTimer = setTimeout(loadResults, 300);
+    }
+
     async function login() {
       const key = (loginTokenEl.value || '').trim();
       if (!key) {
@@ -1463,7 +2309,7 @@ app.get("/admin/ui", (req, res) => {
       if (ok) {
         setLoginStatus('');
         loginScreenEl.style.display = 'none';
-        appEl.style.display = 'block';
+        appEl.style.display = 'flex';
       } else {
         setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
       }
@@ -1473,12 +2319,33 @@ app.get("/admin/ui", (req, res) => {
     document.getElementById('save').onclick = saveConfig;
     document.getElementById('add-brand').onclick = () => {
       brandsEl.appendChild(brandTemplate(''));
+      syncSidebar();
     };
     document.getElementById('preview-generate').onclick = generatePreview;
     adminUnlockEl.onclick = unlockAdmin;
     loginBtnEl.onclick = login;
     loginTokenEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
+    });
+    navGeneralEl.onclick = () => setActiveView('');
+    callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
+    callBtnEl.onclick = placeCall;
+    resultsRefreshEl.onclick = loadResults;
+    [resultsRoleEl, resultsRecEl, resultsScoreMinEl, resultsScoreMaxEl].forEach((el) => {
+      el.addEventListener('change', scheduleResultsLoad);
+    });
+    resultsSearchEl.addEventListener('input', scheduleResultsLoad);
+    cvDropEl.addEventListener('click', () => cvFileEl.click());
+    cvFileEl.addEventListener('change', (event) => handleCvFile(event.target.files[0]));
+    cvDropEl.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      cvDropEl.classList.add('drag');
+    });
+    cvDropEl.addEventListener('dragleave', () => cvDropEl.classList.remove('drag'));
+    cvDropEl.addEventListener('drop', (event) => {
+      event.preventDefault();
+      cvDropEl.classList.remove('drag');
+      handleCvFile(event.dataTransfer.files[0]);
     });
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
@@ -1686,6 +2553,7 @@ ${paramTags}
       } catch (err) {
         console.error("[consent] whatsapp failed", err);
       }
+      recordCallHistory(call);
       if (callSid) noAnswerSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
     }
     const es = lang !== "en";
@@ -2475,6 +3343,71 @@ function formatDuration(sec) {
   return `${m}:${s.toString().padStart(2, "0")} min`;
 }
 
+function scoreValue(scoring) {
+  if (!scoring) return null;
+  const raw = scoring.score_0_100;
+  if (typeof raw === "number") return raw;
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : null;
+}
+
+function buildCallHistoryEntry(call) {
+  if (!call) return null;
+  const scoring = call.scoring;
+  const ex = scoring?.extracted || {};
+  const createdAt = call.startedAt ? new Date(call.startedAt).toISOString() : new Date().toISOString();
+  const brandDisplay = resolveBrandDisplay(call.brand || DEFAULT_BRAND);
+  const roleDisplay = call.spokenRole || displayRole(call.role || DEFAULT_ROLE, call.brand || DEFAULT_BRAND);
+  return {
+    callId: call.callSid || null,
+    brand: brandDisplay,
+    brandKey: brandKey(call.brand || brandDisplay),
+    role: roleDisplay,
+    roleKey: roleKey(call.role || roleDisplay),
+    applicant: call.applicant || "",
+    phone: call.to || call.from || "",
+    score: scoreValue(scoring),
+    recommendation: scoring?.recommendation || null,
+    summary: scoring?.summary || "",
+    warmth: typeof ex.warmth_score === "number" ? ex.warmth_score : null,
+    fluency: typeof ex.fluency_score === "number" ? ex.fluency_score : null,
+    english: ex.english_level || "",
+    english_detail: ex.english_detail || "",
+    experience: ex.experience || "",
+    area: ex.area || "",
+    availability: ex.availability || "",
+    salary: ex.salary_expectation || "",
+    trial: ex.trial_date || ex.trial_availability || "",
+    stay_plan: ex.stay_plan || "",
+    stay_detail: ex.stay_detail || "",
+    mobility: ex.mobility || "",
+    outcome: call.outcome || null,
+    outcome_detail: call.noTranscriptReason || call.noAnswerReason || "",
+    duration_sec: typeof call.durationSec === "number" ? call.durationSec : null,
+    created_at: createdAt,
+    audio_url: call.recordingToken ? `${PUBLIC_BASE_URL}/r/${call.recordingToken}` : "",
+    english_required: !!call.englishRequired
+  };
+}
+
+function recordCallHistory(call) {
+  const entry = buildCallHistoryEntry(call);
+  if (!entry) return;
+  const key = entry.callId || `${entry.phone || "na"}:${entry.created_at}`;
+  const existing = callHistoryByKey.get(key);
+  if (existing) {
+    Object.assign(existing, entry);
+    return;
+  }
+  entry._key = key;
+  callHistory.unshift(entry);
+  callHistoryByKey.set(key, entry);
+  if (callHistory.length > MAX_CALL_HISTORY) {
+    const removed = callHistory.pop();
+    if (removed && removed._key) callHistoryByKey.delete(removed._key);
+  }
+}
+
 function formatWhatsapp(scoring, call, opts = {}) {
   const note = opts.note || "";
   const ex = scoring?.extracted || {};
@@ -2713,6 +3646,7 @@ async function markNoAnswer(call, reason) {
     } catch (err) {
       console.error("[no-answer] whatsapp failed", err);
     }
+    recordCallHistory(call);
     if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
   } catch (err) {
     console.error("[no-answer] error", err);
@@ -2739,6 +3673,7 @@ async function markNoSpeech(call, reason) {
     } catch (err) {
       console.error("[no-speech] whatsapp failed", err);
     }
+    recordCallHistory(call);
     if (call.callSid) noAnswerSentBySid.set(call.callSid, Date.now() + CALL_TTL_MS);
   } catch (err) {
     console.error("[no-speech] error", err);
@@ -2771,6 +3706,7 @@ async function maybeScoreAndSend(call) {
   }
   if (call.incomplete) {
     await sendWhatsappReport(call);
+    recordCallHistory(call);
     return;
   }
   let transcriptText = call.transcriptText || "";
@@ -2805,6 +3741,7 @@ async function maybeScoreAndSend(call) {
   } catch (err) {
     console.error("[whatsapp] failed", err);
   }
+  recordCallHistory(call);
 }
 
 async function sendIncomplete(call, reason) {
@@ -2813,6 +3750,7 @@ async function sendIncomplete(call, reason) {
     call.noTranscriptReason = reason || "Entrevista incompleta: el candidato no contestó.";
     call.scoring = null;
     await sendWhatsappReport(call);
+    recordCallHistory(call);
   } catch (err) {
     console.error("[whatsapp incomplete] failed", err);
   }
