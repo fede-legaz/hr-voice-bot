@@ -2821,11 +2821,11 @@ app.get("/admin/ui", (req, res) => {
 
     function cleanNameCandidate(raw) {
       if (!raw) return '';
-      let name = raw.replace(/[\t]+/g, ' ').replace(/\s+/g, ' ').trim();
-      name = name.replace(/\b(email|correo|phone|tel|telefono|teléfono|address|direccion|dirección)\b.*$/i, '').trim();
+      let name = raw.replace(/[\\t]+/g, ' ').replace(/\\s+/g, ' ').trim();
+      name = name.replace(/\\b(email|correo|phone|tel|telefono|teléfono|address|direccion|dirección)\\b.*$/i, '').trim();
       name = name.replace(/[<>]/g, '').trim();
       name = name.replace(/[@0-9]/g, '').trim();
-      name = name.replace(/\s{2,}/g, ' ').trim();
+      name = name.replace(/\\s{2,}/g, ' ').trim();
       const parts = name.split(' ').filter(Boolean);
       if (parts.length > 4) return parts.slice(0, 4).join(' ');
       return name;
@@ -2833,8 +2833,8 @@ app.get("/admin/ui", (req, res) => {
 
     function extractNameFromCv(text) {
       if (!text) return '';
-      const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-      const labelRe = /^(?:name|nombre|candidate|applicant)\s*[:\-]\s*(.+)$/i;
+      const lines = text.split(/\\n+/).map((l) => l.trim()).filter(Boolean);
+      const labelRe = /^(?:name|nombre|candidate|applicant)\\s*[:\\-]\\s*(.+)$/i;
       for (const line of lines) {
         const match = line.match(labelRe);
         if (match && match[1]) {
@@ -2842,7 +2842,7 @@ app.get("/admin/ui", (req, res) => {
           if (cleaned.split(' ').length >= 2) return cleaned;
         }
       }
-      const inlineRe = /\b(?:name|nombre)\s*[:\-]\s*([A-Za-zÁÉÍÓÚÑñ'.-]+\s+[A-Za-zÁÉÍÓÚÑñ'.-]+(?:\s+[A-Za-zÁÉÍÓÚÑñ'.-]+){0,2})/i;
+      const inlineRe = /\\b(?:name|nombre)\\s*[:\\-]\\s*([A-Za-zÁÉÍÓÚÑñ'.-]+\\s+[A-Za-zÁÉÍÓÚÑñ'.-]+(?:\\s+[A-Za-zÁÉÍÓÚÑñ'.-]+){0,2})/i;
       for (const line of lines) {
         const match = line.match(inlineRe);
         if (match && match[1]) {
@@ -2852,7 +2852,7 @@ app.get("/admin/ui", (req, res) => {
       }
       for (const line of lines.slice(0, 4)) {
         if (/@/.test(line)) continue;
-        if (/\d/.test(line)) continue;
+        if (/\\d/.test(line)) continue;
         const cleaned = cleanNameCandidate(line);
         const parts = cleaned.split(' ').filter(Boolean);
         if (parts.length >= 2 && parts.length <= 4) return cleaned;
