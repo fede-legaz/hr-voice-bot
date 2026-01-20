@@ -641,7 +641,9 @@ function buildCallFromPayload(payload, extra = {}) {
     englishRequired,
     address,
     applicant: payload?.applicant || "",
-    cvSummary: payload?.cv_summary || "",
+    cvSummary: payload?.cv_summary || payload?.cvSummary || "",
+    cvText: payload?.cv_text || payload?.cvText || payload?.cv_summary || "",
+    cvId: payload?.cv_id || payload?.cvId || "",
     resumeUrl: payload?.resume_url || "",
     recordingStarted: false,
     transcriptText: "",
@@ -674,6 +676,13 @@ const callHistory = [];
 const callHistoryByKey = new Map();
 let callHistorySaveTimer = null;
 let callHistorySaving = false;
+const MAX_CV_STORE = 500;
+const CV_STORE_PATH = process.env.CV_STORE_PATH || path.join(__dirname, "data", "cvs.json");
+const CV_STORE_SAVE_DELAY_MS = 2000;
+const cvStore = [];
+const cvStoreById = new Map();
+let cvStoreSaveTimer = null;
+let cvStoreSaving = false;
 let roleConfig = null;
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -790,6 +799,63 @@ function loadCallHistory() {
   }
 }
 loadCallHistory();
+
+function hydrateCvStore(entries) {
+  cvStore.length = 0;
+  cvStoreById.clear();
+  if (!Array.isArray(entries)) return;
+  entries.slice(0, MAX_CV_STORE).forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    if (!entry.id) entry.id = randomToken();
+    if (!entry.brandKey && entry.brand) entry.brandKey = brandKey(entry.brand);
+    if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
+    cvStore.push(entry);
+    cvStoreById.set(entry.id, entry);
+  });
+}
+
+async function saveCvStore() {
+  if (!CV_STORE_PATH || cvStoreSaving) return;
+  cvStoreSaving = true;
+  try {
+    ensureDirForFile(CV_STORE_PATH);
+    const payload = JSON.stringify(cvStore.slice(0, MAX_CV_STORE), null, 2);
+    const tmpPath = `${CV_STORE_PATH}.tmp`;
+    await fs.promises.writeFile(tmpPath, payload, "utf8");
+    await fs.promises.rename(tmpPath, CV_STORE_PATH);
+  } catch (err) {
+    console.error("[cv-store] save failed", err);
+  } finally {
+    cvStoreSaving = false;
+  }
+}
+
+function scheduleCvStoreSave() {
+  if (!CV_STORE_PATH) return;
+  if (cvStoreSaveTimer) return;
+  cvStoreSaveTimer = setTimeout(() => {
+    cvStoreSaveTimer = null;
+    saveCvStore();
+  }, CV_STORE_SAVE_DELAY_MS);
+  if (cvStoreSaveTimer.unref) cvStoreSaveTimer.unref();
+}
+
+function loadCvStore() {
+  if (!CV_STORE_PATH) return;
+  try {
+    const raw = fs.readFileSync(CV_STORE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    hydrateCvStore(parsed);
+    if (cvStore.length) {
+      console.log(`[cv-store] loaded ${cvStore.length} entries`);
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[cv-store] load failed", err);
+    }
+  }
+}
+loadCvStore();
 
 function getRoleConfig(brand, role) {
   if (!roleConfig) return null;
@@ -953,7 +1019,61 @@ app.get("/admin/calls", requireConfig, (req, res) => {
     list = list.filter((c) => (c.applicant || "").toLowerCase().includes(qParam) || (c.phone || "").includes(qParam));
   }
 
-  return res.json({ ok: true, calls: list.slice(0, limit) });
+  const results = list.slice(0, limit).map((entry) => {
+    if (!entry) return entry;
+    if ((!entry.cv_text || !entry.cv_text.trim()) && entry.cv_id) {
+      const cvEntry = cvStoreById.get(entry.cv_id);
+      if (cvEntry) {
+        return {
+          ...entry,
+          cv_text: cvEntry.cv_text || "",
+          applicant: entry.applicant || cvEntry.applicant || "",
+          phone: entry.phone || cvEntry.phone || ""
+        };
+      }
+    }
+    return entry;
+  });
+  return res.json({ ok: true, calls: results });
+});
+
+app.get("/admin/cv", requireConfig, (req, res) => {
+  const brandParam = (req.query?.brand || "").toString();
+  const roleParam = (req.query?.role || "").toString();
+  const qParam = (req.query?.q || "").toString().toLowerCase();
+  const limit = Math.min(Number(req.query?.limit) || 200, 500);
+
+  let list = cvStore.slice();
+  if (brandParam) {
+    const bKey = brandKey(brandParam);
+    list = list.filter((c) => c.brandKey === bKey);
+  }
+  if (roleParam) {
+    const rKey = normalizeKey(roleParam);
+    list = list.filter((c) => normalizeKey(c.roleKey || c.role) === rKey);
+  }
+  if (qParam) {
+    list = list.filter((c) => {
+      return (c.applicant || "").toLowerCase().includes(qParam) || (c.phone || "").includes(qParam);
+    });
+  }
+
+  return res.json({ ok: true, cvs: list.slice(0, limit) });
+});
+
+app.post("/admin/cv", requireConfig, (req, res) => {
+  try {
+    const body = req.body || {};
+    const entry = buildCvEntry(body);
+    if (!entry.cv_text) {
+      return res.status(400).json({ error: "missing_cv_text" });
+    }
+    recordCvEntry(entry);
+    return res.json({ ok: true, cv: entry });
+  } catch (err) {
+    console.error("[admin/cv] failed", err);
+    return res.status(400).json({ error: "cv_failed", detail: err.message });
+  }
 });
 
 app.post("/admin/ocr", requireConfig, async (req, res) => {
@@ -1303,6 +1423,32 @@ app.get("/admin/ui", (req, res) => {
       flex-direction: column;
       gap: 12px;
     }
+    .cv-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(20, 24, 22, 0.55);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 10;
+    }
+    .cv-modal-card {
+      width: min(720px, 92vw);
+      background: var(--panel);
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      padding: 18px;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .cv-modal textarea {
+      min-height: 240px;
+      max-height: 55vh;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
     .login-title { font-size: 22px; font-weight: 700; font-family: "Space Grotesk", sans-serif; }
     .login-sub { color: var(--muted); font-size: 14px; }
     @keyframes fadeUp {
@@ -1444,9 +1590,45 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="inline" style="margin-top:12px;">
+            <button class="secondary" id="cv-save-btn" type="button">Guardar CV</button>
             <button id="call-btn" type="button">Llamar</button>
             <span class="small" id="call-status"></span>
           </div>
+        </div>
+
+        <div class="panel" id="cv-list-panel" style="--delay:.08s;">
+          <div class="panel-title">CVs guardados</div>
+          <div class="panel-sub">Podés guardar CVs sin llamar y usarlos después.</div>
+          <div class="grid">
+            <div>
+              <label>Local</label>
+              <select id="cv-filter-brand"></select>
+            </div>
+            <div>
+              <label>Buscar</label>
+              <input type="text" id="cv-filter-search" placeholder="Nombre o teléfono" />
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+              <button class="secondary" id="cv-refresh" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:14px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Local</th>
+                  <th>Posición</th>
+                  <th>Candidato</th>
+                  <th>Teléfono</th>
+                  <th>CV</th>
+                  <th>Acción</th>
+                </tr>
+              </thead>
+              <tbody id="cv-list-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="cv-list-count" style="margin-top:8px;"></div>
         </div>
       </section>
 
@@ -1505,6 +1687,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Se queda en EE.UU.</th>
                   <th>Expectativa salarial</th>
                   <th>Resumen</th>
+                  <th>CV</th>
                   <th>Teléfono</th>
                   <th>Fecha</th>
                   <th>Audio</th>
@@ -1574,6 +1757,15 @@ app.get("/admin/ui", (req, res) => {
       </section>
     </section>
   </div>
+  <div id="cv-modal" class="cv-modal">
+    <div class="cv-modal-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">CV</div>
+        <button class="secondary" id="cv-modal-close" type="button">Cerrar</button>
+      </div>
+      <textarea id="cv-modal-text" readonly></textarea>
+    </div>
+  </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
@@ -1618,9 +1810,18 @@ app.get("/admin/ui", (req, res) => {
     const callCvTextEl = document.getElementById('call-cv-text');
     const callBtnEl = document.getElementById('call-btn');
     const callStatusEl = document.getElementById('call-status');
+    const cvSaveBtnEl = document.getElementById('cv-save-btn');
     const cvDropEl = document.getElementById('cv-drop');
     const cvFileEl = document.getElementById('cv-file');
     const cvStatusEl = document.getElementById('cv-status');
+    const cvFilterBrandEl = document.getElementById('cv-filter-brand');
+    const cvFilterSearchEl = document.getElementById('cv-filter-search');
+    const cvRefreshEl = document.getElementById('cv-refresh');
+    const cvListBodyEl = document.getElementById('cv-list-body');
+    const cvListCountEl = document.getElementById('cv-list-count');
+    const cvModalEl = document.getElementById('cv-modal');
+    const cvModalTextEl = document.getElementById('cv-modal-text');
+    const cvModalCloseEl = document.getElementById('cv-modal-close');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -1638,6 +1839,8 @@ app.get("/admin/ui", (req, res) => {
     let activeBrandKey = '';
     let suppressSidebarSync = false;
     let resultsTimer = null;
+    let cvTimer = null;
+    let currentCvSource = '';
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -1667,6 +1870,18 @@ app.get("/admin/ui", (req, res) => {
     function setCallStatus(msg) { callStatusEl.textContent = msg || ''; }
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
+    function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
+
+    function openCvModal(text) {
+      if (!cvModalEl) return;
+      cvModalTextEl.value = text || '';
+      cvModalEl.style.display = 'flex';
+    }
+
+    function closeCvModal() {
+      if (!cvModalEl) return;
+      cvModalEl.style.display = 'none';
+    }
 
     function lockSystemPrompt() {
       systemPromptUnlocked = false;
@@ -1980,6 +2195,13 @@ app.get("/admin/ui", (req, res) => {
         .filter(Boolean);
     }
 
+    function getRoleDisplayForBrand(brandKey, roleKey) {
+      if (!brandKey || !roleKey) return roleKey || '';
+      const roles = listRolesForBrand(brandKey);
+      const match = roles.find((r) => r.key === roleKey);
+      return match ? match.display : roleKey;
+    }
+
     function syncSidebar() {
       if (suppressSidebarSync) return;
       const brandOptions = listBrandOptions();
@@ -2062,6 +2284,9 @@ app.get("/admin/ui", (req, res) => {
       if (activeView === 'interviews') {
         scheduleResultsLoad();
       }
+      if (activeView === 'calls') {
+        scheduleCvLoad();
+      }
     }
 
     function updateCallBrandOptions() {
@@ -2109,6 +2334,19 @@ app.get("/admin/ui", (req, res) => {
         resultsBrandEl.value = prev;
       } else {
         resultsBrandEl.value = '';
+      }
+      const cvPrev = cvFilterBrandEl.value;
+      cvFilterBrandEl.innerHTML = '<option value="">Todos</option>';
+      options.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt.key;
+        option.textContent = opt.display;
+        cvFilterBrandEl.appendChild(option);
+      });
+      if (cvPrev && options.some((opt) => opt.key === cvPrev)) {
+        cvFilterBrandEl.value = cvPrev;
+      } else {
+        cvFilterBrandEl.value = '';
       }
     }
 
@@ -2360,6 +2598,55 @@ app.get("/admin/ui", (req, res) => {
       return text.slice(0, limit) + '...';
     }
 
+    function cleanNameCandidate(raw) {
+      if (!raw) return '';
+      let name = raw.replace(/[\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+      name = name.replace(/\b(email|correo|phone|tel|telefono|teléfono|address|direccion|dirección)\b.*$/i, '').trim();
+      name = name.replace(/[<>]/g, '').trim();
+      name = name.replace(/[@0-9]/g, '').trim();
+      name = name.replace(/\s{2,}/g, ' ').trim();
+      const parts = name.split(' ').filter(Boolean);
+      if (parts.length > 4) return parts.slice(0, 4).join(' ');
+      return name;
+    }
+
+    function extractNameFromCv(text) {
+      if (!text) return '';
+      const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+      const labelRe = /^(?:name|nombre|candidate|applicant)\s*[:\-]\s*(.+)$/i;
+      for (const line of lines) {
+        const match = line.match(labelRe);
+        if (match && match[1]) {
+          const cleaned = cleanNameCandidate(match[1]);
+          if (cleaned.split(' ').length >= 2) return cleaned;
+        }
+      }
+      const inlineRe = /\b(?:name|nombre)\s*[:\-]\s*([A-Za-zÁÉÍÓÚÑñ'.-]+\s+[A-Za-zÁÉÍÓÚÑñ'.-]+(?:\s+[A-Za-zÁÉÍÓÚÑñ'.-]+){0,2})/i;
+      for (const line of lines) {
+        const match = line.match(inlineRe);
+        if (match && match[1]) {
+          const cleaned = cleanNameCandidate(match[1]);
+          if (cleaned.split(' ').length >= 2) return cleaned;
+        }
+      }
+      for (const line of lines.slice(0, 4)) {
+        if (/@/.test(line)) continue;
+        if (/\d/.test(line)) continue;
+        const cleaned = cleanNameCandidate(line);
+        const parts = cleaned.split(' ').filter(Boolean);
+        if (parts.length >= 2 && parts.length <= 4) return cleaned;
+      }
+      return '';
+    }
+
+    function maybeFillNameFromCv(text) {
+      if (callNameEl.value && callNameEl.value.trim()) return;
+      const name = extractNameFromCv(text || '');
+      if (name) {
+        callNameEl.value = name;
+      }
+    }
+
     async function loadPdfDocument(file) {
       if (!window.pdfjsLib) throw new Error('PDF parser no disponible');
       const buffer = await file.arrayBuffer();
@@ -2420,6 +2707,7 @@ app.get("/admin/ui", (req, res) => {
 
     async function handleCvFile(file) {
       if (!file) return;
+      currentCvSource = file.name || '';
       setCvStatus('Leyendo CV...');
       try {
         let text = '';
@@ -2441,22 +2729,41 @@ app.get("/admin/ui", (req, res) => {
           throw new Error('Formato no soportado (PDF, imagen o TXT).');
         }
         callCvTextEl.value = truncateText(text, CV_CHAR_LIMIT);
+        maybeFillNameFromCv(callCvTextEl.value);
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
       } catch (err) {
         setCvStatus('Error: ' + err.message);
       }
     }
 
-    async function placeCall() {
+    async function placeCall(payloadOverride = null) {
       setCallStatus('Enviando llamada...');
       try {
-        const payload = {
+        const basePayload = {
           to: callPhoneEl.value || '',
           brand: callBrandEl.value || '',
           role: callRoleEl.value || '',
           applicant: callNameEl.value || '',
-          cv_summary: truncateText(callCvTextEl.value || '', CV_CHAR_LIMIT)
+          cv_summary: truncateText(callCvTextEl.value || '', CV_CHAR_LIMIT),
+          cv_text: callCvTextEl.value || '',
+          source: currentCvSource || ''
         };
+        if (!basePayload.applicant.trim()) {
+          maybeFillNameFromCv(basePayload.cv_text || basePayload.cv_summary || '');
+          basePayload.applicant = callNameEl.value || '';
+        }
+        if (!basePayload.applicant.trim()) {
+          setCallStatus('Error: falta nombre y apellido.');
+          return;
+        }
+        if (!basePayload.cv_summary) {
+          setCallStatus('Error: falta CV.');
+          return;
+        }
+        const payload = payloadOverride ? { ...basePayload, ...payloadOverride } : basePayload;
+        if (!payload.cv_summary && payload.cv_text) {
+          payload.cv_summary = truncateText(payload.cv_text, CV_CHAR_LIMIT);
+        }
         const resp = await fetch('/call', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
@@ -2532,6 +2839,18 @@ app.get("/admin/ui", (req, res) => {
         addCell(stay);
         addCell(call.salary);
         addCell(call.summary || call.outcome_detail || '—');
+        const cvTd = document.createElement('td');
+        if (call.cv_text) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary';
+          btn.textContent = 'Ver CV';
+          btn.onclick = () => openCvModal(call.cv_text || '');
+          cvTd.appendChild(btn);
+        } else {
+          cvTd.textContent = '—';
+        }
+        tr.appendChild(cvTd);
         addCell(call.phone);
         addCell(formatDate(call.created_at));
         const audioTd = document.createElement('td');
@@ -2602,6 +2921,122 @@ app.get("/admin/ui", (req, res) => {
       resultsTimer = setTimeout(loadResults, 300);
     }
 
+    function scheduleCvLoad() {
+      if (activeView !== 'calls') return;
+      if (cvTimer) clearTimeout(cvTimer);
+      cvTimer = setTimeout(loadCvList, 300);
+    }
+
+    function renderCvList(list) {
+      cvListBodyEl.innerHTML = '';
+      list.forEach((item) => {
+        const tr = document.createElement('tr');
+        const addCell = (value) => {
+          const td = document.createElement('td');
+          td.textContent = value || '—';
+          tr.appendChild(td);
+        };
+        addCell(formatDate(item.created_at));
+        const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
+        const roleLabel = item.roleKey ? getRoleDisplayForBrand(item.brandKey || item.brand, item.roleKey) : (item.role || '');
+        addCell(brandLabel);
+        addCell(roleLabel);
+        addCell(item.applicant || '');
+        addCell(item.phone || '');
+        const cvTd = document.createElement('td');
+        if (item.cv_text) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary';
+          btn.textContent = 'Ver CV';
+          btn.onclick = () => openCvModal(item.cv_text || '');
+          cvTd.appendChild(btn);
+        } else {
+          cvTd.textContent = '—';
+        }
+        tr.appendChild(cvTd);
+        const actionTd = document.createElement('td');
+        const callBtn = document.createElement('button');
+        callBtn.type = 'button';
+        callBtn.textContent = 'Llamar';
+        callBtn.onclick = () => {
+          callBrandEl.value = item.brandKey || item.brand || '';
+          updateCallRoleOptions(callBrandEl.value);
+          callRoleEl.value = item.roleKey || item.role || '';
+          callNameEl.value = item.applicant || '';
+          callPhoneEl.value = item.phone || '';
+          callCvTextEl.value = item.cv_text || '';
+          currentCvSource = item.source || '';
+          placeCall({
+            to: item.phone || '',
+            brand: item.brandKey || item.brand || '',
+            role: item.roleKey || item.role || '',
+            applicant: item.applicant || '',
+            cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
+            cv_text: item.cv_text || '',
+            cv_id: item.id || ''
+          });
+        };
+        actionTd.appendChild(callBtn);
+        tr.appendChild(actionTd);
+        cvListBodyEl.appendChild(tr);
+      });
+      setCvListCount(list.length ? list.length + ' CVs' : 'Sin CVs guardados.');
+    }
+
+    async function loadCvList() {
+      try {
+        const params = new URLSearchParams();
+        if (cvFilterBrandEl.value) params.set('brand', cvFilterBrandEl.value);
+        if (cvFilterSearchEl.value) params.set('q', cvFilterSearchEl.value);
+        const resp = await fetch('/admin/cv?' + params.toString(), {
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'cv failed');
+        renderCvList(data.cvs || []);
+      } catch (err) {
+        setCvListCount('Error: ' + err.message);
+      }
+    }
+
+    async function saveCv() {
+      setCallStatus('Guardando CV...');
+      try {
+        const payload = {
+          brand: callBrandEl.value || '',
+          role: callRoleEl.value || '',
+          applicant: callNameEl.value || '',
+          phone: callPhoneEl.value || '',
+          cv_text: callCvTextEl.value || '',
+          source: currentCvSource || ''
+        };
+        if (!payload.applicant.trim()) {
+          maybeFillNameFromCv(payload.cv_text || '');
+          payload.applicant = callNameEl.value || '';
+        }
+        if (!payload.applicant.trim()) {
+          setCallStatus('Error: falta nombre y apellido.');
+          return;
+        }
+        if (!payload.cv_text.trim()) {
+          setCallStatus('Error: falta CV.');
+          return;
+        }
+        const resp = await fetch('/admin/cv', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'cv save failed');
+        setCallStatus('CV guardado.');
+        loadCvList();
+      } catch (err) {
+        setCallStatus('Error: ' + err.message);
+      }
+    }
+
     async function login() {
       const key = (loginTokenEl.value || '').trim();
       if (!key) {
@@ -2637,6 +3072,7 @@ app.get("/admin/ui", (req, res) => {
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
     callBtnEl.onclick = placeCall;
+    cvSaveBtnEl.onclick = saveCv;
     resultsRefreshEl.onclick = loadResults;
     resultsBrandEl.addEventListener('change', () => {
       updateResultsRoleOptions();
@@ -2646,6 +3082,9 @@ app.get("/admin/ui", (req, res) => {
       el.addEventListener('change', scheduleResultsLoad);
     });
     resultsSearchEl.addEventListener('input', scheduleResultsLoad);
+    cvRefreshEl.onclick = loadCvList;
+    cvFilterBrandEl.addEventListener('change', scheduleCvLoad);
+    cvFilterSearchEl.addEventListener('input', scheduleCvLoad);
     cvDropEl.addEventListener('click', () => cvFileEl.click());
     cvFileEl.addEventListener('change', (event) => handleCvFile(event.target.files[0]));
     cvDropEl.addEventListener('dragover', (event) => {
@@ -2657,6 +3096,15 @@ app.get("/admin/ui", (req, res) => {
       event.preventDefault();
       cvDropEl.classList.remove('drag');
       handleCvFile(event.dataTransfer.files[0]);
+    });
+    callCvTextEl.addEventListener('blur', () => {
+      if (!callNameEl.value || !callNameEl.value.trim()) {
+        maybeFillNameFromCv(callCvTextEl.value || '');
+      }
+    });
+    cvModalCloseEl.addEventListener('click', closeCvModal);
+    cvModalEl.addEventListener('click', (event) => {
+      if (event.target === cvModalEl) closeCvModal();
     });
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
@@ -2831,6 +3279,7 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
       { name: "address", value: payload.address },
       { name: "applicant", value: payload.applicant },
       { name: "cv_summary", value: payload.cv_summary },
+      { name: "cv_id", value: payload.cv_id },
       { name: "resume_url", value: payload.resume_url },
       { name: "lang", value: lang }
     ]
@@ -2988,9 +3437,13 @@ app.post("/call", async (req, res) => {
       address,
       applicant = "",
       cv_summary = "",
+      cv_text = "",
+      cv_id = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
     } = body;
+
+    const cvSummary = (cv_summary || cv_text || "").trim();
 
     const roleClean = sanitizeRole(role);
     const toNorm = normalizePhone(to);
@@ -3006,7 +3459,8 @@ app.post("/call", async (req, res) => {
       englishRequired: englishReqBool,
       address: address || resolveAddress(brand, null),
       applicant,
-      cvLen: (cv_summary || "").length
+      cvId: cv_id || "",
+      cvLen: cvSummary.length
     });
 
     if (!toNorm || !fromNorm) {
@@ -3020,7 +3474,7 @@ app.post("/call", async (req, res) => {
 
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
-      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary, resume_url },
+      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary: cvSummary, cv_id, resume_url },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
@@ -3034,7 +3488,8 @@ app.post("/call", async (req, res) => {
         englishRequired: englishReqBool ? "1" : "0",
         address: resolvedAddress,
         applicant,
-        cv_summary,
+        cv_summary: cvSummary,
+        cv_id,
         resume_url
       },
       expiresAt: Date.now() + CALL_TTL_MS
@@ -3064,6 +3519,25 @@ app.post("/call", async (req, res) => {
       return res.status(500).json({ error: "twilio_call_failed", detail: data });
     }
     console.log("[/call] queued", { sid: data.sid, status: data.status });
+    if (data.sid) {
+      const call = buildCallFromPayload(
+        {
+          to: toNorm,
+          brand,
+          role: roleClean,
+          englishRequired: englishReqBool ? "1" : "0",
+          address: resolvedAddress,
+          applicant,
+          cv_summary: cvSummary,
+          cv_id,
+          resume_url
+        },
+        { callSid: data.sid, to: toNorm }
+      );
+      call.from = fromNorm;
+      call.expiresAt = Date.now() + CALL_TTL_MS;
+      callsByCallSid.set(data.sid, call);
+    }
     return res.json({ callId: data.sid, status: data.status });
   } catch (err) {
     console.error("[/call] error", err);
@@ -3086,6 +3560,7 @@ wss.on("connection", (twilioWs, req) => {
   let address = resolveAddress(brand, url.searchParams.get("address"));
   let applicant = url.searchParams.get("applicant") || "";
   let cvSummary = url.searchParams.get("cv_summary") || "";
+  let cvId = url.searchParams.get("cv_id") || "";
   let resumeUrl = url.searchParams.get("resume_url") || "";
   let spokenRole = displayRole(role, brand);
 
@@ -3109,6 +3584,8 @@ wss.on("connection", (twilioWs, req) => {
     address,
     applicant,
     cvSummary,
+    cvText: cvSummary,
+    cvId,
     resumeUrl,
     from: null,
     recordingStarted: false,
@@ -3371,6 +3848,7 @@ DECÍ ESTO Y CALLATE:
         address = resolveAddress(brand, sp.address || address);
         applicant = sp.applicant || applicant;
         cvSummary = sp.cv_summary || cvSummary;
+        cvId = sp.cv_id || cvId;
         resumeUrl = sp.resume_url || resumeUrl;
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
@@ -3385,6 +3863,8 @@ DECÍ ESTO Y CALLATE:
       call.address = address;
       call.applicant = applicant;
       call.cvSummary = cvSummary;
+      call.cvText = call.cvText || cvSummary;
+      call.cvId = cvId;
       call.resumeUrl = resumeUrl;
       sendSessionUpdateSafe();
 
@@ -3697,7 +4177,9 @@ function buildCallHistoryEntry(call) {
     duration_sec: typeof call.durationSec === "number" ? call.durationSec : null,
     created_at: createdAt,
     audio_url: call.recordingToken ? `${PUBLIC_BASE_URL}/r/${call.recordingToken}` : "",
-    english_required: !!call.englishRequired
+    english_required: !!call.englishRequired,
+    cv_id: call.cvId || "",
+    cv_text: call.cvText || call.cvSummary || ""
   };
 }
 
@@ -3719,6 +4201,47 @@ function recordCallHistory(call) {
     if (removed && removed._key) callHistoryByKey.delete(removed._key);
   }
   scheduleCallHistorySave();
+}
+
+function buildCvEntry(payload = {}) {
+  const createdAt = new Date().toISOString();
+  const brand = payload.brand || DEFAULT_BRAND;
+  const role = payload.role || DEFAULT_ROLE;
+  const applicant = (payload.applicant || "").trim();
+  const phone = normalizePhone(payload.phone || payload.to || "");
+  const cvText = (payload.cv_text || payload.cv_summary || "").trim();
+  const source = (payload.source || payload.file_name || "").trim();
+  const id = payload.id || randomToken();
+  return {
+    id,
+    created_at: createdAt,
+    brand,
+    brandKey: brandKey(brand),
+    role,
+    roleKey: roleKey(role),
+    applicant,
+    phone,
+    cv_text: cvText,
+    cv_len: cvText.length,
+    source
+  };
+}
+
+function recordCvEntry(entry) {
+  if (!entry || !entry.id) return;
+  const existing = cvStoreById.get(entry.id);
+  if (existing) {
+    Object.assign(existing, entry);
+    scheduleCvStoreSave();
+    return;
+  }
+  cvStore.unshift(entry);
+  cvStoreById.set(entry.id, entry);
+  if (cvStore.length > MAX_CV_STORE) {
+    const removed = cvStore.pop();
+    if (removed && removed.id) cvStoreById.delete(removed.id);
+  }
+  scheduleCvStoreSave();
 }
 
 function formatWhatsapp(scoring, call, opts = {}) {
@@ -3827,8 +4350,11 @@ async function placeOutboundCall(payload) {
     address,
     applicant = "",
     cv_summary = "",
+    cv_text = "",
+    cv_id = "",
     resume_url = ""
   } = data;
+  const cvSummary = (cv_summary || cv_text || "").trim();
 
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
@@ -3851,7 +4377,8 @@ async function placeOutboundCall(payload) {
       englishRequired: englishReqBool ? "1" : "0",
       address: resolvedAddress,
       applicant,
-      cv_summary,
+      cv_summary: cvSummary,
+      cv_id,
       resume_url
     },
     expiresAt: Date.now() + CALL_TTL_MS
