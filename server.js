@@ -700,9 +700,11 @@ const cvStoreById = new Map();
 let cvStoreSaveTimer = null;
 let cvStoreSaving = false;
 let roleConfig = null;
+let roleConfigSource = "defaults";
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
 const rolesConfigPath = path.join(__dirname, "config", "roles.json");
+const ROLE_CONFIG_DB_KEY = "roles_config";
 const dbPool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
@@ -748,17 +750,71 @@ function randomToken() {
   return crypto.randomBytes(16).toString("hex");
 }
 
-function loadRoleConfig() {
+function loadRoleConfigFromFile() {
   try {
     const raw = fs.readFileSync(rolesConfigPath, "utf8");
     roleConfig = JSON.parse(raw);
+    roleConfigSource = "file";
     console.log("[config] roles.json loaded");
   } catch (err) {
     console.error("[config] failed to load roles.json, using defaults", err.message);
     roleConfig = null;
+    roleConfigSource = "defaults";
   }
 }
-loadRoleConfig();
+loadRoleConfigFromFile();
+
+async function loadRoleConfigFromDb() {
+  if (!dbPool) return false;
+  try {
+    const resp = await dbPool.query("SELECT value FROM app_config WHERE key = $1", [ROLE_CONFIG_DB_KEY]);
+    const config = resp.rows?.[0]?.value;
+    if (config && typeof config === "object") {
+      roleConfig = config;
+      roleConfigSource = "db";
+      console.log("[config] roles loaded from db");
+      return true;
+    }
+  } catch (err) {
+    console.error("[config] failed to load roles from db", err.message);
+  }
+  return false;
+}
+
+async function saveRoleConfigToDb(config) {
+  if (!dbPool || !config) return false;
+  try {
+    await dbPool.query(
+      `
+      INSERT INTO app_config (key, value, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          updated_at = NOW()
+    `,
+      [ROLE_CONFIG_DB_KEY, config]
+    );
+    roleConfigSource = "db";
+    return true;
+  } catch (err) {
+    console.error("[config] failed to save roles to db", err.message);
+    return false;
+  }
+}
+
+async function persistRoleConfig(config) {
+  const savedToDb = await saveRoleConfigToDb(config);
+  if (savedToDb) return true;
+  try {
+    const serialized = JSON.stringify(config, null, 2);
+    await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
+    roleConfigSource = "file";
+    return true;
+  } catch (err) {
+    console.error("[config] failed to save roles.json", err.message);
+    return false;
+  }
+}
 
 function ensureDirForFile(filePath) {
   if (!filePath) return;
@@ -947,6 +1003,13 @@ async function initDb() {
   if (!dbPool) return;
   try {
     await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`
       CREATE TABLE IF NOT EXISTS cvs (
         id TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1003,6 +1066,12 @@ async function initDb() {
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_score ON calls (score);`);
+
+    const loaded = await loadRoleConfigFromDb();
+    if (!loaded && roleConfig) {
+      const seeded = await saveRoleConfigToDb(roleConfig);
+      if (seeded) console.log("[config] roles seeded to db");
+    }
 
     console.log("[db] ready");
   } catch (err) {
@@ -1076,9 +1145,12 @@ app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
 
 // Config endpoints (protect with CALL_BEARER_TOKEN)
-app.get("/admin/config", requireConfig, (req, res) => {
+app.get("/admin/config", requireConfig, async (req, res) => {
+  if (!roleConfig && dbPool) {
+    await loadRoleConfigFromDb();
+  }
   if (!roleConfig) return res.json({ config: null, source: "defaults" });
-  return res.json({ config: roleConfig, source: "file" });
+  return res.json({ config: roleConfig, source: roleConfigSource || "file" });
 });
 
 app.post("/admin/config", requireConfig, async (req, res) => {
@@ -1094,9 +1166,8 @@ app.post("/admin/config", requireConfig, async (req, res) => {
     } else {
       delete parsed.meta.system_prompt;
     }
-    const normalized = JSON.stringify(parsed, null, 2);
-    await fs.promises.writeFile(rolesConfigPath, normalized, "utf8");
     roleConfig = parsed;
+    await persistRoleConfig(roleConfig);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/config] failed", err);
@@ -1142,8 +1213,7 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
     if (!roleConfig) roleConfig = { meta: {} };
     if (!roleConfig.meta) roleConfig.meta = {};
     roleConfig.meta.system_prompt = prompt;
-    const serialized = JSON.stringify(roleConfig, null, 2);
-    await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
+    await persistRoleConfig(roleConfig);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/system-prompt] failed", err);
