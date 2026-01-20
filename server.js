@@ -1239,6 +1239,14 @@ app.get("/admin/ui", (req, res) => {
       max-height: 540px;
       background: #fff;
     }
+    .audio-wrap { display: flex; align-items: center; gap: 8px; }
+    .audio-speed {
+      padding: 6px 8px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-size: 12px;
+      background: #fff;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
@@ -1332,6 +1340,7 @@ app.get("/admin/ui", (req, res) => {
       </div>
       <nav class="nav">
         <button class="nav-item" id="nav-general" type="button">General</button>
+        <button class="nav-item" id="nav-interviews" type="button">Entrevistas</button>
         <div class="nav-section-title">Restaurantes</div>
         <div id="brand-list" class="brand-list"></div>
         <button class="secondary nav-add" id="add-brand" type="button">+ Nuevo local</button>
@@ -1389,6 +1398,74 @@ app.get("/admin/ui", (req, res) => {
             </div>
             <span class="small" id="admin-status"></span>
           </div>
+        </div>
+      </section>
+
+      <section id="interviews-view" class="view" style="display:none;">
+        <div class="panel" id="results-panel" style="--delay:.06s;">
+          <div class="panel-title">Entrevistas</div>
+          <div class="panel-sub">Listado general con filtros por local, posición y score.</div>
+          <div class="grid">
+            <div>
+              <label>Local</label>
+              <select id="results-brand"></select>
+            </div>
+            <div>
+              <label>Posición</label>
+              <select id="results-role"></select>
+            </div>
+            <div>
+              <label>Recomendación</label>
+              <select id="results-rec">
+                <option value="">Todas</option>
+                <option value="advance">Avanzar</option>
+                <option value="review">Revisar</option>
+                <option value="reject">No avanzar</option>
+              </select>
+            </div>
+            <div>
+              <label>Puntaje mín.</label>
+              <input type="text" id="results-score-min" placeholder="0" />
+            </div>
+            <div>
+              <label>Puntaje máx.</label>
+              <input type="text" id="results-score-max" placeholder="100" />
+            </div>
+            <div>
+              <label>Buscar</label>
+              <input type="text" id="results-search" placeholder="Nombre o teléfono" />
+            </div>
+            <div style="display:flex; align-items:flex-end;">
+              <button class="secondary" id="results-refresh" type="button">Refresh</button>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:14px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Score</th>
+                  <th>Local</th>
+                  <th>Candidato</th>
+                  <th>Posición</th>
+                  <th>Calidez</th>
+                  <th>Fluidez</th>
+                  <th>Inglés</th>
+                  <th>Experiencia</th>
+                  <th>Zona</th>
+                  <th>Disponibilidad</th>
+                  <th>Se queda en EE.UU.</th>
+                  <th>Expectativa salarial</th>
+                  <th>Resumen</th>
+                  <th>Teléfono</th>
+                  <th>Fecha</th>
+                  <th>Audio</th>
+                  <th>Nivel</th>
+                </tr>
+              </thead>
+              <tbody id="results-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="results-count" style="margin-top:8px;"></div>
         </div>
       </section>
 
@@ -1491,66 +1568,6 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel" id="results-panel" style="--delay:.1s;">
-          <div class="panel-title">Resultados por local</div>
-          <div class="panel-sub">Filtrá por posición, score y recomendación.</div>
-          <div class="grid">
-            <div>
-              <label>Posición</label>
-              <select id="results-role"></select>
-            </div>
-            <div>
-              <label>Recomendación</label>
-              <select id="results-rec">
-                <option value="">Todas</option>
-                <option value="advance">Avanzar</option>
-                <option value="review">Revisar</option>
-                <option value="reject">No avanzar</option>
-              </select>
-            </div>
-            <div>
-              <label>Puntaje mín.</label>
-              <input type="text" id="results-score-min" placeholder="0" />
-            </div>
-            <div>
-              <label>Puntaje máx.</label>
-              <input type="text" id="results-score-max" placeholder="100" />
-            </div>
-            <div>
-              <label>Buscar</label>
-              <input type="text" id="results-search" placeholder="Nombre o teléfono" />
-            </div>
-            <div style="display:flex; align-items:flex-end;">
-              <button class="secondary" id="results-refresh" type="button">Refresh</button>
-            </div>
-          </div>
-          <div class="table-wrapper" style="margin-top:14px;">
-            <table>
-              <thead>
-                <tr>
-                  <th>Score</th>
-                  <th>Candidato</th>
-                  <th>Posición</th>
-                  <th>Calidez</th>
-                  <th>Fluidez</th>
-                  <th>Inglés</th>
-                  <th>Experiencia</th>
-                  <th>Zona</th>
-                  <th>Disponibilidad</th>
-                  <th>Se queda en EE.UU.</th>
-                  <th>Expectativa salarial</th>
-                  <th>Resumen</th>
-                  <th>Teléfono</th>
-                  <th>Fecha</th>
-                  <th>Audio</th>
-                  <th>Nivel</th>
-                </tr>
-              </thead>
-              <tbody id="results-body"></tbody>
-            </table>
-          </div>
-          <div class="small" id="results-count" style="margin-top:8px;"></div>
-        </div>
       </section>
     </section>
   </div>
@@ -1564,10 +1581,12 @@ app.get("/admin/ui", (req, res) => {
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const navGeneralEl = document.getElementById('nav-general');
+    const navInterviewsEl = document.getElementById('nav-interviews');
     const brandListEl = document.getElementById('brand-list');
     const viewTitleEl = document.getElementById('view-title');
     const viewLabelEl = document.getElementById('view-label');
     const generalViewEl = document.getElementById('general-view');
+    const interviewsViewEl = document.getElementById('interviews-view');
     const brandViewEl = document.getElementById('brand-view');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
@@ -1597,6 +1616,7 @@ app.get("/admin/ui", (req, res) => {
     const cvDropEl = document.getElementById('cv-drop');
     const cvFileEl = document.getElementById('cv-file');
     const cvStatusEl = document.getElementById('cv-status');
+    const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
     const resultsScoreMinEl = document.getElementById('results-score-min');
@@ -1609,6 +1629,7 @@ app.get("/admin/ui", (req, res) => {
     let adminToken = '';
     let systemPromptUnlocked = false;
     let lastLoadError = '';
+    let activeView = 'general';
     let activeBrandKey = '';
     let suppressSidebarSync = false;
     let resultsTimer = null;
@@ -1627,6 +1648,7 @@ app.get("/admin/ui", (req, res) => {
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
       system_prompt: defaultSystemPrompt
     };
+    const VIEW_INTERVIEWS = '__interviews__';
 
     if (window.pdfjsLib) {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -1984,27 +2006,46 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function updateNavActive() {
-      navGeneralEl.classList.toggle('active', !activeBrandKey);
+      navGeneralEl.classList.toggle('active', activeView === 'general');
+      navInterviewsEl.classList.toggle('active', activeView === 'interviews');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
-        btn.classList.toggle('active', btn.dataset.brandKey === activeBrandKey);
+        btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
       });
     }
 
     function setActiveView(key) {
-      activeBrandKey = key || '';
-      generalViewEl.style.display = activeBrandKey ? 'none' : 'block';
-      brandViewEl.style.display = activeBrandKey ? 'block' : 'none';
+      if (key === VIEW_INTERVIEWS) {
+        activeView = 'interviews';
+        activeBrandKey = '';
+      } else if (key) {
+        activeView = 'brand';
+        activeBrandKey = key;
+      } else {
+        activeView = 'general';
+        activeBrandKey = '';
+      }
+      generalViewEl.style.display = activeView === 'general' ? 'block' : 'none';
+      interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
+      brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
-        const show = activeBrandKey && card.dataset.brandKey === activeBrandKey;
+        const show = activeView === 'brand' && card.dataset.brandKey === activeBrandKey;
         card.style.display = show ? '' : 'none';
       });
-      viewTitleEl.textContent = activeBrandKey ? getBrandDisplayByKey(activeBrandKey) : 'General';
-      viewLabelEl.textContent = activeBrandKey ? 'Restaurante' : 'Configuración';
+      if (activeView === 'brand') {
+        viewTitleEl.textContent = getBrandDisplayByKey(activeBrandKey);
+        viewLabelEl.textContent = 'Restaurante';
+      } else if (activeView === 'interviews') {
+        viewTitleEl.textContent = 'Entrevistas';
+        viewLabelEl.textContent = 'Listado';
+      } else {
+        viewTitleEl.textContent = 'General';
+        viewLabelEl.textContent = 'Configuración';
+      }
       updateNavActive();
       updateCallBrandOptions();
       updateRoleOptions();
-      setPreviewDefaults(activeBrandKey);
-      if (activeBrandKey) {
+      setPreviewDefaults(activeView === 'brand' ? activeBrandKey : '');
+      if (activeView === 'interviews') {
         scheduleResultsLoad();
       }
     }
@@ -2040,9 +2081,27 @@ app.get("/admin/ui", (req, res) => {
       });
     }
 
-    function updateRoleOptions() {
-      updateCallRoleOptions(callBrandEl.value || activeBrandKey);
-      const roles = listRolesForBrand(activeBrandKey);
+    function updateResultsBrandOptions() {
+      const options = listBrandOptions();
+      const prev = resultsBrandEl.value;
+      resultsBrandEl.innerHTML = '<option value="">Todos</option>';
+      options.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt.key;
+        option.textContent = opt.display;
+        resultsBrandEl.appendChild(option);
+      });
+      if (prev && options.some((opt) => opt.key === prev)) {
+        resultsBrandEl.value = prev;
+      } else {
+        resultsBrandEl.value = '';
+      }
+    }
+
+    function updateResultsRoleOptions() {
+      const brandKey = resultsBrandEl.value || '';
+      const prev = resultsRoleEl.value;
+      const roles = brandKey ? listRolesForBrand(brandKey) : [];
       resultsRoleEl.innerHTML = '<option value="">Todas</option>';
       roles.forEach((role) => {
         const opt = document.createElement('option');
@@ -2050,6 +2109,17 @@ app.get("/admin/ui", (req, res) => {
         opt.textContent = role.display;
         resultsRoleEl.appendChild(opt);
       });
+      if (prev && roles.some((role) => role.key === prev)) {
+        resultsRoleEl.value = prev;
+      } else {
+        resultsRoleEl.value = '';
+      }
+    }
+
+    function updateRoleOptions() {
+      updateCallRoleOptions(callBrandEl.value || activeBrandKey);
+      updateResultsBrandOptions();
+      updateResultsRoleOptions();
     }
 
     function setPreviewDefaults(brandKey) {
@@ -2100,8 +2170,10 @@ app.get("/admin/ui", (req, res) => {
       }
       suppressSidebarSync = false;
       syncSidebar();
-      if (activeBrandKey && getBrandCardByKey(activeBrandKey)) {
+      if (activeView === 'brand' && activeBrandKey && getBrandCardByKey(activeBrandKey)) {
         setActiveView(activeBrandKey);
+      } else if (activeView === 'interviews') {
+        setActiveView(VIEW_INTERVIEWS);
       } else {
         setActiveView('');
       }
@@ -2431,6 +2503,7 @@ app.get("/admin/ui", (req, res) => {
         const scoreCell = document.createElement('td');
         scoreCell.appendChild(scorePill(call.score));
         tr.appendChild(scoreCell);
+        addCell(call.brand);
         addCell(call.applicant);
         addCell(call.role);
         addCell(call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '—');
@@ -2447,11 +2520,34 @@ app.get("/admin/ui", (req, res) => {
         addCell(formatDate(call.created_at));
         const audioTd = document.createElement('td');
         if (call.audio_url) {
+          const wrap = document.createElement('div');
+          wrap.className = 'audio-wrap';
           const audio = document.createElement('audio');
           audio.controls = true;
           audio.preload = 'none';
           audio.src = call.audio_url;
-          audioTd.appendChild(audio);
+          const speed = document.createElement('select');
+          speed.className = 'audio-speed';
+          [
+            { label: '1x', value: '1' },
+            { label: '1.25x', value: '1.25' },
+            { label: '1.5x', value: '1.5' },
+            { label: '1.75x', value: '1.75' },
+            { label: '2x', value: '2' }
+          ].forEach((opt) => {
+            const option = document.createElement('option');
+            option.value = opt.value;
+            option.textContent = opt.label;
+            speed.appendChild(option);
+          });
+          speed.value = '1';
+          speed.addEventListener('change', () => {
+            const rate = Number(speed.value);
+            audio.playbackRate = Number.isFinite(rate) ? rate : 1;
+          });
+          wrap.appendChild(audio);
+          wrap.appendChild(speed);
+          audioTd.appendChild(wrap);
         } else {
           audioTd.textContent = '—';
         }
@@ -2465,10 +2561,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function loadResults() {
-      if (!activeBrandKey) return;
       try {
         const params = new URLSearchParams();
-        params.set('brand', activeBrandKey);
+        if (resultsBrandEl.value) params.set('brand', resultsBrandEl.value);
         if (resultsRoleEl.value) params.set('role', resultsRoleEl.value);
         if (resultsRecEl.value) params.set('recommendation', resultsRecEl.value);
         if (resultsScoreMinEl.value) params.set('minScore', resultsScoreMinEl.value);
@@ -2486,7 +2581,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function scheduleResultsLoad() {
-      if (!activeBrandKey) return;
+      if (activeView !== 'interviews') return;
       if (resultsTimer) clearTimeout(resultsTimer);
       resultsTimer = setTimeout(loadResults, 300);
     }
@@ -2522,9 +2617,14 @@ app.get("/admin/ui", (req, res) => {
       if (event.key === 'Enter') login();
     });
     navGeneralEl.onclick = () => setActiveView('');
+    navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
     callBtnEl.onclick = placeCall;
     resultsRefreshEl.onclick = loadResults;
+    resultsBrandEl.addEventListener('change', () => {
+      updateResultsRoleOptions();
+      scheduleResultsLoad();
+    });
     [resultsRoleEl, resultsRecEl, resultsScoreMinEl, resultsScoreMaxEl].forEach((el) => {
       el.addEventListener('change', scheduleResultsLoad);
     });
