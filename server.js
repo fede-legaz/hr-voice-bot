@@ -13,6 +13,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-4o-mini-realtime-preview-2024-12-17";
 const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
+const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
+const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
+const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
 const VOICE = process.env.VOICE || "marin";
 const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
 
@@ -665,8 +668,12 @@ const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const MAX_CALL_HISTORY = 500;
+const CALL_HISTORY_PATH = process.env.CALL_HISTORY_PATH || path.join(__dirname, "data", "calls.json");
+const CALL_HISTORY_SAVE_DELAY_MS = 2000;
 const callHistory = [];
 const callHistoryByKey = new Map();
+let callHistorySaveTimer = null;
+let callHistorySaving = false;
 let roleConfig = null;
 const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
@@ -714,6 +721,76 @@ function loadRoleConfig() {
 }
 loadRoleConfig();
 
+function ensureDirForFile(filePath) {
+  if (!filePath) return;
+  const dir = path.dirname(filePath);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch (err) {
+    if (err.code !== "EEXIST") {
+      console.error("[call-history] failed to create directory", err);
+    }
+  }
+}
+
+function hydrateCallHistory(entries) {
+  callHistory.length = 0;
+  callHistoryByKey.clear();
+  if (!Array.isArray(entries)) return;
+  entries.slice(0, MAX_CALL_HISTORY).forEach((entry) => {
+    if (!entry || typeof entry !== "object") return;
+    if (!entry.brandKey && entry.brand) entry.brandKey = brandKey(entry.brand);
+    if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
+    const key = entry._key || entry.callId || `${entry.phone || "na"}:${entry.created_at || new Date().toISOString()}`;
+    entry._key = key;
+    callHistory.push(entry);
+    callHistoryByKey.set(key, entry);
+  });
+}
+
+async function saveCallHistory() {
+  if (!CALL_HISTORY_PATH || callHistorySaving) return;
+  callHistorySaving = true;
+  try {
+    ensureDirForFile(CALL_HISTORY_PATH);
+    const payload = JSON.stringify(callHistory.slice(0, MAX_CALL_HISTORY), null, 2);
+    const tmpPath = `${CALL_HISTORY_PATH}.tmp`;
+    await fs.promises.writeFile(tmpPath, payload, "utf8");
+    await fs.promises.rename(tmpPath, CALL_HISTORY_PATH);
+  } catch (err) {
+    console.error("[call-history] save failed", err);
+  } finally {
+    callHistorySaving = false;
+  }
+}
+
+function scheduleCallHistorySave() {
+  if (!CALL_HISTORY_PATH) return;
+  if (callHistorySaveTimer) return;
+  callHistorySaveTimer = setTimeout(() => {
+    callHistorySaveTimer = null;
+    saveCallHistory();
+  }, CALL_HISTORY_SAVE_DELAY_MS);
+  if (callHistorySaveTimer.unref) callHistorySaveTimer.unref();
+}
+
+function loadCallHistory() {
+  if (!CALL_HISTORY_PATH) return;
+  try {
+    const raw = fs.readFileSync(CALL_HISTORY_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    hydrateCallHistory(parsed);
+    if (callHistory.length) {
+      console.log(`[call-history] loaded ${callHistory.length} entries`);
+    }
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      console.error("[call-history] load failed", err);
+    }
+  }
+}
+loadCallHistory();
+
 function getRoleConfig(brand, role) {
   if (!roleConfig) return null;
   const bKey = brandKey(brand || "");
@@ -750,8 +827,23 @@ function base64Auth(user, pass) {
   return Buffer.from(`${user}:${pass}`).toString("base64");
 }
 
+function normalizeOcrImages(images = []) {
+  return images
+    .map((img) => (typeof img === "string" ? img.trim() : ""))
+    .filter(Boolean)
+    .slice(0, OCR_MAX_IMAGES);
+}
+
+function estimateDataUrlBytes(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string") return 0;
+  const idx = dataUrl.indexOf("base64,");
+  if (idx === -1) return 0;
+  const base64 = dataUrl.slice(idx + 7);
+  return Math.ceil((base64.length * 3) / 4);
+}
+
 const app = express();
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
 
 // Config endpoints (protect with CALL_BEARER_TOKEN)
@@ -862,6 +954,51 @@ app.get("/admin/calls", requireConfig, (req, res) => {
   }
 
   return res.json({ ok: true, calls: list.slice(0, limit) });
+});
+
+app.post("/admin/ocr", requireConfig, async (req, res) => {
+  try {
+    const images = normalizeOcrImages(req.body?.images || []);
+    if (!images.length) {
+      return res.status(400).json({ error: "missing_images" });
+    }
+    for (const img of images) {
+      const size = estimateDataUrlBytes(img);
+      if (size && size > OCR_MAX_IMAGE_BYTES) {
+        return res.status(400).json({ error: "image_too_large" });
+      }
+    }
+    const content = [
+      {
+        type: "text",
+        text: "Extrae todo el texto legible de este CV. Devolvé solo el texto, sin comentarios ni formato extra."
+      },
+      ...images.map((url) => ({ type: "image_url", image_url: { url } }))
+    ];
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL_OCR,
+        temperature: 0,
+        max_tokens: 1200,
+        messages: [{ role: "user", content }]
+      })
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`ocr failed ${resp.status} ${detail}`);
+    }
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    return res.json({ ok: true, text });
+  } catch (err) {
+    console.error("[admin/ocr] failed", err);
+    return res.status(400).json({ error: "ocr_failed", detail: err.message });
+  }
 });
 
 app.get("/admin/ui", (req, res) => {
@@ -1331,14 +1468,14 @@ app.get("/admin/ui", (req, res) => {
           </div>
           <div class="grid" style="margin-top:12px;">
             <div>
-              <label>CV (PDF recomendado)</label>
+              <label>CV (PDF, imagen o TXT)</label>
               <div id="cv-drop" class="drop-zone">
                 <div class="drop-icon">CV</div>
                 <div>
                   <div><strong>Arrastrá el archivo</strong></div>
-                  <div class="small">Se extrae el texto automáticamente.</div>
+                  <div class="small">Lee PDF, imagen o TXT y usa OCR si hace falta.</div>
                 </div>
-                <input type="file" id="cv-file" class="drop-file" accept=".pdf,.txt" />
+                <input type="file" id="cv-file" class="drop-file" accept=".pdf,.txt,image/*" />
               </div>
               <div class="small" id="cv-status"></div>
             </div>
@@ -1478,6 +1615,10 @@ app.get("/admin/ui", (req, res) => {
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
+    const OCR_TEXT_THRESHOLD = 180;
+    const OCR_MAX_PAGES = 3;
+    const OCR_MAX_DIM = 1700;
+    const OCR_JPEG_QUALITY = 0.82;
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
@@ -2131,10 +2272,13 @@ app.get("/admin/ui", (req, res) => {
       return text.slice(0, limit) + '...';
     }
 
-    async function extractPdfText(file) {
+    async function loadPdfDocument(file) {
       if (!window.pdfjsLib) throw new Error('PDF parser no disponible');
       const buffer = await file.arrayBuffer();
-      const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
+      return window.pdfjsLib.getDocument({ data: buffer }).promise;
+    }
+
+    async function extractPdfTextFromDoc(pdf) {
       const pages = Math.min(pdf.numPages || 0, MAX_PDF_PAGES);
       let text = '';
       for (let i = 1; i <= pages; i += 1) {
@@ -2146,17 +2290,67 @@ app.get("/admin/ui", (req, res) => {
       return text.trim();
     }
 
+    async function renderPdfToImages(pdf, maxPages) {
+      const pages = Math.min(pdf.numPages || 0, maxPages);
+      const images = [];
+      for (let i = 1; i <= pages; i += 1) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: 1.4 });
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        images.push(canvas.toDataURL('image/jpeg', OCR_JPEG_QUALITY));
+      }
+      return images;
+    }
+
+    async function fileToDataUrl(file) {
+      const bitmap = await createImageBitmap(file);
+      const maxDim = Math.max(bitmap.width, bitmap.height);
+      const scale = maxDim > OCR_MAX_DIM ? OCR_MAX_DIM / maxDim : 1;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', OCR_JPEG_QUALITY);
+    }
+
+    async function runOcr(images) {
+      if (!tokenEl.value) throw new Error('Necesitás autenticarte para usar OCR.');
+      const resp = await fetch('/admin/ocr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ images })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'ocr failed');
+      return (data.text || '').trim();
+    }
+
     async function handleCvFile(file) {
       if (!file) return;
       setCvStatus('Leyendo CV...');
       try {
         let text = '';
         if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
-          text = await extractPdfText(file);
+          const pdf = await loadPdfDocument(file);
+          text = await extractPdfTextFromDoc(pdf);
+          if (text.length < OCR_TEXT_THRESHOLD) {
+            setCvStatus('PDF escaneado, aplicando OCR...');
+            const images = await renderPdfToImages(pdf, OCR_MAX_PAGES);
+            text = await runOcr(images);
+          }
+        } else if (file.type.startsWith('image/')) {
+          setCvStatus('Leyendo imagen con OCR...');
+          const dataUrl = await fileToDataUrl(file);
+          text = await runOcr([dataUrl]);
         } else if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
           text = await file.text();
         } else {
-          throw new Error('Formato no soportado (solo PDF o TXT).');
+          throw new Error('Formato no soportado (PDF, imagen o TXT).');
         }
         callCvTextEl.value = truncateText(text, CV_CHAR_LIMIT);
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
@@ -3397,6 +3591,7 @@ function recordCallHistory(call) {
   const existing = callHistoryByKey.get(key);
   if (existing) {
     Object.assign(existing, entry);
+    scheduleCallHistorySave();
     return;
   }
   entry._key = key;
@@ -3406,6 +3601,7 @@ function recordCallHistory(call) {
     const removed = callHistory.pop();
     if (removed && removed._key) callHistoryByKey.delete(removed._key);
   }
+  scheduleCallHistorySave();
 }
 
 function formatWhatsapp(scoring, call, opts = {}) {
