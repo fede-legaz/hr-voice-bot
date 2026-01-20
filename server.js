@@ -1340,6 +1340,7 @@ app.get("/admin/ui", (req, res) => {
       </div>
       <nav class="nav">
         <button class="nav-item" id="nav-general" type="button">General</button>
+        <button class="nav-item" id="nav-calls" type="button">CVs</button>
         <button class="nav-item" id="nav-interviews" type="button">Entrevistas</button>
         <div class="nav-section-title">Restaurantes</div>
         <div id="brand-list" class="brand-list"></div>
@@ -1397,6 +1398,54 @@ app.get("/admin/ui", (req, res) => {
               <button class="secondary" id="admin-unlock" type="button">Unlock</button>
             </div>
             <span class="small" id="admin-status"></span>
+          </div>
+        </div>
+      </section>
+
+      <section id="calls-view" class="view" style="display:none;">
+        <div class="panel" id="call-panel" style="--delay:.06s;">
+          <div class="panel-title">Subir CVs y llamar</div>
+          <div class="panel-sub">Adjuntá un CV (PDF o foto), completá datos y lanzá la llamada.</div>
+          <div class="grid">
+            <div>
+              <label>Local</label>
+              <select id="call-brand"></select>
+            </div>
+            <div>
+              <label>Posición</label>
+              <select id="call-role"></select>
+            </div>
+            <div>
+              <label>Nombre candidato</label>
+              <input type="text" id="call-name" placeholder="Nombre y apellido" />
+            </div>
+            <div>
+              <label>Teléfono</label>
+              <input type="text" id="call-phone" placeholder="+1 305..." />
+            </div>
+          </div>
+          <div class="grid" style="margin-top:12px;">
+            <div>
+              <label>CV (PDF, imagen o TXT)</label>
+              <div id="cv-drop" class="drop-zone">
+                <div class="drop-icon">CV</div>
+                <div>
+                  <div><strong>Arrastrá el archivo</strong></div>
+                  <div class="small">Lee PDF, imagen o TXT y usa OCR si hace falta.</div>
+                </div>
+                <input type="file" id="cv-file" class="drop-file" accept=".pdf,.txt,image/*" />
+              </div>
+              <div class="small" id="cv-status"></div>
+            </div>
+            <div>
+              <label>CV extraído</label>
+              <textarea id="call-cv-text" placeholder="Acá vas a ver el texto leído del CV."></textarea>
+              <div class="small">Podés editar el texto antes de llamar.</div>
+            </div>
+          </div>
+          <div class="inline" style="margin-top:12px;">
+            <button id="call-btn" type="button">Llamar</button>
+            <span class="small" id="call-status"></span>
           </div>
         </div>
       </section>
@@ -1522,52 +1571,6 @@ app.get("/admin/ui", (req, res) => {
 
         <div id="brands"></div>
 
-        <div class="panel" id="call-panel" style="--delay:.08s;">
-          <div class="panel-title">Call Desk</div>
-          <div class="panel-sub">Subí un CV y lanzá la llamada en un click.</div>
-          <div class="grid">
-            <div>
-              <label>Local</label>
-              <select id="call-brand"></select>
-            </div>
-            <div>
-              <label>Posición</label>
-              <select id="call-role"></select>
-            </div>
-            <div>
-              <label>Nombre candidato</label>
-              <input type="text" id="call-name" placeholder="Nombre y apellido" />
-            </div>
-            <div>
-              <label>Teléfono</label>
-              <input type="text" id="call-phone" placeholder="+1 305..." />
-            </div>
-          </div>
-          <div class="grid" style="margin-top:12px;">
-            <div>
-              <label>CV (PDF, imagen o TXT)</label>
-              <div id="cv-drop" class="drop-zone">
-                <div class="drop-icon">CV</div>
-                <div>
-                  <div><strong>Arrastrá el archivo</strong></div>
-                  <div class="small">Lee PDF, imagen o TXT y usa OCR si hace falta.</div>
-                </div>
-                <input type="file" id="cv-file" class="drop-file" accept=".pdf,.txt,image/*" />
-              </div>
-              <div class="small" id="cv-status"></div>
-            </div>
-            <div>
-              <label>CV extraído</label>
-              <textarea id="call-cv-text" placeholder="Acá vas a ver el texto leído del CV."></textarea>
-              <div class="small">Podés editar el texto antes de llamar.</div>
-            </div>
-          </div>
-          <div class="inline" style="margin-top:12px;">
-            <button id="call-btn" type="button">Llamar</button>
-            <span class="small" id="call-status"></span>
-          </div>
-        </div>
-
       </section>
     </section>
   </div>
@@ -1581,11 +1584,13 @@ app.get("/admin/ui", (req, res) => {
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const navGeneralEl = document.getElementById('nav-general');
+    const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const brandListEl = document.getElementById('brand-list');
     const viewTitleEl = document.getElementById('view-title');
     const viewLabelEl = document.getElementById('view-label');
     const generalViewEl = document.getElementById('general-view');
+    const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const brandViewEl = document.getElementById('brand-view');
     const brandsEl = document.getElementById('brands');
@@ -1648,6 +1653,7 @@ app.get("/admin/ui", (req, res) => {
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
       system_prompt: defaultSystemPrompt
     };
+    const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
 
     if (window.pdfjsLib) {
@@ -2007,6 +2013,7 @@ app.get("/admin/ui", (req, res) => {
 
     function updateNavActive() {
       navGeneralEl.classList.toggle('active', activeView === 'general');
+      navCallsEl.classList.toggle('active', activeView === 'calls');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
         btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
@@ -2014,7 +2021,10 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function setActiveView(key) {
-      if (key === VIEW_INTERVIEWS) {
+      if (key === VIEW_CALLS) {
+        activeView = 'calls';
+        activeBrandKey = '';
+      } else if (key === VIEW_INTERVIEWS) {
         activeView = 'interviews';
         activeBrandKey = '';
       } else if (key) {
@@ -2025,6 +2035,7 @@ app.get("/admin/ui", (req, res) => {
         activeBrandKey = '';
       }
       generalViewEl.style.display = activeView === 'general' ? 'block' : 'none';
+      callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
@@ -2034,6 +2045,9 @@ app.get("/admin/ui", (req, res) => {
       if (activeView === 'brand') {
         viewTitleEl.textContent = getBrandDisplayByKey(activeBrandKey);
         viewLabelEl.textContent = 'Restaurante';
+      } else if (activeView === 'calls') {
+        viewTitleEl.textContent = 'CVs';
+        viewLabelEl.textContent = 'Llamadas';
       } else if (activeView === 'interviews') {
         viewTitleEl.textContent = 'Entrevistas';
         viewLabelEl.textContent = 'Listado';
@@ -2172,6 +2186,8 @@ app.get("/admin/ui", (req, res) => {
       syncSidebar();
       if (activeView === 'brand' && activeBrandKey && getBrandCardByKey(activeBrandKey)) {
         setActiveView(activeBrandKey);
+      } else if (activeView === 'calls') {
+        setActiveView(VIEW_CALLS);
       } else if (activeView === 'interviews') {
         setActiveView(VIEW_INTERVIEWS);
       } else {
@@ -2617,6 +2633,7 @@ app.get("/admin/ui", (req, res) => {
       if (event.key === 'Enter') login();
     });
     navGeneralEl.onclick = () => setActiveView('');
+    navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
     callBtnEl.onclick = placeCall;
