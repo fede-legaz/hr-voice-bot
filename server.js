@@ -681,6 +681,55 @@ function buildCallFromPayload(payload, extra = {}) {
   };
 }
 
+function normalizeCallStatus(status) {
+  return String(status || "").toLowerCase().trim();
+}
+
+function isActiveCallStatus(status) {
+  const normalized = normalizeCallStatus(status);
+  return ACTIVE_CALL_STATUSES.has(normalized);
+}
+
+function collectActiveCalls() {
+  const byCv = new Map();
+  const byPhone = new Map();
+  const now = Date.now();
+  for (const call of callsByCallSid.values()) {
+    if (!call) continue;
+    if (call.expiresAt && call.expiresAt < now) continue;
+    const status = normalizeCallStatus(call.callStatus || call.status);
+    if (!isActiveCallStatus(status)) continue;
+    const cvId = call.cvId || call.cv_id || "";
+    if (cvId) byCv.set(cvId, status);
+    const phone = normalizePhone(call.to || call.phone || "");
+    const bKey = brandKey(call.brand || "");
+    if (phone && bKey) {
+      const key = `${bKey}|${phone}`;
+      if (!byPhone.has(key)) byPhone.set(key, status);
+    }
+  }
+  return { byCv, byPhone };
+}
+
+function attachActiveCall(entry, activeIndex) {
+  const result = { ...entry };
+  let status = "";
+  if (entry?.id && activeIndex.byCv.has(entry.id)) {
+    status = activeIndex.byCv.get(entry.id);
+  }
+  if (!status) {
+    const bKey = entry.brandKey || brandKey(entry.brand || "");
+    const phone = normalizePhone(entry.phone || "");
+    const key = bKey && phone ? `${bKey}|${phone}` : "";
+    if (key && activeIndex.byPhone.has(key)) {
+      status = activeIndex.byPhone.get(key);
+    }
+  }
+  result.active_call = !!status;
+  result.active_call_status = status || "";
+  return result;
+}
+
 // --- in-memory stores with TTL ---
 const CALL_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -706,6 +755,7 @@ const cvStore = [];
 const cvStoreById = new Map();
 let cvStoreSaveTimer = null;
 let cvStoreSaving = false;
+const ACTIVE_CALL_STATUSES = new Set(["queued", "initiated", "ringing", "answered", "in-progress", "in progress"]);
 let roleConfig = null;
 let roleConfigSource = "defaults";
 const recordingsDir = path.join("/tmp", "recordings");
@@ -1446,7 +1496,9 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   if (dbPool) {
     try {
       const cvs = await fetchCvFromDb({ brandParam, roleParam, qParam, limit });
-      return res.json({ ok: true, cvs });
+      const activeIndex = collectActiveCalls();
+      const withActive = cvs.map((entry) => attachActiveCall(entry, activeIndex));
+      return res.json({ ok: true, cvs: withActive });
     } catch (err) {
       console.error("[admin/cv] db failed", err);
     }
@@ -1518,6 +1570,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
     }
   }
 
+  const activeIndex = collectActiveCalls();
   const results = [];
   for (const entry of list.slice(0, limit)) {
     if (!entry) continue;
@@ -1531,7 +1584,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
       }
     }
     const lastAudioUrl = await resolveStoredUrl(stats?.last_audio_url || "");
-    results.push({
+    results.push(attachActiveCall({
       ...entry,
       cv_url: cvUrl || entry.cv_url || "",
       call_count: stats?.call_count || 0,
@@ -1540,7 +1593,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
       last_outcome_detail: stats?.last_outcome_detail || "",
       last_audio_url: lastAudioUrl || "",
       last_call_sid: stats?.last_call_sid || ""
-    });
+    }, activeIndex));
   }
   return res.json({ ok: true, cvs: results });
 });
@@ -2055,6 +2108,8 @@ app.get("/admin/ui", (req, res) => {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
+    .status-live { color: #0f5563; font-weight: 700; }
     .detail-row td {
       background: #fbf7f0;
       padding: 14px 16px;
@@ -2438,7 +2493,7 @@ app.get("/admin/ui", (req, res) => {
               <summary>CVs guardados y acciones</summary>
               <div class="faq-body">
                 Podés filtrar por local o buscar por nombre/teléfono.
-                “Ver CV” muestra el texto, “Archivo” abre el PDF/imagen,
+                “Ver CV” abre el PDF o la imagen del CV.
                 “Llamar” inicia la primera llamada y “Volver a llamar” reintenta.
                 “Ver entrevista” te lleva al listado de entrevistas filtrado por ese candidato.
               </div>
@@ -2784,6 +2839,7 @@ app.get("/admin/ui", (req, res) => {
     let suppressSidebarSync = false;
     let resultsTimer = null;
     let cvTimer = null;
+    let cvActiveTimer = null;
     let cvFilterMode = 'no_calls';
     let resultsFilterMode = 'completed';
     let lastCvList = [];
@@ -4019,6 +4075,7 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'call failed');
         setCallStatus('Llamada encolada: ' + (data.callId || data.status || 'OK'));
         scheduleResultsLoad();
+        scheduleCvLoad();
       } catch (err) {
         setCallStatus('Error: ' + err.message);
       }
@@ -4222,11 +4279,17 @@ app.get("/admin/ui", (req, res) => {
       const isNoAnswer = item.last_outcome === 'NO_ANSWER';
       const attempts = Number(item.call_count || 0);
       let statusText = !hasCalls ? 'Sin llamadas' : (statusLabel || 'Entrevista realizada');
-      if (isNoAnswer && attempts > 1) {
+      let statusClass = '';
+      const inCall = !!item.active_call;
+      if (inCall) {
+        statusText = 'Llamada en curso';
+        statusClass = 'status-live';
+      }
+      if (!inCall && isNoAnswer && attempts > 1) {
         statusText = statusText + " (" + attempts + " intentos)";
       }
-      const category = !hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed');
-      return { hasCalls, isNoAnswer, statusText, category, attempts };
+      const category = inCall ? 'in_call' : (!hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed'));
+      return { hasCalls, isNoAnswer, statusText, statusClass, category, attempts, inCall };
     }
 
     function recommendationBadge(rec) {
@@ -4261,8 +4324,8 @@ app.get("/admin/ui", (req, res) => {
       const clamped = Math.max(0, Math.min(100, Number(score)));
       span.textContent = Math.round(clamped);
       const hue = Math.round((clamped / 100) * 120);
-      span.style.background = `hsl(${hue} 70% 88%)`;
-      span.style.color = `hsl(${hue} 55% 30%)`;
+      span.style.background = "hsl(" + hue + " 70% 88%)";
+      span.style.color = "hsl(" + hue + " 55% 30%)";
       return span;
     }
 
@@ -4328,6 +4391,8 @@ app.get("/admin/ui", (req, res) => {
             ...item,
             cvIds: [],
             call_count: Number(item.call_count || 0),
+            active_call: !!item.active_call,
+            active_call_status: item.active_call_status || '',
             _latestAt: createdAt,
             _lastCallAt: lastCallAt
           };
@@ -4347,6 +4412,10 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_url = item.cv_url;
           entry.created_at = item.created_at;
           entry.source = item.source;
+        }
+        if (item.active_call) {
+          entry.active_call = true;
+          entry.active_call_status = item.active_call_status || entry.active_call_status;
         }
         if (lastCallAt && (!entry._lastCallAt || lastCallAt >= entry._lastCallAt)) {
           entry._lastCallAt = lastCallAt;
@@ -4523,7 +4592,7 @@ app.get("/admin/ui", (req, res) => {
           link.href = call.cv_url;
           link.target = '_blank';
           link.rel = 'noopener';
-          link.textContent = 'Archivo';
+          link.textContent = 'Ver CV';
           link.className = 'secondary btn-compact';
           link.style.textDecoration = 'none';
           wrap.appendChild(link);
@@ -4626,17 +4695,20 @@ app.get("/admin/ui", (req, res) => {
       lastCvList = grouped;
       const filtered = grouped.filter((item) => {
         const info = cvStatusInfo(item);
+        if (info.inCall) return true;
         if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
         if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
         if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
         return true;
       });
       cvListBodyEl.innerHTML = '';
+      let hasActiveCall = false;
       filtered.forEach((item) => {
         const tr = document.createElement('tr');
-        const addCell = (value) => {
+        const addCell = (value, className) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
+          if (className) td.className = className;
           tr.appendChild(td);
         };
         addCell(formatDate(item.created_at));
@@ -4647,32 +4719,26 @@ app.get("/admin/ui", (req, res) => {
         addCell(item.applicant || '');
         addCell(item.phone || '');
         const info = cvStatusInfo(item);
-        addCell(info.statusText);
+        if (info.inCall) {
+          tr.classList.add('call-active');
+          hasActiveCall = true;
+        }
+        addCell(info.statusText, info.statusClass);
         const cvTd = document.createElement('td');
-        if (item.cv_text || item.cv_url) {
+        if (item.cv_url) {
           const wrap = document.createElement('div');
           wrap.className = 'inline';
-          if (item.cv_text) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'secondary';
-            btn.textContent = 'Ver CV';
-            btn.onclick = () => openCvModal(item.cv_text || '');
-            wrap.appendChild(btn);
-          }
-          if (item.cv_url) {
-            const link = document.createElement('a');
-            link.href = item.cv_url;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.textContent = 'Archivo';
-            link.className = 'secondary';
-            link.style.textDecoration = 'none';
-            link.style.padding = '8px 12px';
-            link.style.borderRadius = '10px';
-            link.style.border = '1px solid var(--border)';
-            wrap.appendChild(link);
-          }
+          const link = document.createElement('a');
+          link.href = item.cv_url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = 'Ver CV';
+          link.className = 'secondary';
+          link.style.textDecoration = 'none';
+          link.style.padding = '8px 12px';
+          link.style.borderRadius = '10px';
+          link.style.border = '1px solid var(--border)';
+          wrap.appendChild(link);
           cvTd.appendChild(wrap);
         } else {
           cvTd.textContent = '—';
@@ -4727,6 +4793,16 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(actionTd);
         cvListBodyEl.appendChild(tr);
       });
+      if (cvActiveTimer) {
+        clearTimeout(cvActiveTimer);
+        cvActiveTimer = null;
+      }
+      if (hasActiveCall && activeView === 'calls') {
+        cvActiveTimer = setTimeout(() => {
+          cvActiveTimer = null;
+          loadCvList();
+        }, 5000);
+      }
       const total = lastCvList.length;
       const shown = filtered.length;
       if (!total) {
@@ -5258,6 +5334,7 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
     };
 
     if (answeredBy) call.answeredBy = answeredBy;
+    call.callStatus = status || call.callStatus || "";
     const statusNoAnswer = ["busy", "no-answer", "failed", "canceled"].includes(status);
     const amdMachine = answeredBy && answeredBy.includes("machine");
     const amdHuman = answeredBy && answeredBy.includes("human");
@@ -5429,6 +5506,7 @@ app.post("/call", async (req, res) => {
       );
       call.from = fromNorm;
       call.expiresAt = Date.now() + CALL_TTL_MS;
+      call.callStatus = data.status || "queued";
       callsByCallSid.set(data.sid, call);
     }
     return res.json({ callId: data.sid, status: data.status });
@@ -6680,6 +6758,26 @@ async function placeOutboundCall(payload) {
     throw new Error("twilio_call_failed");
   }
   console.log("[placeOutboundCall] queued", { sid: respData.sid, status: respData.status });
+  if (respData.sid) {
+    const call = buildCallFromPayload(
+      {
+        to: toNorm,
+        brand,
+        role: roleClean,
+        englishRequired: englishReqBool ? "1" : "0",
+        address: resolvedAddress,
+        applicant,
+        cv_summary: cvSummary,
+        cv_id: cvId,
+        resume_url
+      },
+      { callSid: respData.sid, to: toNorm }
+    );
+    call.from = fromNorm;
+    call.expiresAt = Date.now() + CALL_TTL_MS;
+    call.callStatus = respData.status || "queued";
+    callsByCallSid.set(respData.sid, call);
+  }
   return respData;
 }
 
