@@ -1406,6 +1406,31 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   return res.json({ ok: true, calls: results });
 });
 
+app.delete("/admin/calls/:callId", requireConfig, async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  let removed = 0;
+  for (let i = callHistory.length - 1; i >= 0; i -= 1) {
+    const entry = callHistory[i];
+    if (entry && entry.callId === callId) {
+      callHistory.splice(i, 1);
+      removed += 1;
+      if (entry._key) callHistoryByKey.delete(entry._key);
+    }
+  }
+  if (callHistoryByKey.has(callId)) callHistoryByKey.delete(callId);
+  if (callsByCallSid.has(callId)) callsByCallSid.delete(callId);
+  scheduleCallHistorySave();
+  if (dbPool) {
+    try {
+      await dbQuery("DELETE FROM calls WHERE call_sid = $1", [callId]);
+    } catch (err) {
+      console.error("[admin/calls] delete failed", err);
+    }
+  }
+  return res.json({ ok: true, removed });
+});
+
 app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
@@ -1882,6 +1907,16 @@ app.get("/admin/ui", (req, res) => {
       font-size: 12px;
       background: #fff;
     }
+    .summary-cell {
+      max-width: 220px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.35;
+      cursor: help;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
@@ -2335,6 +2370,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Fecha</th>
                   <th>Audio</th>
                   <th>Nivel</th>
+                  <th>Acción</th>
                 </tr>
               </thead>
               <tbody id="results-body"></tbody>
@@ -3735,6 +3771,22 @@ app.get("/admin/ui", (req, res) => {
       return span;
     }
 
+    async function deleteInterview(callId) {
+      if (!callId) return;
+      if (!confirm('¿Seguro que querés borrar esta entrevista?')) return;
+      try {
+        const resp = await fetch('/admin/calls/' + encodeURIComponent(callId), {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'delete failed');
+        loadResults();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
     function renderResults(calls) {
       resultsBodyEl.innerHTML = '';
       calls.forEach((call) => {
@@ -3759,19 +3811,18 @@ app.get("/admin/ui", (req, res) => {
         const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '—';
         addCell(stay);
         addCell(call.salary);
-        addCell(formatInterviewSummary(call));
+        const summaryText = formatInterviewSummary(call);
+        const summaryTd = document.createElement('td');
+        const summaryDiv = document.createElement('div');
+        summaryDiv.className = 'summary-cell';
+        summaryDiv.textContent = summaryText || '—';
+        if (summaryText && summaryText !== '—') summaryDiv.title = summaryText;
+        summaryTd.appendChild(summaryDiv);
+        tr.appendChild(summaryTd);
         const cvTd = document.createElement('td');
-        if (call.cv_text || call.cv_url) {
+        if (call.cv_url || call.cv_text) {
           const wrap = document.createElement('div');
           wrap.className = 'inline';
-          if (call.cv_text) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'secondary';
-            btn.textContent = 'Ver CV';
-            btn.onclick = () => openCvModal(call.cv_text || '');
-            wrap.appendChild(btn);
-          }
           if (call.cv_url) {
             const link = document.createElement('a');
             link.href = call.cv_url;
@@ -3784,6 +3835,13 @@ app.get("/admin/ui", (req, res) => {
             link.style.borderRadius = '10px';
             link.style.border = '1px solid var(--border)';
             wrap.appendChild(link);
+          } else if (call.cv_text) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'secondary';
+            btn.textContent = 'Ver CV';
+            btn.onclick = () => openCvModal(call.cv_text || '');
+            wrap.appendChild(btn);
           }
           cvTd.appendChild(wrap);
         } else {
@@ -3829,6 +3887,18 @@ app.get("/admin/ui", (req, res) => {
         const recTd = document.createElement('td');
         recTd.appendChild(recommendationBadge(call.recommendation || 'review'));
         tr.appendChild(recTd);
+        const actionTd = document.createElement('td');
+        if (authRole === 'admin' && call.callId) {
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'secondary';
+          delBtn.textContent = 'Eliminar';
+          delBtn.onclick = () => deleteInterview(call.callId);
+          actionTd.appendChild(delBtn);
+        } else {
+          actionTd.textContent = '—';
+        }
+        tr.appendChild(actionTd);
         resultsBodyEl.appendChild(tr);
       });
       setResultsCount(calls.length ? calls.length + ' llamadas' : 'Sin llamadas todavía.');
