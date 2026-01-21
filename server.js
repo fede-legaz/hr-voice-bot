@@ -3093,19 +3093,25 @@ app.get("/admin/ui", (req, res) => {
     function cleanNameCandidate(raw) {
       if (!raw) return '';
       let name = raw.replace(/[\\t]+/g, ' ').replace(/\\s+/g, ' ').trim();
+      name = name.replace(/\\([^\\)]*\\)/g, ' ').trim();
+      name = name.replace(/\\s*\\|.*$/g, '').trim();
       name = name.replace(/\\b(email|correo|phone|tel|telefono|teléfono|address|direccion|dirección)\\b.*$/i, '').trim();
       name = name.replace(/[<>]/g, '').trim();
       name = name.replace(/[@0-9]/g, '').trim();
       name = name.replace(/\\s{2,}/g, ' ').trim();
-      const parts = name.split(' ').filter(Boolean);
+      let parts = name.split(' ').filter(Boolean);
+      const dropTokens = new Set([
+        'perfil', 'profile', 'resume', 'cv', 'curriculum', 'resumen', 'objetivo', 'objective'
+      ]);
+      parts = parts.filter((p) => !dropTokens.has(p.toLowerCase()));
       if (parts.length > 4) return parts.slice(0, 4).join(' ');
-      return name;
+      return parts.join(' ');
     }
 
     function isLikelyInvalidName(name) {
       if (!name) return true;
       const lower = name.toLowerCase();
-      if (/\\b(restaurant|restaurante|experience|experiencia|profile|perfil|skills|habilidades|education|educacion|objective|objetivo|summary|resumen|curriculum|cv|resume|miami|fl|server|bartender|cook|cashier|runner|manager)\\b/i.test(lower)) {
+      if (/\\b(restaurant|restaurante|experience|experiencia|profile|perfil|skills|habilidades|education|educacion|objective|objetivo|summary|resumen|curriculum|cv|resume|miami|fl|server|bartender|cook|cashier|runner|manager|idioma|idiomas|language|languages|ubicacion|ubicación|location|telefono|teléfono|phone|correo|email)\\b/i.test(lower)) {
         return true;
       }
       if (/[0-9]/.test(name)) return true;
@@ -3244,8 +3250,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function applyAiContactResult(result = {}) {
+      const currentName = (callNameEl.value || '').trim();
       const aiName = cleanNameCandidate(result.name || '');
-      if (aiName && !isLikelyInvalidName(aiName)) {
+      if ((!currentName || isLikelyInvalidName(currentName)) && aiName && !isLikelyInvalidName(aiName)) {
         callNameEl.value = aiName;
       }
       const aiPhone = formatPhoneForUi(result.phone || '');
