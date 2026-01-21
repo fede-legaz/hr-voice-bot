@@ -1900,12 +1900,39 @@ app.get("/admin/ui", (req, res) => {
       background: #fff;
     }
     .audio-wrap { display: flex; align-items: center; gap: 8px; }
-    .audio-speed {
-      padding: 6px 8px;
+    .audio-menu { position: relative; }
+    .audio-menu-btn {
+      padding: 4px 10px;
       border-radius: 10px;
       border: 1px solid var(--border);
-      font-size: 12px;
       background: #fff;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .audio-menu-list {
+      position: absolute;
+      top: 110%;
+      right: 0;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 6px;
+      display: none;
+      grid-template-columns: 1fr;
+      gap: 6px;
+      min-width: 90px;
+      box-shadow: 0 10px 20px rgba(22, 49, 43, 0.12);
+      z-index: 2;
+    }
+    .audio-menu.open .audio-menu-list { display: grid; }
+    .audio-menu-list button {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 6px 8px;
+      font-size: 12px;
+      cursor: pointer;
     }
     .summary-cell {
       max-width: 220px;
@@ -3771,6 +3798,21 @@ app.get("/admin/ui", (req, res) => {
       return span;
     }
 
+    function closeAudioMenus(except = null) {
+      document.querySelectorAll('.audio-menu').forEach((menu) => {
+        if (menu !== except) menu.classList.remove('open');
+      });
+    }
+
+    let audioMenuReady = false;
+    function ensureAudioMenuHandlers() {
+      if (audioMenuReady) return;
+      document.addEventListener('click', (evt) => {
+        if (!evt.target.closest('.audio-menu')) closeAudioMenus();
+      });
+      audioMenuReady = true;
+    }
+
     async function deleteInterview(callId) {
       if (!callId) return;
       if (!confirm('¿Seguro que querés borrar esta entrevista?')) return;
@@ -3788,6 +3830,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderResults(calls) {
+      ensureAudioMenuHandlers();
       resultsBodyEl.innerHTML = '';
       calls.forEach((call) => {
         const tr = document.createElement('tr');
@@ -3858,27 +3901,41 @@ app.get("/admin/ui", (req, res) => {
           audio.controls = true;
           audio.preload = 'none';
           audio.src = call.audio_url;
-          const speed = document.createElement('select');
-          speed.className = 'audio-speed';
-          [
-            { label: '1x', value: '1' },
-            { label: '1.25x', value: '1.25' },
-            { label: '1.5x', value: '1.5' },
-            { label: '1.75x', value: '1.75' },
-            { label: '2x', value: '2' }
-          ].forEach((opt) => {
-            const option = document.createElement('option');
-            option.value = opt.value;
-            option.textContent = opt.label;
-            speed.appendChild(option);
-          });
-          speed.value = '1';
-          speed.addEventListener('change', () => {
-            const rate = Number(speed.value);
-            audio.playbackRate = Number.isFinite(rate) ? rate : 1;
-          });
           wrap.appendChild(audio);
-          wrap.appendChild(speed);
+          const menuWrap = document.createElement('div');
+          menuWrap.className = 'audio-menu';
+          const menuBtn = document.createElement('button');
+          menuBtn.type = 'button';
+          menuBtn.className = 'audio-menu-btn';
+          menuBtn.textContent = '...';
+          menuBtn.setAttribute('aria-label', 'Velocidad de reproducción');
+          const menuList = document.createElement('div');
+          menuList.className = 'audio-menu-list';
+          [
+            { label: '1x', value: 1 },
+            { label: '1.25x', value: 1.25 },
+            { label: '1.5x', value: 1.5 },
+            { label: '1.75x', value: 1.75 },
+            { label: '2x', value: 2 }
+          ].forEach((opt) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = opt.label;
+            btn.onclick = (evt) => {
+              evt.stopPropagation();
+              audio.playbackRate = opt.value;
+              menuWrap.classList.remove('open');
+            };
+            menuList.appendChild(btn);
+          });
+          menuBtn.onclick = (evt) => {
+            evt.stopPropagation();
+            const isOpen = menuWrap.classList.toggle('open');
+            if (isOpen) closeAudioMenus(menuWrap);
+          };
+          menuWrap.appendChild(menuBtn);
+          menuWrap.appendChild(menuList);
+          wrap.appendChild(menuWrap);
           audioTd.appendChild(wrap);
         } else {
           audioTd.textContent = '—';
