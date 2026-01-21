@@ -1774,16 +1774,29 @@ app.get("/admin/ui", (req, res) => {
     .app { display: flex; min-height: 100vh; }
     .sidebar {
       width: 280px;
+      flex: 0 0 280px;
       background: linear-gradient(165deg, #0f3f35 0%, #1e6d5c 60%, #2b8a73 100%);
       color: #f8f3ea;
       padding: 24px;
       display: flex;
       flex-direction: column;
       gap: 20px;
+      transition: width 0.2s ease, padding 0.2s ease;
     }
-    .sidebar-brand { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-brand { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .brand-title { display: flex; flex-direction: column; gap: 4px; }
     .brand-mark { font-size: 20px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; }
     .brand-sub { font-size: 12px; color: rgba(248, 243, 234, 0.7); }
+    .sidebar-toggle {
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      color: inherit;
+      padding: 6px 10px;
+      border-radius: 10px;
+      cursor: pointer;
+      box-shadow: none;
+    }
+    .sidebar-toggle:hover { box-shadow: var(--glow); }
     .nav { display: flex; flex-direction: column; gap: 12px; }
     .nav-section-title { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: rgba(248, 243, 234, 0.6); margin-top: 6px; }
     .nav-item {
@@ -1801,6 +1814,17 @@ app.get("/admin/ui", (req, res) => {
       background: rgba(255, 255, 255, 0.15);
       border-color: rgba(255, 255, 255, 0.35);
     }
+    .nav-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.18);
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .nav-label { white-space: nowrap; }
     .brand-list { display: flex; flex-direction: column; gap: 8px; }
     .brand-thumb {
       width: 36px;
@@ -1815,6 +1839,20 @@ app.get("/admin/ui", (req, res) => {
     }
     .brand-thumb img { width: 100%; height: 100%; object-fit: cover; }
     .nav-add { margin-top: 6px; font-size: 13px; }
+    .sidebar.collapsed {
+      width: 84px;
+      flex-basis: 84px;
+      padding: 20px 14px;
+      align-items: center;
+    }
+    .sidebar.collapsed .brand-title,
+    .sidebar.collapsed .nav-label,
+    .sidebar.collapsed .nav-section-title,
+    .sidebar.collapsed .nav-add { display: none; }
+    .sidebar.collapsed .nav { align-items: center; }
+    .sidebar.collapsed .nav-item { justify-content: center; padding: 10px; width: 100%; }
+    .sidebar.collapsed .brand-list { align-items: center; width: 100%; }
+    .sidebar.collapsed .brand-thumb { width: 40px; height: 40px; border-radius: 12px; }
     .content {
       flex: 1;
       padding: 28px 32px 64px;
@@ -2145,7 +2183,18 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 980px) {
       .app { flex-direction: column; }
-      .sidebar { width: 100%; }
+      .sidebar { width: 100%; flex-basis: auto; }
+      .sidebar.collapsed {
+        width: 100%;
+        flex-basis: auto;
+        padding: 24px;
+        align-items: stretch;
+      }
+      .sidebar.collapsed .brand-title,
+      .sidebar.collapsed .nav-label,
+      .sidebar.collapsed .nav-section-title,
+      .sidebar.collapsed .nav-add { display: block; }
+      .sidebar.collapsed .nav { align-items: stretch; }
       .content { padding: 20px; }
     }
   </style>
@@ -2183,18 +2232,30 @@ app.get("/admin/ui", (req, res) => {
   </div>
 
   <div id="app" class="app" style="display:none;">
-    <aside class="sidebar">
+    <aside class="sidebar" id="sidebar">
       <div class="sidebar-brand">
-        <div class="brand-mark">HRBOT</div>
-        <div class="brand-sub">Hiring control center</div>
+        <div class="brand-title">
+          <div class="brand-mark">HRBOT</div>
+          <div class="brand-sub">Hiring control center</div>
+        </div>
+        <button class="sidebar-toggle" id="sidebar-toggle" type="button" title="Minimizar menú">|||</button>
       </div>
       <nav class="nav">
-        <button class="nav-item" id="nav-general" type="button">General</button>
-        <button class="nav-item" id="nav-calls" type="button">Candidates</button>
-        <button class="nav-item" id="nav-interviews" type="button">Interviews</button>
+        <button class="nav-item" id="nav-general" type="button" title="General">
+          <span class="nav-icon">G</span>
+          <span class="nav-label">General</span>
+        </button>
+        <button class="nav-item" id="nav-calls" type="button" title="Candidates">
+          <span class="nav-icon">C</span>
+          <span class="nav-label">Candidates</span>
+        </button>
+        <button class="nav-item" id="nav-interviews" type="button" title="Interviews">
+          <span class="nav-icon">I</span>
+          <span class="nav-label">Interviews</span>
+        </button>
         <div class="nav-section-title">Restaurantes</div>
         <div id="brand-list" class="brand-list"></div>
-        <button class="secondary nav-add" id="add-brand" type="button">+ Nuevo local</button>
+        <button class="secondary nav-add" id="add-brand" type="button" title="Nuevo local">+ Nuevo local</button>
       </nav>
     </aside>
 
@@ -2584,6 +2645,8 @@ app.get("/admin/ui", (req, res) => {
     const loginViewerFieldsEl = document.getElementById('login-viewer-fields');
     const loginBtnEl = document.getElementById('login-btn');
     const loginStatusEl = document.getElementById('login-status');
+    const sidebarEl = document.getElementById('sidebar');
+    const sidebarToggleEl = document.getElementById('sidebar-toggle');
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const navGeneralEl = document.getElementById('nav-general');
@@ -2707,6 +2770,39 @@ app.get("/admin/ui", (req, res) => {
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
+    const SIDEBAR_STATE_KEY = 'hrbot_sidebar_collapsed';
+
+    function setSidebarCollapsed(collapsed, persist = true) {
+      if (!sidebarEl) return;
+      sidebarEl.classList.toggle('collapsed', collapsed);
+      if (sidebarToggleEl) {
+        sidebarToggleEl.textContent = collapsed ? '>' : '|||';
+        sidebarToggleEl.title = collapsed ? 'Expandir menú' : 'Minimizar menú';
+      }
+      if (persist) {
+        try {
+          localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? '1' : '0');
+        } catch (err) {
+          // ignore storage failures
+        }
+      }
+    }
+
+    function initSidebarState() {
+      if (!sidebarEl) return;
+      const isMobile = window.matchMedia && window.matchMedia('(max-width: 980px)').matches;
+      if (isMobile) {
+        setSidebarCollapsed(false, false);
+        return;
+      }
+      let collapsed = false;
+      try {
+        collapsed = localStorage.getItem(SIDEBAR_STATE_KEY) === '1';
+      } catch (err) {
+        collapsed = false;
+      }
+      setSidebarCollapsed(collapsed, false);
+    }
 
     function clearCallForm() {
       callNameEl.value = '';
@@ -3091,6 +3187,7 @@ app.get("/admin/ui", (req, res) => {
         btn.type = 'button';
         btn.className = 'nav-item';
         btn.dataset.brandKey = brand.key;
+        btn.title = brand.display;
         const thumb = document.createElement('div');
         thumb.className = 'brand-thumb';
         if (brand.logo) {
@@ -3102,6 +3199,7 @@ app.get("/admin/ui", (req, res) => {
           thumb.textContent = brand.display.slice(0, 2).toUpperCase();
         }
         const label = document.createElement('div');
+        label.className = 'nav-label';
         label.textContent = brand.display;
         btn.appendChild(thumb);
         btn.appendChild(label);
@@ -4589,6 +4687,11 @@ app.get("/admin/ui", (req, res) => {
     loginPasswordEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
+    if (sidebarToggleEl && sidebarEl) {
+      sidebarToggleEl.onclick = () => {
+        setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
+      };
+    }
     navGeneralEl.onclick = () => setActiveView('');
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
@@ -4663,6 +4766,13 @@ app.get("/admin/ui", (req, res) => {
     setLoginMode('admin');
     lockSystemPrompt();
     setAdminStatus('Bloqueado');
+    initSidebarState();
+    if (window.matchMedia) {
+      const mq = window.matchMedia('(max-width: 980px)');
+      if (mq.addEventListener) {
+        mq.addEventListener('change', initSidebarState);
+      }
+    }
   </script>
 </body>
 </html>
