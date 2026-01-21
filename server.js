@@ -3927,8 +3927,8 @@ app.get("/admin/ui", (req, res) => {
         top = rect.top - tipRect.height - 8;
       }
       if (top < pad) top = pad;
-      summaryTooltipEl.style.left = `${Math.round(left)}px`;
-      summaryTooltipEl.style.top = `${Math.round(top)}px`;
+      summaryTooltipEl.style.left = Math.round(left) + "px";
+      summaryTooltipEl.style.top = Math.round(top) + "px";
     }
 
     function showSummaryTooltip(target, text) {
