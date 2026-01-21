@@ -1463,6 +1463,62 @@ app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
   }
 });
 
+app.post("/admin/extract-contact", requireConfigOrViewer, async (req, res) => {
+  try {
+    const rawText = (req.body?.text || "").toString();
+    if (!rawText.trim()) {
+      return res.status(400).json({ error: "missing_text" });
+    }
+    const text = rawText.slice(0, 4000);
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL_OCR,
+        temperature: 0,
+        max_tokens: 200,
+        messages: [
+          {
+            role: "system",
+            content: "Extract candidate contact info from resume text. Return strict JSON with keys name, phone, email. Use empty string if unknown. Name must be the person name (not company, role, or section titles)."
+          },
+          { role: "user", content: text }
+        ]
+      })
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`extract_contact failed ${resp.status} ${detail}`);
+    }
+    const data = await resp.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    let parsed = null;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      const match = content.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { parsed = JSON.parse(match[0]); } catch {}
+      }
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return res.status(200).json({ ok: true, name: "", phone: "", email: "" });
+    }
+    return res.json({
+      ok: true,
+      name: typeof parsed.name === "string" ? parsed.name : "",
+      phone: typeof parsed.phone === "string" ? parsed.phone : "",
+      email: typeof parsed.email === "string" ? parsed.email : ""
+    });
+  } catch (err) {
+    console.error("[admin/extract-contact] failed", err);
+    return res.status(400).json({ error: "extract_contact_failed", detail: err.message });
+  }
+});
+
 app.get("/admin/ui", (req, res) => {
   res.type("text/html").send(`
 <!doctype html>
@@ -3187,6 +3243,17 @@ app.get("/admin/ui", (req, res) => {
       return false;
     }
 
+    function applyAiContactResult(result = {}) {
+      const aiName = cleanNameCandidate(result.name || '');
+      if (aiName && !isLikelyInvalidName(aiName)) {
+        callNameEl.value = aiName;
+      }
+      const aiPhone = formatPhoneForUi(result.phone || '');
+      if (aiPhone && !callPhoneEl.value.trim()) {
+        callPhoneEl.value = aiPhone;
+      }
+    }
+
     async function loadPdfDocument(file) {
       if (!window.pdfjsLib) throw new Error('PDF parser no disponible');
       const buffer = await file.arrayBuffer();
@@ -3254,6 +3321,23 @@ app.get("/admin/ui", (req, res) => {
       return (data.text || '').trim();
     }
 
+    async function runContactAi(text) {
+      if (!tokenEl.value) throw new Error('Necesitás autenticarte para detectar contacto.');
+      const payload = { text: (text || '').slice(0, 4000) };
+      const resp = await fetch('/admin/extract-contact', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'contact extract failed');
+      return {
+        name: (data.name || '').toString(),
+        phone: (data.phone || '').toString(),
+        email: (data.email || '').toString()
+      };
+    }
+
     async function handleCvFile(file) {
       if (!file) return;
       currentCvSource = file.name || '';
@@ -3295,6 +3379,15 @@ app.get("/admin/ui", (req, res) => {
             maybeFillContactFromCv(ocrText);
           } catch (err) {
             console.error('[cv-contact] ocr fallback failed', err);
+          }
+        }
+        if (needsContactOcr()) {
+          setCvStatus('Detectando nombre con AI...');
+          try {
+            const ai = await runContactAi(callCvTextEl.value || text || '');
+            applyAiContactResult(ai);
+          } catch (err) {
+            console.error('[cv-contact] ai failed', err);
           }
         }
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
