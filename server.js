@@ -4091,7 +4091,7 @@ app.get("/admin/ui", (req, res) => {
         lines.push('');
         lines.push('Audio: ' + call.audio_url);
       }
-      return lines.join('\n');
+      return lines.join('\\n');
     }
 
     function cvStatusInfo(item) {
