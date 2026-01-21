@@ -1930,6 +1930,7 @@ app.get("/admin/ui", (req, res) => {
       background: #fff;
       font-size: 12px;
       font-weight: 600;
+      color: var(--primary-dark);
       cursor: pointer;
     }
     .tab-pill.active {
@@ -1977,6 +1978,7 @@ app.get("/admin/ui", (req, res) => {
       border: 1px solid var(--border);
       background: #fff;
       font-weight: 700;
+      color: var(--primary-dark);
       line-height: 1;
       cursor: pointer;
     }
@@ -2002,6 +2004,7 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 10px;
       padding: 6px 8px;
       font-size: 12px;
+      color: var(--primary-dark);
       cursor: pointer;
     }
     .summary-cell {
