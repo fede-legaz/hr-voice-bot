@@ -2405,10 +2405,10 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="inline" id="cv-tabs" style="margin-top:8px;">
-            <button class="tab-pill active" data-filter="all" type="button">Todos</button>
-            <button class="tab-pill" data-filter="no_calls" type="button">No llamados</button>
+            <button class="tab-pill active" data-filter="no_calls" type="button">No llamados</button>
             <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
             <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
+            <button class="tab-pill" data-filter="all" type="button">Todos</button>
           </div>
           <div class="table-wrapper" style="margin-top:10px;">
             <table>
@@ -2470,9 +2470,9 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="inline" id="results-tabs" style="margin-top:8px;">
-            <button class="tab-pill active" data-filter="all" type="button">Todas</button>
-            <button class="tab-pill" data-filter="completed" type="button">Completadas</button>
+            <button class="tab-pill active" data-filter="completed" type="button">Completadas</button>
             <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
+            <button class="tab-pill" data-filter="all" type="button">Todas</button>
           </div>
           <div class="table-wrapper" style="margin-top:14px;">
             <table>
@@ -2659,8 +2659,8 @@ app.get("/admin/ui", (req, res) => {
     let suppressSidebarSync = false;
     let resultsTimer = null;
     let cvTimer = null;
-    let cvFilterMode = 'all';
-    let resultsFilterMode = 'all';
+    let cvFilterMode = 'no_calls';
+    let resultsFilterMode = 'completed';
     let lastCvList = [];
     let lastResults = [];
     let currentCvSource = '';
@@ -3871,6 +3871,11 @@ app.get("/admin/ui", (req, res) => {
     function formatInterviewSummary(call) {
       if (call.summary && call.summary.trim()) return call.summary;
       const status = outcomeText(call.outcome, call.outcome_detail);
+      if (call.outcome === 'NO_ANSWER' && call.attempts > 1) {
+        return status
+          ? status + " (" + call.attempts + " intentos)"
+          : "No contestó (" + call.attempts + " intentos)";
+      }
       return status || '—';
     }
 
@@ -3878,9 +3883,13 @@ app.get("/admin/ui", (req, res) => {
       const statusLabel = outcomeText(item.last_outcome, item.last_outcome_detail);
       const hasCalls = Number(item.call_count || 0) > 0 || !!statusLabel || !!item.last_call_at;
       const isNoAnswer = item.last_outcome === 'NO_ANSWER';
-      const statusText = !hasCalls ? 'Sin llamadas' : (statusLabel || 'Entrevista realizada');
+      const attempts = Number(item.call_count || 0);
+      let statusText = !hasCalls ? 'Sin llamadas' : (statusLabel || 'Entrevista realizada');
+      if (isNoAnswer && attempts > 1) {
+        statusText = statusText + " (" + attempts + " intentos)";
+      }
       const category = !hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed');
-      return { hasCalls, isNoAnswer, statusText, category };
+      return { hasCalls, isNoAnswer, statusText, category, attempts };
     }
 
     function recommendationBadge(rec) {
@@ -3910,6 +3919,47 @@ app.get("/admin/ui", (req, res) => {
       else if (score >= 60) span.classList.add('score-mid');
       else span.classList.add('score-low');
       return span;
+    }
+
+    function normalizePhoneKey(phone) {
+      return String(phone || '').replace(/\D/g, '');
+    }
+
+    function buildCallGroupKey(call) {
+      const brandKey = (call.brandKey || call.brand || '').toLowerCase().trim();
+      const roleKey = (call.roleKey || call.role || '').toLowerCase().trim();
+      const phone = normalizePhoneKey(call.phone || '');
+      const applicant = (call.applicant || '').toLowerCase().trim();
+      if (call.cv_id) return "cv:" + call.cv_id;
+      if (phone) return "p:" + brandKey + "|" + roleKey + "|" + phone;
+      return "a:" + brandKey + "|" + roleKey + "|" + applicant;
+    }
+
+    function groupCalls(calls) {
+      const map = new Map();
+      (calls || []).forEach((call) => {
+        const key = buildCallGroupKey(call);
+        const createdAt = call.created_at ? new Date(call.created_at).getTime() : 0;
+        let entry = map.get(key);
+        if (!entry) {
+          entry = {
+            ...call,
+            attempts: 0,
+            noAnswerAttempts: 0,
+            callIds: [],
+            _latestAt: createdAt
+          };
+          map.set(key, entry);
+        }
+        entry.attempts += 1;
+        if (call.outcome === 'NO_ANSWER') entry.noAnswerAttempts += 1;
+        if (call.callId) entry.callIds.push(call.callId);
+        if (!entry._latestAt || createdAt >= entry._latestAt) {
+          Object.assign(entry, call);
+          entry._latestAt = createdAt;
+        }
+      });
+      return Array.from(map.values());
     }
 
     const summaryTooltipEl = document.createElement('div');
@@ -3979,6 +4029,29 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function deleteInterviewGroup(call) {
+      const ids = Array.isArray(call?.callIds) ? call.callIds.filter(Boolean) : [];
+      const primaryId = call?.callId || '';
+      const list = ids.length ? ids : (primaryId ? [primaryId] : []);
+      if (!list.length) return;
+      if (!confirm('¿Seguro que querés borrar esta entrevista?')) return;
+      try {
+        for (const id of list) {
+          const resp = await fetch('/admin/calls/' + encodeURIComponent(id), {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer ' + tokenEl.value }
+          });
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || 'delete failed');
+          }
+        }
+        loadResults();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
     async function deleteCandidate(cvId) {
       if (!cvId) return;
       if (!confirm('¿Seguro que querés borrar este candidato?')) return;
@@ -3997,8 +4070,9 @@ app.get("/admin/ui", (req, res) => {
 
     function renderResults(calls) {
       ensureAudioMenuHandlers();
-      lastResults = Array.isArray(calls) ? calls : [];
-      const filtered = lastResults.filter((call) => {
+      const grouped = groupCalls(Array.isArray(calls) ? calls : []);
+      lastResults = grouped;
+      const filtered = grouped.filter((call) => {
         if (resultsFilterMode === 'no_answer') return call.outcome === 'NO_ANSWER';
         if (resultsFilterMode === 'completed') return call.outcome !== 'NO_ANSWER';
         return true;
@@ -4125,7 +4199,7 @@ app.get("/admin/ui", (req, res) => {
           delBtn.type = 'button';
           delBtn.className = 'secondary';
           delBtn.textContent = 'Eliminar';
-          delBtn.onclick = () => deleteInterview(call.callId);
+          delBtn.onclick = () => deleteInterviewGroup(call);
           actionTd.appendChild(delBtn);
         } else {
           actionTd.textContent = '—';
