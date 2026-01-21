@@ -2027,6 +2027,16 @@ app.get("/admin/ui", (req, res) => {
       gap: 6px;
       flex-wrap: nowrap;
     }
+    .icon-btn {
+      width: 42px;
+      height: 42px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+    }
+    .icon-btn svg { width: 18px; height: 18px; }
     .btn-compact {
       padding: 6px 10px;
       font-size: 11px;
@@ -2045,43 +2055,49 @@ app.get("/admin/ui", (req, res) => {
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .audio-wrap { display: flex; align-items: center; gap: 8px; }
-    .audio-menu { position: relative; }
-    .audio-menu-btn {
-      padding: 4px 10px;
-      border-radius: 10px;
-      border: 1px solid var(--border);
-      background: #fff;
-      font-weight: 700;
-      color: var(--primary-dark);
-      line-height: 1;
-      cursor: pointer;
+    .detail-row td {
+      background: #fbf7f0;
+      padding: 14px 16px;
     }
-    .audio-menu-list {
-      position: absolute;
-      top: 110%;
-      right: 0;
+    .detail-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
       background: #fff;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 6px;
-      display: none;
-      grid-template-columns: 1fr;
-      gap: 6px;
-      min-width: 90px;
-      box-shadow: 0 10px 20px rgba(22, 49, 43, 0.12);
-      z-index: 2;
+      padding: 12px;
+      box-shadow: var(--shadow);
     }
-    .audio-menu.open .audio-menu-list { display: grid; }
-    .audio-menu-list button {
-      background: transparent;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 6px 8px;
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px 14px;
+    }
+    .detail-item {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
       font-size: 12px;
-      color: var(--primary-dark);
-      cursor: pointer;
     }
+    .detail-label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .detail-value { color: #1f2a24; font-weight: 600; }
+    .detail-block {
+      grid-column: 1 / -1;
+      border: 1px solid var(--border);
+      background: #fbfaf6;
+      border-radius: 12px;
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #2f3e36;
+    }
+    .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .audio-wrap { display: flex; align-items: center; gap: 8px; }
     .summary-cell {
       max-width: 220px;
       display: -webkit-box;
@@ -2564,10 +2580,15 @@ app.get("/admin/ui", (req, res) => {
             </div>
             <div>
               <label>Buscar</label>
-              <input type="text" id="results-search" placeholder="Nombre o teléfono" />
-            </div>
-            <div style="display:flex; align-items:flex-end;">
-              <button class="secondary" id="results-refresh" type="button">Refresh</button>
+              <div class="inline">
+                <input type="text" id="results-search" placeholder="Nombre o teléfono" />
+                <button class="secondary icon-btn" id="results-refresh" type="button" aria-label="Refresh" title="Refresh">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                    <polyline points="21 3 21 9 15 9" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
           <div class="inline" id="results-tabs" style="margin-top:8px;">
@@ -2579,24 +2600,13 @@ app.get("/admin/ui", (req, res) => {
             <table>
               <thead>
                 <tr>
-                  <th>Score</th>
-                  <th>Local</th>
-                  <th>Candidato</th>
-                  <th>Posición</th>
-                  <th>Calidez</th>
-                  <th>Fluidez</th>
-                  <th>Inglés</th>
-                  <th>Experiencia</th>
-                  <th>Zona</th>
-                  <th>Disponibilidad</th>
-                  <th>Se queda en EE.UU.</th>
-                  <th>Expectativa salarial</th>
-                  <th>Resumen</th>
-                  <th>CV</th>
-                  <th>Teléfono</th>
                   <th>Fecha</th>
-                  <th>Audio</th>
-                  <th>Nivel</th>
+                  <th>Local</th>
+                  <th>Posición</th>
+                  <th>Candidato</th>
+                  <th>Teléfono</th>
+                  <th>Estado</th>
+                  <th>CV</th>
                   <th>Acción</th>
                 </tr>
               </thead>
@@ -4040,6 +4050,118 @@ app.get("/admin/ui", (req, res) => {
       return status || '—';
     }
 
+    function addDetailItem(grid, label, value) {
+      if (value === undefined || value === null || value === '') return;
+      const item = document.createElement('div');
+      item.className = 'detail-item';
+      const lab = document.createElement('div');
+      lab.className = 'detail-label';
+      lab.textContent = label;
+      const val = document.createElement('div');
+      val.className = 'detail-value';
+      val.textContent = value;
+      item.appendChild(lab);
+      item.appendChild(val);
+      grid.appendChild(item);
+    }
+
+    function addDetailBlock(container, label, value) {
+      if (!value) return;
+      const block = document.createElement('div');
+      block.className = 'detail-block';
+      const title = document.createElement('div');
+      title.className = 'detail-label';
+      title.textContent = label;
+      const body = document.createElement('div');
+      body.textContent = value;
+      block.appendChild(title);
+      block.appendChild(body);
+      container.appendChild(block);
+    }
+
+    function buildInterviewDetailCard(call) {
+      const card = document.createElement('div');
+      card.className = 'detail-card';
+      const grid = document.createElement('div');
+      grid.className = 'detail-grid';
+      card.appendChild(grid);
+      const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+      const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
+      const statusText = formatInterviewSummary(call);
+      const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '';
+      const englishLabel = call.english_detail ? (call.english + ' (' + call.english_detail + ')') : (call.english || '');
+
+      addDetailItem(grid, 'Local', brandLabel);
+      addDetailItem(grid, 'Posición', roleLabel);
+      addDetailItem(grid, 'Candidato', call.applicant || '');
+      addDetailItem(grid, 'Teléfono', call.phone || '');
+      addDetailItem(grid, 'Fecha', formatDate(call.created_at));
+      addDetailItem(grid, 'Estado', statusText);
+      if (call.outcome === 'NO_ANSWER' && call.attempts > 1) {
+        addDetailItem(grid, 'Intentos', String(call.attempts));
+      }
+      addDetailItem(grid, 'Recomendación', recommendationLabel(call.recommendation));
+      addDetailItem(grid, 'Score', call.score !== null && call.score !== undefined ? String(Math.round(call.score)) : '');
+      addDetailItem(grid, 'Calidez', call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '');
+      addDetailItem(grid, 'Fluidez', call.fluency !== null && call.fluency !== undefined ? String(call.fluency) : '');
+      addDetailItem(grid, 'Inglés', englishLabel);
+      addDetailItem(grid, 'Zona', call.area || '');
+      addDetailItem(grid, 'Disponibilidad', call.availability || '');
+      addDetailItem(grid, 'Se queda en EE.UU.', stay || '');
+      addDetailItem(grid, 'Expectativa salarial', call.salary || '');
+
+      addDetailBlock(card, 'Experiencia', call.experience || '');
+      addDetailBlock(card, 'Resumen', call.summary || '');
+
+      const actions = document.createElement('div');
+      actions.className = 'detail-actions';
+      if (call.cv_url) {
+        const cvLink = document.createElement('a');
+        cvLink.href = call.cv_url;
+        cvLink.target = '_blank';
+        cvLink.rel = 'noopener';
+        cvLink.textContent = 'Abrir CV';
+        cvLink.className = 'secondary btn-compact';
+        cvLink.style.textDecoration = 'none';
+        actions.appendChild(cvLink);
+      }
+      if (call.audio_url) {
+        const audioLink = document.createElement('a');
+        audioLink.href = call.audio_url;
+        audioLink.target = '_blank';
+        audioLink.rel = 'noopener';
+        audioLink.textContent = 'Audio';
+        audioLink.className = 'secondary btn-compact';
+        audioLink.style.textDecoration = 'none';
+        actions.appendChild(audioLink);
+      }
+      if (actions.children.length) {
+        card.appendChild(actions);
+      }
+      return card;
+    }
+
+    function toggleInterviewDetailsRow(tr, call) {
+      if (!tr || !resultsBodyEl) return;
+      const existing = tr.nextElementSibling;
+      if (existing && existing.classList.contains('detail-row')) {
+        existing.remove();
+        tr.classList.remove('expanded');
+        return;
+      }
+      resultsBodyEl.querySelectorAll('tr.detail-row').forEach((row) => row.remove());
+      resultsBodyEl.querySelectorAll('tr.row-clickable.expanded').forEach((row) => row.classList.remove('expanded'));
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'detail-row';
+      const detailTd = document.createElement('td');
+      const colCount = resultsBodyEl.closest('table')?.querySelectorAll('thead th').length || 8;
+      detailTd.colSpan = colCount;
+      detailTd.appendChild(buildInterviewDetailCard(call));
+      detailTr.appendChild(detailTd);
+      tr.after(detailTr);
+      tr.classList.add('expanded');
+    }
+
     function formatInterviewDetails(call) {
       if (!call || typeof call !== 'object') return '';
       const lines = [];
@@ -4136,10 +4258,11 @@ app.get("/admin/ui", (req, res) => {
         span.classList.add('score-mid');
         return span;
       }
-      span.textContent = Math.round(score);
-      if (score >= 80) span.classList.add('score-high');
-      else if (score >= 60) span.classList.add('score-mid');
-      else span.classList.add('score-low');
+      const clamped = Math.max(0, Math.min(100, Number(score)));
+      span.textContent = Math.round(clamped);
+      const hue = Math.round((clamped / 100) * 120);
+      span.style.background = `hsl(${hue} 70% 88%)`;
+      span.style.color = `hsl(${hue} 55% 30%)`;
       return span;
     }
 
@@ -4273,21 +4396,6 @@ app.get("/admin/ui", (req, res) => {
     window.addEventListener('scroll', hideSummaryTooltip, true);
     window.addEventListener('resize', hideSummaryTooltip);
 
-    function closeAudioMenus(except = null) {
-      document.querySelectorAll('.audio-menu').forEach((menu) => {
-        if (menu !== except) menu.classList.remove('open');
-      });
-    }
-
-    let audioMenuReady = false;
-    function ensureAudioMenuHandlers() {
-      if (audioMenuReady) return;
-      document.addEventListener('click', (evt) => {
-        if (!evt.target.closest('.audio-menu')) closeAudioMenus();
-      });
-      audioMenuReady = true;
-    }
-
     async function deleteInterview(callId) {
       if (!callId) return;
       if (!confirm('¿Seguro que querés borrar esta entrevista?')) return;
@@ -4367,7 +4475,6 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderResults(calls) {
-      ensureAudioMenuHandlers();
       const grouped = groupCalls(Array.isArray(calls) ? calls : []);
       lastResults = grouped;
       const filtered = grouped.filter((call) => {
@@ -4380,8 +4487,8 @@ app.get("/admin/ui", (req, res) => {
         const tr = document.createElement('tr');
         tr.classList.add('row-clickable');
         tr.addEventListener('click', (event) => {
-          if (event.target.closest('button, a, audio, .audio-menu, .audio-menu-list, .audio-menu-btn')) return;
-          openInterviewModal(call);
+          if (event.target.closest('button, a, audio')) return;
+          toggleInterviewDetailsRow(tr, call);
         });
         const addCell = (value, className, title) => {
           const td = document.createElement('td');
@@ -4390,125 +4497,68 @@ app.get("/admin/ui", (req, res) => {
           if (title) td.title = title;
           tr.appendChild(td);
         };
-        const scoreCell = document.createElement('td');
-        scoreCell.appendChild(scorePill(call.score));
-        tr.appendChild(scoreCell);
+        addCell(formatDate(call.created_at));
         const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
         addCell(brandLabel, 'cell-compact', brandLabel);
+        const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
+        addCell(roleLabel, 'cell-compact', roleLabel);
         addCell(call.applicant);
-        addCell(call.role);
-        addCell(call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '—');
-        addCell(call.fluency !== null && call.fluency !== undefined ? String(call.fluency) : '—');
-        addCell(call.english || '—');
-        addCell(call.experience);
-        addCell(call.area);
-        addCell(call.availability);
-        const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '—';
-        addCell(stay);
-        addCell(call.salary);
-        const summaryText = formatInterviewSummary(call);
-        const summaryTd = document.createElement('td');
-        const summaryDiv = document.createElement('div');
-        summaryDiv.className = 'summary-cell';
-        summaryDiv.textContent = summaryText || '—';
-        if (summaryText && summaryText !== '—') {
-          summaryDiv.addEventListener('mouseenter', () => showSummaryTooltip(summaryDiv, summaryText));
-          summaryDiv.addEventListener('mouseleave', hideSummaryTooltip);
+        addCell(call.phone);
+        const statusText = formatInterviewSummary(call);
+        const statusTd = document.createElement('td');
+        const statusDiv = document.createElement('div');
+        statusDiv.className = 'summary-cell';
+        statusDiv.textContent = statusText;
+        if (statusText && statusText !== '—') {
+          statusDiv.addEventListener('mouseenter', () => showSummaryTooltip(statusDiv, statusText));
+          statusDiv.addEventListener('mouseleave', hideSummaryTooltip);
         }
-        summaryTd.appendChild(summaryDiv);
-        tr.appendChild(summaryTd);
+        statusTd.appendChild(statusDiv);
+        tr.appendChild(statusTd);
         const cvTd = document.createElement('td');
-        if (call.cv_url || call.cv_text) {
+        if (call.cv_url) {
           const wrap = document.createElement('div');
-          wrap.className = 'inline';
-          if (call.cv_url) {
-            const link = document.createElement('a');
-            link.href = call.cv_url;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.textContent = 'Archivo';
-            link.className = 'secondary';
-            link.style.textDecoration = 'none';
-            link.style.padding = '8px 12px';
-            link.style.borderRadius = '10px';
-            link.style.border = '1px solid var(--border)';
-            wrap.appendChild(link);
-          } else if (call.cv_text) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'secondary';
-            btn.textContent = 'Ver CV';
-            btn.onclick = () => openCvModal(call.cv_text || '');
-            wrap.appendChild(btn);
-          }
+          wrap.className = 'action-stack';
+          const link = document.createElement('a');
+          link.href = call.cv_url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = 'Archivo';
+          link.className = 'secondary btn-compact';
+          link.style.textDecoration = 'none';
+          wrap.appendChild(link);
           cvTd.appendChild(wrap);
         } else {
           cvTd.textContent = '—';
         }
         tr.appendChild(cvTd);
-        addCell(call.phone);
-        addCell(formatDate(call.created_at));
-        const audioTd = document.createElement('td');
-        if (call.audio_url) {
-          const wrap = document.createElement('div');
-          wrap.className = 'audio-wrap';
-          const audio = document.createElement('audio');
-          audio.controls = true;
-          audio.preload = 'none';
-          audio.src = call.audio_url;
-          wrap.appendChild(audio);
-          const menuWrap = document.createElement('div');
-          menuWrap.className = 'audio-menu';
-          const menuBtn = document.createElement('button');
-          menuBtn.type = 'button';
-          menuBtn.className = 'audio-menu-btn';
-          menuBtn.textContent = '...';
-          menuBtn.setAttribute('aria-label', 'Velocidad de reproducción');
-          const menuList = document.createElement('div');
-          menuList.className = 'audio-menu-list';
-          [
-            { label: '1x', value: 1 },
-            { label: '1.25x', value: 1.25 },
-            { label: '1.5x', value: 1.5 },
-            { label: '1.75x', value: 1.75 },
-            { label: '2x', value: 2 }
-          ].forEach((opt) => {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.textContent = opt.label;
-            btn.onclick = (evt) => {
-              evt.stopPropagation();
-              audio.playbackRate = opt.value;
-              menuWrap.classList.remove('open');
-            };
-            menuList.appendChild(btn);
-          });
-          menuBtn.onclick = (evt) => {
-            evt.stopPropagation();
-            const isOpen = menuWrap.classList.toggle('open');
-            if (isOpen) closeAudioMenus(menuWrap);
-          };
-          menuWrap.appendChild(menuBtn);
-          menuWrap.appendChild(menuList);
-          wrap.appendChild(menuWrap);
-          audioTd.appendChild(wrap);
-        } else {
-          audioTd.textContent = '—';
-        }
-        tr.appendChild(audioTd);
-        const recTd = document.createElement('td');
-        recTd.appendChild(recommendationBadge(call.recommendation || 'review'));
-        tr.appendChild(recTd);
         const actionTd = document.createElement('td');
+        const actionWrap = document.createElement('div');
+        actionWrap.className = 'action-stack';
+        if (call.audio_url) {
+          const audioLink = document.createElement('a');
+          audioLink.href = call.audio_url;
+          audioLink.target = '_blank';
+          audioLink.rel = 'noopener';
+          audioLink.textContent = 'Audio';
+          audioLink.className = 'secondary btn-compact';
+          audioLink.style.textDecoration = 'none';
+          actionWrap.appendChild(audioLink);
+        }
         if (authRole === 'admin' && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
-          delBtn.className = 'secondary btn-compact';
-          delBtn.textContent = 'Eliminar';
+          delBtn.className = 'secondary btn-compact icon-only';
+          delBtn.textContent = '🗑';
+          delBtn.title = 'Eliminar';
+          delBtn.setAttribute('aria-label', 'Eliminar');
           delBtn.onclick = () => deleteInterviewGroup(call);
-          actionTd.appendChild(delBtn);
-        } else {
+          actionWrap.appendChild(delBtn);
+        }
+        if (!actionWrap.children.length) {
           actionTd.textContent = '—';
+        } else {
+          actionTd.appendChild(actionWrap);
         }
         tr.appendChild(actionTd);
         resultsBodyEl.appendChild(tr);
