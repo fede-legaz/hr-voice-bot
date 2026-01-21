@@ -1148,7 +1148,7 @@ initDb();
 
 function getSpacesPublicBaseUrl() {
   if (SPACES_PUBLIC_URL) return SPACES_PUBLIC_URL;
-  if (SPACES_BUCKET && SPACES_REGION) {
+  if (SPACES_PUBLIC && SPACES_BUCKET && SPACES_REGION) {
     return `https://${SPACES_BUCKET}.${SPACES_REGION}.digitaloceanspaces.com`;
   }
   return "";
@@ -1164,13 +1164,53 @@ function normalizeSpacesKey(value = "") {
   return value;
 }
 
+function extractSpacesKeyFromUrl(value = "") {
+  if (!value || !SPACES_BUCKET) return "";
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return "";
+  }
+  const host = (parsed.hostname || "").toLowerCase();
+  const bucket = SPACES_BUCKET.toLowerCase();
+  const endpointHost = SPACES_ENDPOINT ? (() => {
+    try {
+      return new URL(SPACES_ENDPOINT).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })() : "";
+  const path = (parsed.pathname || "").replace(/^\/+/, "");
+  if (host.startsWith(`${bucket}.`)) {
+    return path;
+  }
+  if (endpointHost && host === endpointHost) {
+    if (path.toLowerCase().startsWith(`${bucket}/`)) {
+      return path.slice(bucket.length + 1);
+    }
+  }
+  if (host.endsWith("digitaloceanspaces.com") && path.toLowerCase().startsWith(`${bucket}/`)) {
+    return path.slice(bucket.length + 1);
+  }
+  return "";
+}
+
 async function resolveStoredUrl(value, ttlSeconds = 3600) {
   if (!value) return "";
-  if (/^https?:\/\//i.test(value)) return value;
+  const isUrl = /^https?:\/\//i.test(value);
+  if (isUrl) {
+    if (SPACES_PUBLIC || SPACES_PUBLIC_URL) return value;
+    if (!s3Client || !SPACES_BUCKET) return value;
+    const keyFromUrl = extractSpacesKeyFromUrl(value);
+    if (!keyFromUrl) return value;
+    const cmd = new GetObjectCommand({ Bucket: SPACES_BUCKET, Key: keyFromUrl });
+    return getSignedUrl(s3Client, cmd, { expiresIn: ttlSeconds });
+  }
   if (!s3Client || !SPACES_BUCKET) return value;
   const key = normalizeSpacesKey(value);
   const publicBase = getSpacesPublicBaseUrl();
-  if (publicBase || SPACES_PUBLIC) {
+  if (publicBase) {
     return `${publicBase}/${key}`;
   }
   const cmd = new GetObjectCommand({ Bucket: SPACES_BUCKET, Key: key });
@@ -1396,11 +1436,47 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
     });
   }
 
+  const callStatsByCv = new Map();
+  for (const call of callHistory) {
+    if (!call || !call.cv_id) continue;
+    const key = call.cv_id;
+    const existing = callStatsByCv.get(key) || {
+      call_count: 0,
+      last_call_at: "",
+      last_outcome: "",
+      last_outcome_detail: "",
+      last_audio_url: "",
+      last_call_sid: ""
+    };
+    existing.call_count += 1;
+    const callTime = call.created_at ? new Date(call.created_at).getTime() : 0;
+    const lastTime = existing.last_call_at ? new Date(existing.last_call_at).getTime() : 0;
+    if (!lastTime || callTime >= lastTime) {
+      existing.last_call_at = call.created_at || existing.last_call_at;
+      existing.last_outcome = call.outcome || "";
+      existing.last_outcome_detail = call.outcome_detail || "";
+      existing.last_audio_url = call.audio_url || "";
+      existing.last_call_sid = call.callId || "";
+    }
+    callStatsByCv.set(key, existing);
+  }
+
   const results = [];
   for (const entry of list.slice(0, limit)) {
     if (!entry) continue;
     const cvUrl = await resolveStoredUrl(entry.cv_url || "");
-    results.push({ ...entry, cv_url: cvUrl || entry.cv_url || "" });
+    const stats = callStatsByCv.get(entry.id) || {};
+    const lastAudioUrl = await resolveStoredUrl(stats.last_audio_url || "");
+    results.push({
+      ...entry,
+      cv_url: cvUrl || entry.cv_url || "",
+      call_count: stats.call_count || 0,
+      last_call_at: stats.last_call_at || "",
+      last_outcome: stats.last_outcome || "",
+      last_outcome_detail: stats.last_outcome_detail || "",
+      last_audio_url: lastAudioUrl || "",
+      last_call_sid: stats.last_call_sid || ""
+    });
   }
   return res.json({ ok: true, cvs: results });
 });
@@ -1691,6 +1767,7 @@ app.get("/admin/ui", (req, res) => {
     .muted { color: var(--muted); font-size: 13px; }
     .small { font-size: 12px; color: var(--muted); }
     .status { font-size: 12px; color: var(--muted); }
+    .check-row { display: flex; align-items: center; gap: 8px; }
     .brand-card { padding: 0; overflow: hidden; }
     .brand-header {
       display: flex;
@@ -1747,6 +1824,24 @@ app.get("/admin/ui", (req, res) => {
     }
     .logo-preview img { width: 100%; height: 100%; object-fit: cover; }
     .brand-logo-input { display: none; }
+    .faq-list { display: grid; gap: 12px; }
+    .faq-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: #fff;
+    }
+    .faq-item summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: #2f3e36;
+    }
+    .faq-body {
+      margin-top: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--muted);
+    }
     .drop-zone {
       border: 1px dashed var(--border);
       border-radius: 16px;
@@ -2005,6 +2100,93 @@ app.get("/admin/ui", (req, res) => {
             <span class="small" id="admin-status"></span>
           </div>
         </div>
+        <div class="panel" style="--delay:.08s;">
+          <div class="panel-title">FAQ / Ayuda</div>
+          <div class="panel-sub">Guía rápida y definiciones de cada sección y botón.</div>
+          <div class="faq-list">
+            <details class="faq-item">
+              <summary>¿Qué hacen los botones Reload y Save?</summary>
+              <div class="faq-body">
+                Reload vuelve a cargar la configuración desde la base de datos y descarta cambios locales no guardados.
+                Save guarda todo lo que editaste en esta pantalla (marcas, roles, preguntas, alias y textos base).
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>¿Qué es la Clave ADMIN y Unlock?</summary>
+              <div class="faq-body">
+                La clave ADMIN desbloquea la edición del System Prompt. Sin esa clave, el prompt queda en modo lectura.
+                El resto de la configuración (marcas, roles, preguntas) se puede editar sin la clave.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Brand (clave) y Nombre para mostrar</summary>
+              <div class="faq-body">
+                Brand (clave) es el identificador interno. Se usa para matchear el local con pedidos, filtrar entrevistas y
+                resolver direcciones. Nombre para mostrar es lo que ve el equipo en el menú y en los listados.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>¿Para qué sirven Aliases (local y rol)?</summary>
+              <div class="faq-body">
+                Aliases son formas alternativas en las que el local o la posición pueden aparecer (ej: “yes cafe”, “yes pizza”).
+                El bot los usa para detectar y unificar nombres, y evita duplicados en reportes.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Dirección, Logo y “Mostrar en menú”</summary>
+              <div class="faq-body">
+                Dirección se usa en el prompt cuando se menciona el local. Logo aparece en el menú lateral.
+                Si desactivás “Mostrar en menú”, el local queda oculto del menú y filtros pero sigue en la configuración.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Rol (clave), Inglés requerido y Físico</summary>
+              <div class="faq-body">
+                Rol (clave) es el identificador interno del puesto. Inglés requerido fuerza preguntas de inglés.
+                Físico indica si el trabajo es físicamente exigente y ajusta el prompt y preguntas.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Preguntas específicas y Notas de rol</summary>
+              <div class="faq-body">
+                Las preguntas específicas se agregan a la entrevista para ese rol.
+                Notas de rol son contexto interno que el bot usa para guiar la conversación.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Preview instrucciones</summary>
+              <div class="faq-body">
+                Genera un prompt de ejemplo con datos ficticios para revisar cómo se verá la entrevista antes de llamar.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Sección Candidates (CVs)</summary>
+              <div class="faq-body">
+                Subís un CV (PDF o foto). El sistema hace OCR y completa nombre/teléfono si lo detecta.
+                Guardar CV lo almacena sin llamar. Llamar inicia la entrevista con ese CV.
+                Limpiar borra los datos cargados para empezar de cero.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>CVs guardados y acciones</summary>
+              <div class="faq-body">
+                Podés filtrar por local o buscar por nombre/teléfono.
+                “Ver CV” muestra el texto, “Archivo” abre el PDF/imagen,
+                “Llamar” inicia la primera llamada y “Volver a llamar” reintenta.
+                “Ver entrevista” te lleva al listado de entrevistas filtrado por ese candidato.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Listado de Interviews</summary>
+              <div class="faq-body">
+                Filtrás por local, posición, recomendación y puntaje.
+                El resumen muestra el resultado o, si la llamada fue incompleta,
+                el estado (no contestó, colgó, no aceptó grabación, etc.).
+                El audio tiene controles de velocidad.
+              </div>
+            </details>
+          </div>
+        </div>
       </section>
 
       <section id="calls-view" class="view" style="display:none;">
@@ -2081,6 +2263,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Posición</th>
                   <th>Candidato</th>
                   <th>Teléfono</th>
+                  <th>Estado</th>
                   <th>CV</th>
                   <th>Acción</th>
                 </tr>
@@ -2332,6 +2515,15 @@ app.get("/admin/ui", (req, res) => {
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
       system_prompt: defaultSystemPrompt
     };
+    const OUTCOME_LABELS = {
+      NO_ANSWER: "No contestó",
+      DECLINED_RECORDING: "No aceptó la grabación",
+      CONSENT_TIMEOUT: "No respondió al consentimiento de grabación",
+      NO_SPEECH: "No emitió opinión",
+      HUNG_UP: "El candidato colgó",
+      CALL_DISCONNECTED: "Se desconectó la llamada",
+      TRANSCRIPTION_FAILED: "No se pudo transcribir el audio"
+    };
     const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
 
@@ -2482,6 +2674,13 @@ app.get("/admin/ui", (req, res) => {
             <div>
               <label>Aliases (coma separados)</label>
               <input type="text" class="brand-aliases" placeholder="campo, new campo argentino" />
+            </div>
+            <div>
+              <label>Mostrar en menú</label>
+              <div class="check-row">
+                <input type="checkbox" class="brand-visible" checked />
+                <span class="small">Visible en menú lateral y filtros.</span>
+              </div>
             </div>
           </div>
           <div class="logo-row">
@@ -2686,6 +2885,8 @@ app.get("/admin/ui", (req, res) => {
         .map((card) => {
           const key = (card.querySelector('.brand-name')?.value || '').trim();
           if (!key) return null;
+          const visible = card.querySelector('.brand-visible')?.checked !== false;
+          if (!visible) return null;
           const display = (card.querySelector('.brand-display')?.value || '').trim() || key;
           const logo = (card.querySelector('.brand-logo')?.value || '').trim();
           return { key, display, logo };
@@ -2923,6 +3124,8 @@ app.get("/admin/ui", (req, res) => {
           bCard.querySelector('.brand-address').value = metaB.address || '';
           bCard.querySelector('.brand-aliases').value = Array.isArray(metaB.aliases) ? metaB.aliases.join(', ') : '';
           bCard.querySelector('.brand-logo').value = metaB.logo || '';
+          const visibleEl = bCard.querySelector('.brand-visible');
+          if (visibleEl) visibleEl.checked = !metaB.hidden;
           setLogoPreview(bCard, metaB.logo || '');
           if (typeof bCard._updateLabels === "function") bCard._updateLabels();
           const rolesBox = bCard.querySelector('.roles');
@@ -3016,6 +3219,7 @@ app.get("/admin/ui", (req, res) => {
           displayName: (bCard.querySelector('.brand-display').value || '').trim(),
           address: (bCard.querySelector('.brand-address').value || '').trim(),
           logo: (bCard.querySelector('.brand-logo').value || '').trim(),
+          hidden: bCard.querySelector('.brand-visible')?.checked === false,
           aliases: (bCard.querySelector('.brand-aliases').value || '')
             .split(',')
             .map((s) => s.trim())
@@ -3488,6 +3692,20 @@ app.get("/admin/ui", (req, res) => {
       return d.toLocaleString();
     }
 
+    function outcomeText(outcome, detail) {
+      const label = OUTCOME_LABELS[outcome] || '';
+      const cleanDetail = (detail || '').trim();
+      if (label) return label;
+      if (cleanDetail) return cleanDetail;
+      return '';
+    }
+
+    function formatInterviewSummary(call) {
+      if (call.summary && call.summary.trim()) return call.summary;
+      const status = outcomeText(call.outcome, call.outcome_detail);
+      return status || '—';
+    }
+
     function recommendationBadge(rec) {
       const span = document.createElement('span');
       span.className = 'badge ' + (rec || 'review');
@@ -3541,7 +3759,7 @@ app.get("/admin/ui", (req, res) => {
         const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '—';
         addCell(stay);
         addCell(call.salary);
-        addCell(call.summary || call.outcome_detail || '—');
+        addCell(formatInterviewSummary(call));
         const cvTd = document.createElement('td');
         if (call.cv_text || call.cv_url) {
           const wrap = document.createElement('div');
@@ -3648,6 +3866,21 @@ app.get("/admin/ui", (req, res) => {
       cvTimer = setTimeout(loadCvList, 300);
     }
 
+    function goToInterviewFromCv(item) {
+      setActiveView(VIEW_INTERVIEWS);
+      if (item.brandKey) {
+        const hasBrand = Array.from(resultsBrandEl.options || []).some((opt) => opt.value === item.brandKey);
+        if (hasBrand) resultsBrandEl.value = item.brandKey;
+      }
+      updateResultsRoleOptions();
+      if (item.roleKey) {
+        const hasRole = Array.from(resultsRoleEl.options || []).some((opt) => opt.value === item.roleKey);
+        if (hasRole) resultsRoleEl.value = item.roleKey;
+      }
+      resultsSearchEl.value = item.phone || item.applicant || '';
+      loadResults();
+    }
+
     function renderCvList(list) {
       cvListBodyEl.innerHTML = '';
       list.forEach((item) => {
@@ -3664,6 +3897,11 @@ app.get("/admin/ui", (req, res) => {
         addCell(roleLabel);
         addCell(item.applicant || '');
         addCell(item.phone || '');
+        const hasCalls = Number(item.call_count || 0) > 0;
+        const statusText = hasCalls
+          ? (outcomeText(item.last_outcome, item.last_outcome_detail) || 'Entrevista realizada')
+          : 'Sin llamadas';
+        addCell(statusText);
         const cvTd = document.createElement('td');
         if (item.cv_text || item.cv_url) {
           const wrap = document.createElement('div');
@@ -3695,9 +3933,11 @@ app.get("/admin/ui", (req, res) => {
         }
         tr.appendChild(cvTd);
         const actionTd = document.createElement('td');
+        const actionWrap = document.createElement('div');
+        actionWrap.className = 'inline';
         const callBtn = document.createElement('button');
         callBtn.type = 'button';
-        callBtn.textContent = 'Llamar';
+        callBtn.textContent = hasCalls ? 'Volver a llamar' : 'Llamar';
         callBtn.onclick = () => {
           currentCvId = item.id || '';
           callBrandEl.value = item.brandKey || item.brand || '';
@@ -3717,7 +3957,16 @@ app.get("/admin/ui", (req, res) => {
             cv_id: item.id || ''
           });
         };
-        actionTd.appendChild(callBtn);
+        actionWrap.appendChild(callBtn);
+        if (hasCalls) {
+          const viewBtn = document.createElement('button');
+          viewBtn.type = 'button';
+          viewBtn.className = 'secondary';
+          viewBtn.textContent = 'Ver entrevista';
+          viewBtn.onclick = () => goToInterviewFromCv(item);
+          actionWrap.appendChild(viewBtn);
+        }
+        actionTd.appendChild(actionWrap);
         tr.appendChild(actionTd);
         cvListBodyEl.appendChild(tr);
       });
@@ -5357,23 +5606,39 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
   const values = [];
   if (brandParam) {
     values.push(brandKey(brandParam));
-    where.push(`brand_key = $${values.length}`);
+    where.push(`c.brand_key = $${values.length}`);
   }
   if (roleParam) {
     values.push(normalizeKey(roleParam));
-    where.push(`role_key = $${values.length}`);
+    where.push(`c.role_key = $${values.length}`);
   }
   if (qParam) {
     values.push(`%${qParam}%`);
-    where.push(`(LOWER(applicant) LIKE $${values.length} OR phone LIKE $${values.length})`);
+    where.push(`(LOWER(c.applicant) LIKE $${values.length} OR c.phone LIKE $${values.length})`);
   }
   values.push(limit);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const sql = `
-    SELECT id, created_at, brand, brand_key, role, role_key, applicant, phone, cv_text, cv_url, source
-    FROM cvs
+    WITH stats AS (
+      SELECT
+        cv_id,
+        COUNT(*)::int AS call_count,
+        MAX(created_at) AS last_call_at,
+        (ARRAY_AGG(outcome ORDER BY created_at DESC))[1] AS last_outcome,
+        (ARRAY_AGG(outcome_detail ORDER BY created_at DESC))[1] AS last_outcome_detail,
+        (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
+        (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
+      FROM calls
+      WHERE cv_id IS NOT NULL AND cv_id <> ''
+      GROUP BY cv_id
+    )
+    SELECT
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.source,
+      s.call_count, s.last_call_at, s.last_outcome, s.last_outcome_detail, s.last_audio_url, s.last_call_sid
+    FROM cvs c
+    LEFT JOIN stats s ON s.cv_id = c.id
     ${whereSql}
-    ORDER BY created_at DESC
+    ORDER BY c.created_at DESC
     LIMIT $${values.length}
   `;
   const result = await dbQuery(sql, values);
@@ -5381,6 +5646,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
   const mapped = [];
   for (const row of rows) {
     const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    const lastAudioUrl = await resolveStoredUrl(row.last_audio_url || "");
     mapped.push({
       id: row.id,
       created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
@@ -5392,7 +5658,13 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
       phone: row.phone || "",
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
-      source: row.source || ""
+      source: row.source || "",
+      call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
+      last_call_at: row.last_call_at ? new Date(row.last_call_at).toISOString() : "",
+      last_outcome: row.last_outcome || "",
+      last_outcome_detail: row.last_outcome_detail || "",
+      last_audio_url: lastAudioUrl || "",
+      last_call_sid: row.last_call_sid || ""
     });
   }
   return mapped;
