@@ -1462,45 +1462,78 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   }
 
   const callStatsByCv = new Map();
+  const callStatsByPhone = new Map();
   for (const call of callHistory) {
-    if (!call || !call.cv_id) continue;
-    const key = call.cv_id;
-    const existing = callStatsByCv.get(key) || {
-      call_count: 0,
-      last_call_at: "",
-      last_outcome: "",
-      last_outcome_detail: "",
-      last_audio_url: "",
-      last_call_sid: ""
-    };
-    existing.call_count += 1;
+    if (!call) continue;
     const callTime = call.created_at ? new Date(call.created_at).getTime() : 0;
-    const lastTime = existing.last_call_at ? new Date(existing.last_call_at).getTime() : 0;
-    if (!lastTime || callTime >= lastTime) {
-      existing.last_call_at = call.created_at || existing.last_call_at;
-      existing.last_outcome = call.outcome || "";
-      existing.last_outcome_detail = call.outcome_detail || "";
-      existing.last_audio_url = call.audio_url || "";
-      existing.last_call_sid = call.callId || "";
+    if (call.cv_id) {
+      const key = call.cv_id;
+      const existing = callStatsByCv.get(key) || {
+        call_count: 0,
+        last_call_at: "",
+        last_outcome: "",
+        last_outcome_detail: "",
+        last_audio_url: "",
+        last_call_sid: ""
+      };
+      existing.call_count += 1;
+      const lastTime = existing.last_call_at ? new Date(existing.last_call_at).getTime() : 0;
+      if (!lastTime || callTime >= lastTime) {
+        existing.last_call_at = call.created_at || existing.last_call_at;
+        existing.last_outcome = call.outcome || "";
+        existing.last_outcome_detail = call.outcome_detail || "";
+        existing.last_audio_url = call.audio_url || "";
+        existing.last_call_sid = call.callId || "";
+      }
+      callStatsByCv.set(key, existing);
     }
-    callStatsByCv.set(key, existing);
+    const phone = call.phone || "";
+    const bKey = call.brandKey || brandKey(call.brand || "");
+    if (phone && bKey) {
+      const key = `${bKey}:${phone}`;
+      const existing = callStatsByPhone.get(key) || {
+        call_count: 0,
+        last_call_at: "",
+        last_outcome: "",
+        last_outcome_detail: "",
+        last_audio_url: "",
+        last_call_sid: ""
+      };
+      existing.call_count += 1;
+      const lastTime = existing.last_call_at ? new Date(existing.last_call_at).getTime() : 0;
+      if (!lastTime || callTime >= lastTime) {
+        existing.last_call_at = call.created_at || existing.last_call_at;
+        existing.last_outcome = call.outcome || "";
+        existing.last_outcome_detail = call.outcome_detail || "";
+        existing.last_audio_url = call.audio_url || "";
+        existing.last_call_sid = call.callId || "";
+      }
+      callStatsByPhone.set(key, existing);
+    }
   }
 
   const results = [];
   for (const entry of list.slice(0, limit)) {
     if (!entry) continue;
     const cvUrl = await resolveStoredUrl(entry.cv_url || "");
-    const stats = callStatsByCv.get(entry.id) || {};
-    const lastAudioUrl = await resolveStoredUrl(stats.last_audio_url || "");
+    let stats = callStatsByCv.get(entry.id);
+    if (!stats || !stats.call_count) {
+      const bKey = entry.brandKey || brandKey(entry.brand || "");
+      const phoneKey = bKey && entry.phone ? `${bKey}:${entry.phone}` : "";
+      if (phoneKey) {
+        stats = callStatsByPhone.get(phoneKey) || stats;
+      }
+    }
+    const lastAudioUrl = await resolveStoredUrl(stats?.last_audio_url || "");
     results.push({
       ...entry,
       cv_url: cvUrl || entry.cv_url || "",
-      call_count: stats.call_count || 0,
-      last_call_at: stats.last_call_at || "",
-      last_outcome: stats.last_outcome || "",
-      last_outcome_detail: stats.last_outcome_detail || "",
+      call_count: stats?.call_count || 0,
+      last_call_at: stats?.last_call_at || "",
+      last_outcome: stats?.last_outcome || "",
+      last_outcome_detail: stats?.last_outcome_detail || "",
       last_audio_url: lastAudioUrl || "",
-      last_call_sid: stats.last_call_sid || ""
+      last_call_sid: stats?.last_call_sid || ""
     });
   }
   return res.json({ ok: true, cvs: results });
@@ -1539,6 +1572,29 @@ app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
     console.error("[admin/cv] failed", err);
     return res.status(400).json({ error: "cv_failed", detail: err.message });
   }
+});
+
+app.delete("/admin/cv/:id", requireConfig, async (req, res) => {
+  const id = (req.params?.id || "").trim();
+  if (!id) return res.status(400).json({ error: "missing_cv_id" });
+  let removed = 0;
+  for (let i = cvStore.length - 1; i >= 0; i -= 1) {
+    const entry = cvStore[i];
+    if (entry && entry.id === id) {
+      cvStore.splice(i, 1);
+      removed += 1;
+      cvStoreById.delete(id);
+    }
+  }
+  if (dbPool) {
+    try {
+      await dbQuery("DELETE FROM cvs WHERE id = $1", [id]);
+    } catch (err) {
+      console.error("[admin/cv] delete failed", err);
+    }
+  }
+  scheduleCvStoreSave();
+  return res.json({ ok: true, removed });
 });
 
 app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
@@ -1866,6 +1922,20 @@ app.get("/admin/ui", (req, res) => {
       font-size: 13px;
       line-height: 1.45;
       color: var(--muted);
+    }
+    .tab-pill {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .tab-pill.active {
+      background: rgba(30, 109, 92, 0.15);
+      border-color: rgba(30, 109, 92, 0.4);
+      color: #1b5849;
     }
     .drop-zone {
       border: 1px dashed var(--border);
@@ -2331,7 +2401,13 @@ app.get("/admin/ui", (req, res) => {
               <button class="secondary" id="cv-refresh" type="button">Refresh</button>
             </div>
           </div>
-          <div class="table-wrapper" style="margin-top:14px;">
+          <div class="inline" id="cv-tabs" style="margin-top:8px;">
+            <button class="tab-pill active" data-filter="all" type="button">Todos</button>
+            <button class="tab-pill" data-filter="no_calls" type="button">No llamados</button>
+            <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
+            <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
+          </div>
+          <div class="table-wrapper" style="margin-top:10px;">
             <table>
               <thead>
                 <tr>
@@ -2389,6 +2465,11 @@ app.get("/admin/ui", (req, res) => {
             <div style="display:flex; align-items:flex-end;">
               <button class="secondary" id="results-refresh" type="button">Refresh</button>
             </div>
+          </div>
+          <div class="inline" id="results-tabs" style="margin-top:8px;">
+            <button class="tab-pill active" data-filter="all" type="button">Todas</button>
+            <button class="tab-pill" data-filter="completed" type="button">Completadas</button>
+            <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
           </div>
           <div class="table-wrapper" style="margin-top:14px;">
             <table>
@@ -2548,6 +2629,7 @@ app.get("/admin/ui", (req, res) => {
     const cvFilterBrandEl = document.getElementById('cv-filter-brand');
     const cvFilterSearchEl = document.getElementById('cv-filter-search');
     const cvRefreshEl = document.getElementById('cv-refresh');
+    const cvTabsEl = document.getElementById('cv-tabs');
     const cvListBodyEl = document.getElementById('cv-list-body');
     const cvListCountEl = document.getElementById('cv-list-count');
     const cvModalEl = document.getElementById('cv-modal');
@@ -2560,6 +2642,7 @@ app.get("/admin/ui", (req, res) => {
     const resultsScoreMaxEl = document.getElementById('results-score-max');
     const resultsSearchEl = document.getElementById('results-search');
     const resultsRefreshEl = document.getElementById('results-refresh');
+    const resultsTabsEl = document.getElementById('results-tabs');
     const resultsBodyEl = document.getElementById('results-body');
     const resultsCountEl = document.getElementById('results-count');
     let state = { config: {} };
@@ -2573,6 +2656,10 @@ app.get("/admin/ui", (req, res) => {
     let suppressSidebarSync = false;
     let resultsTimer = null;
     let cvTimer = null;
+    let cvFilterMode = 'all';
+    let resultsFilterMode = 'all';
+    let lastCvList = [];
+    let lastResults = [];
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
     let currentCvFileName = '';
@@ -3784,6 +3871,15 @@ app.get("/admin/ui", (req, res) => {
       return status || '—';
     }
 
+    function cvStatusInfo(item) {
+      const statusLabel = outcomeText(item.last_outcome, item.last_outcome_detail);
+      const hasCalls = Number(item.call_count || 0) > 0 || !!statusLabel || !!item.last_call_at;
+      const isNoAnswer = item.last_outcome === 'NO_ANSWER';
+      const statusText = !hasCalls ? 'Sin llamadas' : (statusLabel || 'Entrevista realizada');
+      const category = !hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed');
+      return { hasCalls, isNoAnswer, statusText, category };
+    }
+
     function recommendationBadge(rec) {
       const span = document.createElement('span');
       span.className = 'badge ' + (rec || 'review');
@@ -3880,10 +3976,32 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function deleteCandidate(cvId) {
+      if (!cvId) return;
+      if (!confirm('¿Seguro que querés borrar este candidato?')) return;
+      try {
+        const resp = await fetch('/admin/cv/' + encodeURIComponent(cvId), {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'delete failed');
+        loadCvList();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
     function renderResults(calls) {
       ensureAudioMenuHandlers();
+      lastResults = Array.isArray(calls) ? calls : [];
+      const filtered = lastResults.filter((call) => {
+        if (resultsFilterMode === 'no_answer') return call.outcome === 'NO_ANSWER';
+        if (resultsFilterMode === 'completed') return call.outcome !== 'NO_ANSWER';
+        return true;
+      });
       resultsBodyEl.innerHTML = '';
-      calls.forEach((call) => {
+      filtered.forEach((call) => {
         const tr = document.createElement('tr');
         const addCell = (value) => {
           const td = document.createElement('td');
@@ -4012,7 +4130,15 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(actionTd);
         resultsBodyEl.appendChild(tr);
       });
-      setResultsCount(calls.length ? calls.length + ' llamadas' : 'Sin llamadas todavía.');
+      const total = lastResults.length;
+      const shown = filtered.length;
+      if (!total) {
+        setResultsCount('Sin llamadas todavía.');
+      } else if (shown === total) {
+        setResultsCount(shown + ' llamadas');
+      } else {
+        setResultsCount(shown + ' de ' + total + ' llamadas');
+      }
     }
 
     async function loadResults() {
@@ -4063,8 +4189,16 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderCvList(list) {
+      lastCvList = Array.isArray(list) ? list : [];
+      const filtered = lastCvList.filter((item) => {
+        const info = cvStatusInfo(item);
+        if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
+        if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
+        if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
+        return true;
+      });
       cvListBodyEl.innerHTML = '';
-      list.forEach((item) => {
+      filtered.forEach((item) => {
         const tr = document.createElement('tr');
         const addCell = (value) => {
           const td = document.createElement('td');
@@ -4078,11 +4212,8 @@ app.get("/admin/ui", (req, res) => {
         addCell(roleLabel);
         addCell(item.applicant || '');
         addCell(item.phone || '');
-        const hasCalls = Number(item.call_count || 0) > 0;
-        const statusText = hasCalls
-          ? (outcomeText(item.last_outcome, item.last_outcome_detail) || 'Entrevista realizada')
-          : 'Sin llamadas';
-        addCell(statusText);
+        const info = cvStatusInfo(item);
+        addCell(info.statusText);
         const cvTd = document.createElement('td');
         if (item.cv_text || item.cv_url) {
           const wrap = document.createElement('div');
@@ -4118,7 +4249,7 @@ app.get("/admin/ui", (req, res) => {
         actionWrap.className = 'inline';
         const callBtn = document.createElement('button');
         callBtn.type = 'button';
-        callBtn.textContent = hasCalls ? 'Volver a llamar' : 'Llamar';
+        callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
         callBtn.onclick = () => {
           currentCvId = item.id || '';
           callBrandEl.value = item.brandKey || item.brand || '';
@@ -4139,7 +4270,7 @@ app.get("/admin/ui", (req, res) => {
           });
         };
         actionWrap.appendChild(callBtn);
-        if (hasCalls) {
+        if (info.hasCalls) {
           const viewBtn = document.createElement('button');
           viewBtn.type = 'button';
           viewBtn.className = 'secondary';
@@ -4147,11 +4278,27 @@ app.get("/admin/ui", (req, res) => {
           viewBtn.onclick = () => goToInterviewFromCv(item);
           actionWrap.appendChild(viewBtn);
         }
+        if (authRole === 'admin') {
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.className = 'secondary';
+          delBtn.textContent = 'Eliminar';
+          delBtn.onclick = () => deleteCandidate(item.id || '');
+          actionWrap.appendChild(delBtn);
+        }
         actionTd.appendChild(actionWrap);
         tr.appendChild(actionTd);
         cvListBodyEl.appendChild(tr);
       });
-      setCvListCount(list.length ? list.length + ' Candidates' : 'Sin candidates guardados.');
+      const total = lastCvList.length;
+      const shown = filtered.length;
+      if (!total) {
+        setCvListCount('Sin candidates guardados.');
+      } else if (shown === total) {
+        setCvListCount(shown + ' Candidates');
+      } else {
+        setCvListCount(shown + ' de ' + total + ' Candidates');
+      }
     }
 
     async function loadCvList() {
@@ -4311,6 +4458,24 @@ app.get("/admin/ui", (req, res) => {
     cvRefreshEl.onclick = loadCvList;
     cvFilterBrandEl.addEventListener('change', scheduleCvLoad);
     cvFilterSearchEl.addEventListener('input', scheduleCvLoad);
+    if (cvTabsEl) {
+      cvTabsEl.querySelectorAll('button').forEach((btn) => {
+        btn.onclick = () => {
+          cvFilterMode = btn.dataset.filter || 'all';
+          cvTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+          renderCvList(lastCvList);
+        };
+      });
+    }
+    if (resultsTabsEl) {
+      resultsTabsEl.querySelectorAll('button').forEach((btn) => {
+        btn.onclick = () => {
+          resultsFilterMode = btn.dataset.filter || 'all';
+          resultsTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+          renderResults(lastResults);
+        };
+      });
+    }
     cvDropEl.addEventListener('click', () => cvFileEl.click());
     cvFileEl.addEventListener('change', (event) => handleCvFile(event.target.files[0]));
     cvDropEl.addEventListener('dragover', (event) => {
@@ -5812,12 +5977,32 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
       FROM calls
       WHERE cv_id IS NOT NULL AND cv_id <> ''
       GROUP BY cv_id
+    ),
+    stats_phone AS (
+      SELECT
+        phone,
+        brand_key,
+        COUNT(*)::int AS call_count,
+        MAX(created_at) AS last_call_at,
+        (ARRAY_AGG(outcome ORDER BY created_at DESC))[1] AS last_outcome,
+        (ARRAY_AGG(outcome_detail ORDER BY created_at DESC))[1] AS last_outcome_detail,
+        (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
+        (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
+      FROM calls
+      WHERE phone IS NOT NULL AND phone <> ''
+      GROUP BY phone, brand_key
     )
     SELECT
       c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.source,
-      s.call_count, s.last_call_at, s.last_outcome, s.last_outcome_detail, s.last_audio_url, s.last_call_sid
+      COALESCE(s.call_count, sp.call_count) AS call_count,
+      COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
+      COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
+      COALESCE(s.last_outcome_detail, sp.last_outcome_detail) AS last_outcome_detail,
+      COALESCE(s.last_audio_url, sp.last_audio_url) AS last_audio_url,
+      COALESCE(s.last_call_sid, sp.last_call_sid) AS last_call_sid
     FROM cvs c
     LEFT JOIN stats s ON s.cv_id = c.id
+    LEFT JOIN stats_phone sp ON sp.phone = c.phone AND sp.brand_key = c.brand_key AND s.cv_id IS NULL
     ${whereSql}
     ORDER BY c.created_at DESC
     LIMIT $${values.length}
