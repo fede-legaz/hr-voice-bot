@@ -1944,6 +1944,21 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1.35;
       cursor: help;
     }
+    .summary-tooltip {
+      position: fixed;
+      max-width: 360px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #2f3e36;
+      box-shadow: 0 14px 30px rgba(22, 49, 43, 0.18);
+      display: none;
+      z-index: 9999;
+    }
+    .summary-tooltip.visible { display: block; }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
@@ -3798,6 +3813,42 @@ app.get("/admin/ui", (req, res) => {
       return span;
     }
 
+    const summaryTooltipEl = document.createElement('div');
+    summaryTooltipEl.className = 'summary-tooltip';
+    document.body.appendChild(summaryTooltipEl);
+
+    function positionSummaryTooltip(rect) {
+      if (!rect) return;
+      const pad = 12;
+      const tipRect = summaryTooltipEl.getBoundingClientRect();
+      let left = rect.left;
+      if (left + tipRect.width + pad > window.innerWidth) {
+        left = window.innerWidth - tipRect.width - pad;
+      }
+      if (left < pad) left = pad;
+      let top = rect.bottom + 8;
+      if (top + tipRect.height + pad > window.innerHeight) {
+        top = rect.top - tipRect.height - 8;
+      }
+      if (top < pad) top = pad;
+      summaryTooltipEl.style.left = `${Math.round(left)}px`;
+      summaryTooltipEl.style.top = `${Math.round(top)}px`;
+    }
+
+    function showSummaryTooltip(target, text) {
+      if (!text || text === '—') return;
+      summaryTooltipEl.textContent = text;
+      summaryTooltipEl.classList.add('visible');
+      positionSummaryTooltip(target.getBoundingClientRect());
+    }
+
+    function hideSummaryTooltip() {
+      summaryTooltipEl.classList.remove('visible');
+    }
+
+    window.addEventListener('scroll', hideSummaryTooltip, true);
+    window.addEventListener('resize', hideSummaryTooltip);
+
     function closeAudioMenus(except = null) {
       document.querySelectorAll('.audio-menu').forEach((menu) => {
         if (menu !== except) menu.classList.remove('open');
@@ -3859,7 +3910,10 @@ app.get("/admin/ui", (req, res) => {
         const summaryDiv = document.createElement('div');
         summaryDiv.className = 'summary-cell';
         summaryDiv.textContent = summaryText || '—';
-        if (summaryText && summaryText !== '—') summaryDiv.title = summaryText;
+        if (summaryText && summaryText !== '—') {
+          summaryDiv.addEventListener('mouseenter', () => showSummaryTooltip(summaryDiv, summaryText));
+          summaryDiv.addEventListener('mouseleave', hideSummaryTooltip);
+        }
         summaryTd.appendChild(summaryDiv);
         tr.appendChild(summaryTd);
         const cvTd = document.createElement('td');
