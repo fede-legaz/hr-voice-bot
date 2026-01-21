@@ -832,8 +832,11 @@ async function saveRoleConfigToDb(config) {
 }
 
 async function persistRoleConfig(config) {
-  const savedToDb = await saveRoleConfigToDb(config);
-  if (savedToDb) return true;
+  if (dbPool) {
+    const savedToDb = await saveRoleConfigToDb(config);
+    if (!savedToDb) return false;
+    return true;
+  }
   try {
     const serialized = JSON.stringify(config, null, 2);
     await fs.promises.writeFile(rolesConfigPath, serialized, "utf8");
@@ -1265,7 +1268,7 @@ app.post("/admin/login", (req, res) => {
 
 // Config endpoints (protect with CALL_BEARER_TOKEN)
 app.get("/admin/config", requireConfigOrViewer, async (req, res) => {
-  if (!roleConfig && dbPool) {
+  if (dbPool) {
     await loadRoleConfigFromDb();
   }
   if (!roleConfig) return res.json({ config: null, source: "defaults" });
@@ -1286,8 +1289,11 @@ app.post("/admin/config", requireConfig, async (req, res) => {
       delete parsed.meta.system_prompt;
     }
     roleConfig = parsed;
-    await persistRoleConfig(roleConfig);
-    return res.json({ ok: true });
+    const saved = await persistRoleConfig(roleConfig);
+    if (!saved) {
+      return res.status(500).json({ error: "config_persist_failed" });
+    }
+    return res.json({ ok: true, source: roleConfigSource || "db" });
   } catch (err) {
     console.error("[admin/config] failed", err);
     return res.status(400).json({ error: "invalid_config", detail: err.message });
@@ -1710,14 +1716,14 @@ app.get("/admin/ui", (req, res) => {
     :root {
       --bg: #f4efe6;
       --panel: #ffffff;
-      --primary: #1e6d5c;
-      --primary-dark: #13443b;
+      --primary: #1b7a8c;
+      --primary-dark: #0f5563;
       --accent: #f4a261;
       --ink: #1b1b1b;
       --muted: #6a6f6b;
       --border: #e4dac8;
-      --shadow: 0 12px 30px rgba(30, 45, 40, 0.12);
-      --glow: 0 0 0 2px rgba(30, 109, 92, 0.12);
+      --shadow: 0 12px 30px rgba(24, 48, 56, 0.14);
+      --glow: 0 0 0 2px rgba(27, 122, 140, 0.16);
     }
     * { box-sizing: border-box; }
     body {
@@ -1735,7 +1741,7 @@ app.get("/admin/ui", (req, res) => {
       background-image:
         radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.6), transparent 50%),
         radial-gradient(circle at 80% 10%, rgba(244, 162, 97, 0.12), transparent 55%),
-        linear-gradient(120deg, rgba(30, 109, 92, 0.05), rgba(255, 255, 255, 0));
+        linear-gradient(120deg, rgba(27, 122, 140, 0.08), rgba(255, 255, 255, 0));
       pointer-events: none;
       z-index: -1;
     }
@@ -1759,7 +1765,7 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 12px;
       cursor: pointer;
       font-weight: 700;
-      box-shadow: 0 10px 20px rgba(30, 109, 92, 0.2);
+      box-shadow: 0 10px 20px rgba(27, 122, 140, 0.2);
       transition: transform 0.05s ease, box-shadow 0.2s ease;
     }
     button:active { transform: translateY(1px); }
@@ -1775,7 +1781,7 @@ app.get("/admin/ui", (req, res) => {
     .sidebar {
       width: 280px;
       flex: 0 0 280px;
-      background: linear-gradient(165deg, #0f3f35 0%, #1e6d5c 60%, #2b8a73 100%);
+      background: linear-gradient(165deg, #0b3440 0%, #1b5f74 60%, #2a8ca3 100%);
       color: #f8f3ea;
       padding: 24px;
       display: flex;
@@ -1809,6 +1815,7 @@ app.get("/admin/ui", (req, res) => {
       color: inherit;
       border: 1px solid rgba(255, 255, 255, 0.15);
       text-align: left;
+      min-width: 0;
     }
     .nav-item.active {
       background: rgba(255, 255, 255, 0.15);
@@ -1824,7 +1831,13 @@ app.get("/admin/ui", (req, res) => {
       font-size: 12px;
       font-weight: 700;
     }
-    .nav-label { white-space: nowrap; }
+    .nav-label { white-space: nowrap; min-width: 0; flex: 1; }
+    .brand-list .nav-label {
+      white-space: normal;
+      line-height: 1.2;
+      font-size: 12px;
+      word-break: break-word;
+    }
     .brand-list { display: flex; flex-direction: column; gap: 8px; }
     .brand-thumb {
       width: 36px;
@@ -1915,7 +1928,7 @@ app.get("/admin/ui", (req, res) => {
       cursor: pointer;
     }
     .role-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-    .pill { padding: 4px 10px; border-radius: 999px; background: #e7efe9; color: #1f4d3f; font-weight: 600; font-size: 11px; }
+    .pill { padding: 4px 10px; border-radius: 999px; background: #e4f1f2; color: #0f5563; font-weight: 600; font-size: 11px; }
     .question { display: flex; gap: 8px; align-items: center; }
     .question input { flex: 1; }
     .chevron { font-size: 12px; opacity: 0.7; }
@@ -1972,9 +1985,9 @@ app.get("/admin/ui", (req, res) => {
       cursor: pointer;
     }
     .tab-pill.active {
-      background: rgba(30, 109, 92, 0.15);
-      border-color: rgba(30, 109, 92, 0.4);
-      color: #1b5849;
+      background: rgba(27, 122, 140, 0.18);
+      border-color: rgba(27, 122, 140, 0.45);
+      color: #0f5563;
     }
     .drop-zone {
       border: 1px dashed var(--border);
@@ -1991,7 +2004,7 @@ app.get("/admin/ui", (req, res) => {
       width: 46px;
       height: 46px;
       border-radius: 14px;
-      background: rgba(30, 109, 92, 0.12);
+      background: rgba(27, 122, 140, 0.12);
       display: grid;
       place-items: center;
       font-weight: 700;
@@ -2007,6 +2020,30 @@ app.get("/admin/ui", (req, res) => {
       overflow: auto;
       max-height: 540px;
       background: #fff;
+    }
+    .action-stack {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+    }
+    .btn-compact {
+      padding: 6px 10px;
+      font-size: 11px;
+      border-radius: 10px;
+      box-shadow: none;
+    }
+    .btn-compact.secondary { box-shadow: none; }
+    .btn-compact.icon-only {
+      padding: 6px 8px;
+      min-width: 32px;
+      text-align: center;
+    }
+    .cell-compact {
+      white-space: nowrap;
+      max-width: 160px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .audio-wrap { display: flex; align-items: center; gap: 8px; }
     .audio-menu { position: relative; }
@@ -2080,6 +2117,9 @@ app.get("/admin/ui", (req, res) => {
       font-weight: 700;
       z-index: 1;
     }
+    tbody tr:nth-child(even) td { background: #fbf7f0; }
+    tr.row-clickable { cursor: pointer; }
+    tr.row-clickable:hover td { background: #f5f1e9; }
     .score-pill {
       padding: 4px 8px;
       border-radius: 999px;
@@ -2089,7 +2129,7 @@ app.get("/admin/ui", (req, res) => {
       justify-content: center;
       min-width: 44px;
     }
-    .score-high { background: rgba(30, 109, 92, 0.18); color: #155346; }
+    .score-high { background: rgba(27, 122, 140, 0.18); color: #0f5563; }
     .score-mid { background: rgba(244, 162, 97, 0.2); color: #8a4a14; }
     .score-low { background: rgba(206, 76, 50, 0.18); color: #7b2914; }
     .badge {
@@ -2101,7 +2141,7 @@ app.get("/admin/ui", (req, res) => {
       font-size: 11px;
       font-weight: 700;
     }
-    .badge.advance { background: rgba(30, 109, 92, 0.16); color: #155346; }
+    .badge.advance { background: rgba(27, 122, 140, 0.18); color: #0f5563; }
     .badge.review { background: rgba(244, 162, 97, 0.2); color: #8a4a14; }
     .badge.reject { background: rgba(206, 76, 50, 0.18); color: #7b2914; }
     .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
@@ -2632,6 +2672,15 @@ app.get("/admin/ui", (req, res) => {
       <textarea id="cv-modal-text" readonly></textarea>
     </div>
   </div>
+  <div id="interview-modal" class="cv-modal">
+    <div class="cv-modal-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">Entrevista</div>
+        <button class="secondary" id="interview-modal-close" type="button">Cerrar</button>
+      </div>
+      <textarea id="interview-modal-text" readonly></textarea>
+    </div>
+  </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
@@ -2701,6 +2750,9 @@ app.get("/admin/ui", (req, res) => {
     const cvModalEl = document.getElementById('cv-modal');
     const cvModalTextEl = document.getElementById('cv-modal-text');
     const cvModalCloseEl = document.getElementById('cv-modal-close');
+    const interviewModalEl = document.getElementById('interview-modal');
+    const interviewModalTextEl = document.getElementById('interview-modal-text');
+    const interviewModalCloseEl = document.getElementById('interview-modal-close');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -2848,6 +2900,17 @@ app.get("/admin/ui", (req, res) => {
     function closeCvModal() {
       if (!cvModalEl) return;
       cvModalEl.style.display = 'none';
+    }
+
+    function openInterviewModal(call) {
+      if (!interviewModalEl || !interviewModalTextEl) return;
+      interviewModalTextEl.value = formatInterviewDetails(call || {});
+      interviewModalEl.style.display = 'flex';
+    }
+
+    function closeInterviewModal() {
+      if (!interviewModalEl) return;
+      interviewModalEl.style.display = 'none';
     }
 
     function lockSystemPrompt() {
@@ -3048,7 +3111,7 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="inline">
-            <span class="pill" style="background:\${data.englishRequired ? '#dbeae3' : '#f3f0ea'}; color:\${data.englishRequired ? '#155346' : '#6a6f6b'};">EN</span>
+            <span class="pill" style="background:\${data.englishRequired ? '#e4f1f2' : '#f3f0ea'}; color:\${data.englishRequired ? '#0f5563' : '#6a6f6b'};">EN</span>
             <span class="pill" style="background:\${data.physical ? '#f6dfd5' : '#f3f0ea'}; color:\${data.physical ? '#8a3f25' : '#6a6f6b'};">Físico</span>
             <button class="secondary remove-role" type="button">✕</button>
           </div>
@@ -3546,7 +3609,7 @@ app.get("/admin/ui", (req, res) => {
         if (systemPromptUnlocked) {
           await saveSystemPrompt();
         }
-        setStatus('Saved.');
+        setStatus('Saved' + (data.source ? ' (' + data.source + ')' : '') + '.');
       } catch (err) {
         setStatus('Error: ' + err.message);
       }
@@ -3977,6 +4040,60 @@ app.get("/admin/ui", (req, res) => {
       return status || '—';
     }
 
+    function formatInterviewDetails(call) {
+      if (!call || typeof call !== 'object') return '';
+      const lines = [];
+      const push = (label, value) => {
+        if (value === undefined || value === null || value === '') return;
+        lines.push(label + ': ' + value);
+      };
+      const outcome = outcomeText(call.outcome, call.outcome_detail);
+      push('Local', call.brand || '');
+      push('Posición', call.role || '');
+      push('Candidato', call.applicant || '');
+      push('Teléfono', call.phone || '');
+      push('Fecha', formatDate(call.created_at));
+      push('Resultado', outcome || '');
+      if (call.attempts && call.outcome === 'NO_ANSWER') {
+        push('Intentos', call.attempts);
+      }
+      push('Recomendación', recommendationLabel(call.recommendation));
+      push('Score', call.score !== null && call.score !== undefined ? call.score : '');
+      push('Calidez', call.warmth !== null && call.warmth !== undefined ? call.warmth : '');
+      push('Fluidez', call.fluency !== null && call.fluency !== undefined ? call.fluency : '');
+      if (call.english_detail) {
+        push('Inglés', call.english + ' (' + call.english_detail + ')');
+      } else {
+        push('Inglés', call.english || '');
+      }
+      push('Experiencia', call.experience || '');
+      push('Zona', call.area || '');
+      push('Disponibilidad', call.availability || '');
+      push('Expectativa salarial', call.salary || '');
+      if (call.stay_plan) {
+        push('Se queda en EE.UU.', call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan);
+      }
+      if (call.summary) {
+        lines.push('');
+        lines.push('Resumen:');
+        lines.push(call.summary);
+      }
+      if (call.cv_url) {
+        lines.push('');
+        lines.push('CV archivo: ' + call.cv_url);
+      }
+      if (call.cv_text) {
+        lines.push('');
+        lines.push('CV texto:');
+        lines.push(call.cv_text);
+      }
+      if (call.audio_url) {
+        lines.push('');
+        lines.push('Audio: ' + call.audio_url);
+      }
+      return lines.join('\n');
+    }
+
     function cvStatusInfo(item) {
       const statusLabel = outcomeText(item.last_outcome, item.last_outcome_detail);
       const hasCalls = Number(item.call_count || 0) > 0 || !!statusLabel || !!item.last_call_at;
@@ -4002,6 +4119,13 @@ app.get("/admin/ui", (req, res) => {
       else label.textContent = 'Revisar';
       span.appendChild(label);
       return span;
+    }
+
+    function recommendationLabel(rec) {
+      if (rec === 'advance') return 'Avanzar';
+      if (rec === 'reject') return 'No avanzar';
+      if (rec === 'review') return 'Revisar';
+      return rec || '';
     }
 
     function scorePill(score) {
@@ -4254,15 +4378,23 @@ app.get("/admin/ui", (req, res) => {
       resultsBodyEl.innerHTML = '';
       filtered.forEach((call) => {
         const tr = document.createElement('tr');
-        const addCell = (value) => {
+        tr.classList.add('row-clickable');
+        tr.addEventListener('click', (event) => {
+          if (event.target.closest('button, a, audio, .audio-menu, .audio-menu-list, .audio-menu-btn')) return;
+          openInterviewModal(call);
+        });
+        const addCell = (value, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
+          if (className) td.className = className;
+          if (title) td.title = title;
           tr.appendChild(td);
         };
         const scoreCell = document.createElement('td');
         scoreCell.appendChild(scorePill(call.score));
         tr.appendChild(scoreCell);
-        addCell(call.brand);
+        const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+        addCell(brandLabel, 'cell-compact', brandLabel);
         addCell(call.applicant);
         addCell(call.role);
         addCell(call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '—');
@@ -4371,7 +4503,7 @@ app.get("/admin/ui", (req, res) => {
         if (authRole === 'admin' && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
-          delBtn.className = 'secondary';
+          delBtn.className = 'secondary btn-compact';
           delBtn.textContent = 'Eliminar';
           delBtn.onclick = () => deleteInterviewGroup(call);
           actionTd.appendChild(delBtn);
@@ -4498,9 +4630,10 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(cvTd);
         const actionTd = document.createElement('td');
         const actionWrap = document.createElement('div');
-        actionWrap.className = 'inline';
+        actionWrap.className = 'action-stack';
         const callBtn = document.createElement('button');
         callBtn.type = 'button';
+        callBtn.className = 'btn-compact';
         callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
         callBtn.onclick = () => {
           currentCvId = item.id || '';
@@ -4525,7 +4658,7 @@ app.get("/admin/ui", (req, res) => {
         if (info.hasCalls) {
           const viewBtn = document.createElement('button');
           viewBtn.type = 'button';
-          viewBtn.className = 'secondary';
+          viewBtn.className = 'secondary btn-compact';
           viewBtn.textContent = 'Ver entrevista';
           viewBtn.onclick = () => goToInterviewFromCv(item);
           actionWrap.appendChild(viewBtn);
@@ -4533,8 +4666,10 @@ app.get("/admin/ui", (req, res) => {
         if (authRole === 'admin') {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
-          delBtn.className = 'secondary';
-          delBtn.textContent = 'Eliminar';
+          delBtn.className = 'secondary btn-compact icon-only';
+          delBtn.textContent = '🗑';
+          delBtn.title = 'Eliminar';
+          delBtn.setAttribute('aria-label', 'Eliminar');
           delBtn.onclick = () => deleteCandidateGroup(item);
           actionWrap.appendChild(delBtn);
         }
@@ -4757,6 +4892,14 @@ app.get("/admin/ui", (req, res) => {
     cvModalEl.addEventListener('click', (event) => {
       if (event.target === cvModalEl) closeCvModal();
     });
+    if (interviewModalCloseEl) {
+      interviewModalCloseEl.addEventListener('click', closeInterviewModal);
+    }
+    if (interviewModalEl) {
+      interviewModalEl.addEventListener('click', (event) => {
+        if (event.target === interviewModalEl) closeInterviewModal();
+      });
+    }
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
       setLoginMode('admin');
