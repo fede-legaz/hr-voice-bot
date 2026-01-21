@@ -4095,6 +4095,30 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
       await markNoAnswer(call, amdMachine ? "voicemail" : `status_${status}`);
       return;
     }
+
+    if (status === "completed") {
+      const durationSec = Number(req.body?.CallDuration);
+      if (Number.isFinite(durationSec) && durationSec > 0) {
+        call.durationSec = durationSec;
+      }
+      call.expiresAt = Date.now() + CALL_TTL_MS;
+      if (call.finalizeTimer) clearTimeout(call.finalizeTimer);
+      call.finalizeTimer = setTimeout(async () => {
+        if (call.recordingPath || call.recordingToken || call.audioUrl) return;
+        call.incomplete = true;
+        if (!call.noTranscriptReason) {
+          call.noTranscriptReason = "No se recibió grabación de la llamada.";
+        }
+        inferIncompleteOutcome(call);
+        try {
+          await sendWhatsappReport(call);
+          call.whatsappSent = true;
+        } catch (err) {
+          console.error("[call-status] whatsapp failed", err);
+        }
+        recordCallHistory(call);
+      }, 120000);
+    }
   } catch (err) {
     console.error("[call-status] error", err);
   }
@@ -4660,6 +4684,10 @@ async function handleRecordingStatus(call, { recordingUrl, recordingSid }) {
   if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     console.error("[recording] missing Twilio credentials, skipping download");
     return;
+  }
+  if (call.finalizeTimer) {
+    clearTimeout(call.finalizeTimer);
+    call.finalizeTimer = null;
   }
   const dest = path.join(recordingsDir, `${recordingSid}.mp3`);
   await downloadRecordingWithRetry(`${recordingUrl}.mp3`, dest);
