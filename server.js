@@ -42,6 +42,9 @@ const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
+const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
+const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
+const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -685,6 +688,7 @@ const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
+const viewerSessions = new Map(); // token -> { email, expiresAt }
 const MAX_CALL_HISTORY = 500;
 const CALL_HISTORY_PATH = process.env.CALL_HISTORY_PATH || path.join(__dirname, "data", "calls.json");
 const CALL_HISTORY_SAVE_DELAY_MS = 2000;
@@ -742,6 +746,9 @@ function cleanup() {
   }
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
+  }
+  for (const [k, v] of viewerSessions.entries()) {
+    if (v.expiresAt && v.expiresAt < now) viewerSessions.delete(k);
   }
 }
 setInterval(cleanup, 5 * 60 * 1000).unref();
@@ -959,12 +966,49 @@ function getRoleConfig(brand, role) {
   return null;
 }
 
+function extractBearerToken(authHeader) {
+  if (!authHeader) return "";
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function isConfigAuth(authHeader) {
+  if (!CONFIG_TOKEN) return false;
+  return authHeader === `Bearer ${CONFIG_TOKEN}`;
+}
+
+function createViewerSession(email) {
+  const token = randomToken();
+  viewerSessions.set(token, { email, expiresAt: Date.now() + VIEWER_SESSION_TTL_MS });
+  return token;
+}
+
+function isViewerAuth(authHeader) {
+  const token = extractBearerToken(authHeader);
+  if (!token) return false;
+  const session = viewerSessions.get(token);
+  if (!session) return false;
+  if (session.expiresAt && session.expiresAt < Date.now()) {
+    viewerSessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
 function requireConfig(req, res, next) {
   if (!CONFIG_TOKEN) return res.status(403).json({ error: "config token not set" });
   const auth = req.headers.authorization || "";
-  const expected = `Bearer ${CONFIG_TOKEN}`;
-  if (auth !== expected) return res.status(401).json({ error: "unauthorized" });
+  if (!isConfigAuth(auth)) return res.status(401).json({ error: "unauthorized" });
   next();
+}
+
+function requireConfigOrViewer(req, res, next) {
+  const auth = req.headers.authorization || "";
+  if (isConfigAuth(auth) || isViewerAuth(auth)) return next();
+  if (!CONFIG_TOKEN && !VIEWER_EMAIL) {
+    return res.status(403).json({ error: "auth not configured" });
+  }
+  return res.status(401).json({ error: "unauthorized" });
 }
 
 function requireAdmin(req, res, next) {
@@ -1144,8 +1188,21 @@ const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
 
+app.post("/admin/login", (req, res) => {
+  if (!VIEWER_EMAIL || !VIEWER_PASSWORD) {
+    return res.status(403).json({ error: "viewer login disabled" });
+  }
+  const email = (req.body?.email || "").trim().toLowerCase();
+  const password = req.body?.password || "";
+  if (email !== VIEWER_EMAIL.toLowerCase() || password !== VIEWER_PASSWORD) {
+    return res.status(401).json({ error: "invalid_credentials" });
+  }
+  const token = createViewerSession(email);
+  return res.json({ ok: true, token, role: "viewer" });
+});
+
 // Config endpoints (protect with CALL_BEARER_TOKEN)
-app.get("/admin/config", requireConfig, async (req, res) => {
+app.get("/admin/config", requireConfigOrViewer, async (req, res) => {
   if (!roleConfig && dbPool) {
     await loadRoleConfigFromDb();
   }
@@ -1221,7 +1278,7 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/admin/calls", requireConfig, async (req, res) => {
+app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
   const recParam = (req.query?.recommendation || "").toString().toLowerCase();
@@ -1288,7 +1345,7 @@ app.get("/admin/calls", requireConfig, async (req, res) => {
   return res.json({ ok: true, calls: results });
 });
 
-app.get("/admin/cv", requireConfig, async (req, res) => {
+app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
   const qParam = (req.query?.q || "").toString().toLowerCase();
@@ -1328,7 +1385,7 @@ app.get("/admin/cv", requireConfig, async (req, res) => {
   return res.json({ ok: true, cvs: results });
 });
 
-app.post("/admin/cv", requireConfig, async (req, res) => {
+app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
   try {
     const body = req.body || {};
     let cvUrl = "";
@@ -1363,7 +1420,7 @@ app.post("/admin/cv", requireConfig, async (req, res) => {
   }
 });
 
-app.post("/admin/ocr", requireConfig, async (req, res) => {
+app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
   try {
     const images = normalizeOcrImages(req.body?.images || []);
     if (!images.length) {
@@ -1710,6 +1767,29 @@ app.get("/admin/ui", (req, res) => {
       flex-direction: column;
       gap: 12px;
     }
+    .login-tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .login-tab {
+      padding: 8px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: none;
+    }
+    .login-tab.active {
+      background: var(--primary);
+      color: #fff;
+      border-color: transparent;
+    }
+    .login-fields { display: flex; flex-direction: column; gap: 10px; }
     .cv-modal {
       position: fixed;
       inset: 0;
@@ -1752,11 +1832,27 @@ app.get("/admin/ui", (req, res) => {
 <body>
   <div id="login-screen" class="login-screen">
     <div class="login-card">
-      <div class="login-title">HRBOT Admin</div>
-      <div class="login-sub">Ingresá tu clave para abrir la consola.</div>
-      <div class="row">
-        <label>Clave</label>
-        <input type="password" id="login-token" placeholder="YB key" />
+      <div class="login-title">HRBOT Console</div>
+      <div class="login-sub">Elegí cómo entrar.</div>
+      <div class="login-tabs">
+        <button class="login-tab active" id="login-mode-admin" type="button">Admin key</button>
+        <button class="login-tab" id="login-mode-viewer" type="button">User login</button>
+      </div>
+      <div id="login-admin-fields" class="login-fields">
+        <div>
+          <label>Clave</label>
+          <input type="password" id="login-token" placeholder="ADMIN / YB key" />
+        </div>
+      </div>
+      <div id="login-viewer-fields" class="login-fields" style="display:none;">
+        <div>
+          <label>Email</label>
+          <input type="text" id="login-email" placeholder="user@empresa.com" />
+        </div>
+        <div>
+          <label>Password</label>
+          <input type="password" id="login-password" placeholder="********" />
+        </div>
       </div>
       <div class="row inline" style="justify-content: space-between;">
         <button id="login-btn">Entrar</button>
@@ -1773,8 +1869,8 @@ app.get("/admin/ui", (req, res) => {
       </div>
       <nav class="nav">
         <button class="nav-item" id="nav-general" type="button">General</button>
-        <button class="nav-item" id="nav-calls" type="button">CVs</button>
-        <button class="nav-item" id="nav-interviews" type="button">Entrevistas</button>
+        <button class="nav-item" id="nav-calls" type="button">Candidates</button>
+        <button class="nav-item" id="nav-interviews" type="button">Interviews</button>
         <div class="nav-section-title">Restaurantes</div>
         <div id="brand-list" class="brand-list"></div>
         <button class="secondary nav-add" id="add-brand" type="button">+ Nuevo local</button>
@@ -2058,6 +2154,12 @@ app.get("/admin/ui", (req, res) => {
     const appEl = document.getElementById('app');
     const loginScreenEl = document.getElementById('login-screen');
     const loginTokenEl = document.getElementById('login-token');
+    const loginEmailEl = document.getElementById('login-email');
+    const loginPasswordEl = document.getElementById('login-password');
+    const loginModeAdminEl = document.getElementById('login-mode-admin');
+    const loginModeViewerEl = document.getElementById('login-mode-viewer');
+    const loginAdminFieldsEl = document.getElementById('login-admin-fields');
+    const loginViewerFieldsEl = document.getElementById('login-viewer-fields');
     const loginBtnEl = document.getElementById('login-btn');
     const loginStatusEl = document.getElementById('login-status');
     const statusEl = document.getElementById('status');
@@ -2066,12 +2168,15 @@ app.get("/admin/ui", (req, res) => {
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const brandListEl = document.getElementById('brand-list');
+    const addBrandEl = document.getElementById('add-brand');
     const viewTitleEl = document.getElementById('view-title');
     const viewLabelEl = document.getElementById('view-label');
     const generalViewEl = document.getElementById('general-view');
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const brandViewEl = document.getElementById('brand-view');
+    const loadBtnEl = document.getElementById('load');
+    const saveBtnEl = document.getElementById('save');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -2119,6 +2224,8 @@ app.get("/admin/ui", (req, res) => {
     const resultsBodyEl = document.getElementById('results-body');
     const resultsCountEl = document.getElementById('results-count');
     let state = { config: {} };
+    let loginMode = 'admin';
+    let authRole = 'admin';
     let adminToken = '';
     let systemPromptUnlocked = false;
     let lastLoadError = '';
@@ -2162,6 +2269,27 @@ app.get("/admin/ui", (req, res) => {
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
+
+    function setLoginMode(mode) {
+      loginMode = mode === 'viewer' ? 'viewer' : 'admin';
+      loginModeAdminEl.classList.toggle('active', loginMode === 'admin');
+      loginModeViewerEl.classList.toggle('active', loginMode === 'viewer');
+      loginAdminFieldsEl.style.display = loginMode === 'admin' ? 'flex' : 'none';
+      loginViewerFieldsEl.style.display = loginMode === 'viewer' ? 'flex' : 'none';
+      setLoginStatus('');
+    }
+
+    function applyRoleAccess() {
+      const isViewer = authRole === 'viewer';
+      if (navGeneralEl) navGeneralEl.style.display = isViewer ? 'none' : '';
+      if (brandListEl) brandListEl.style.display = isViewer ? 'none' : '';
+      if (addBrandEl) addBrandEl.style.display = isViewer ? 'none' : '';
+      if (loadBtnEl) loadBtnEl.style.display = isViewer ? 'none' : '';
+      if (saveBtnEl) saveBtnEl.style.display = isViewer ? 'none' : '';
+      if (isViewer && activeView === 'general') {
+        setActiveView(VIEW_CALLS);
+      }
+    }
 
     function openCvModal(text) {
       if (!cvModalEl) return;
@@ -2534,6 +2662,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function setActiveView(key) {
+      if (authRole === 'viewer' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS) {
+        key = VIEW_CALLS;
+      }
       if (key === VIEW_CALLS) {
         activeView = 'calls';
         activeBrandKey = '';
@@ -2559,10 +2690,10 @@ app.get("/admin/ui", (req, res) => {
         viewTitleEl.textContent = getBrandDisplayByKey(activeBrandKey);
         viewLabelEl.textContent = 'Restaurante';
       } else if (activeView === 'calls') {
-        viewTitleEl.textContent = 'CVs';
+        viewTitleEl.textContent = 'Candidates';
         viewLabelEl.textContent = 'Llamadas';
       } else if (activeView === 'interviews') {
-        viewTitleEl.textContent = 'Entrevistas';
+        viewTitleEl.textContent = 'Interviews';
         viewLabelEl.textContent = 'Listado';
       } else {
         viewTitleEl.textContent = 'General';
@@ -3334,7 +3465,7 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(actionTd);
         cvListBodyEl.appendChild(tr);
       });
-      setCvListCount(list.length ? list.length + ' CVs' : 'Sin CVs guardados.');
+      setCvListCount(list.length ? list.length + ' Candidates' : 'Sin candidates guardados.');
     }
 
     async function loadCvList() {
@@ -3400,6 +3531,37 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function login() {
+      if (loginMode === 'viewer') {
+        const email = (loginEmailEl.value || '').trim();
+        const password = loginPasswordEl.value || '';
+        if (!email || !password) {
+          setLoginStatus('Ingresá email y password');
+          return;
+        }
+        setLoginStatus('Verificando...');
+        try {
+          const resp = await fetch('/admin/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.error || 'login failed');
+          tokenEl.value = data.token || '';
+          authRole = data.role || 'viewer';
+          const ok = await loadConfig();
+          if (!ok) throw new Error(lastLoadError || 'load failed');
+          setLoginStatus('');
+          loginScreenEl.style.display = 'none';
+          appEl.style.display = 'flex';
+          applyRoleAccess();
+          setActiveView(VIEW_CALLS);
+        } catch (err) {
+          setLoginStatus('Error: ' + err.message);
+        }
+        return;
+      }
+
       const key = (loginTokenEl.value || '').trim();
       if (!key) {
         setLoginStatus('Ingresá la clave');
@@ -3407,26 +3569,36 @@ app.get("/admin/ui", (req, res) => {
       }
       setLoginStatus('Verificando...');
       tokenEl.value = key;
+      authRole = 'admin';
       const ok = await loadConfig();
       if (ok) {
         setLoginStatus('');
         loginScreenEl.style.display = 'none';
         appEl.style.display = 'flex';
+        applyRoleAccess();
       } else {
         setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
       }
     }
 
-    document.getElementById('load').onclick = loadConfig;
-    document.getElementById('save').onclick = saveConfig;
-    document.getElementById('add-brand').onclick = () => {
+    loadBtnEl.onclick = loadConfig;
+    saveBtnEl.onclick = saveConfig;
+    addBrandEl.onclick = () => {
       brandsEl.appendChild(brandTemplate(''));
       syncSidebar();
     };
     document.getElementById('preview-generate').onclick = generatePreview;
     adminUnlockEl.onclick = unlockAdmin;
+    loginModeAdminEl.onclick = () => setLoginMode('admin');
+    loginModeViewerEl.onclick = () => setLoginMode('viewer');
     loginBtnEl.onclick = login;
     loginTokenEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') login();
+    });
+    loginEmailEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') login();
+    });
+    loginPasswordEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
     navGeneralEl.onclick = () => setActiveView('');
@@ -3477,9 +3649,11 @@ app.get("/admin/ui", (req, res) => {
     });
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
+      setLoginMode('admin');
       loginTokenEl.value = urlToken;
       login();
     }
+    setLoginMode('admin');
     lockSystemPrompt();
     setAdminStatus('Bloqueado');
   </script>
@@ -3793,8 +3967,11 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
 app.post("/call", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || "";
-    const expected = `Bearer ${CALL_BEARER_TOKEN}`;
-    if (!CALL_BEARER_TOKEN || authHeader !== expected) {
+    const authed = isConfigAuth(authHeader) || isViewerAuth(authHeader);
+    if (!authed) {
+      if (!CALL_BEARER_TOKEN && !VIEWER_EMAIL) {
+        return res.status(403).json({ error: "auth not configured" });
+      }
       return res.status(401).json({ error: "unauthorized" });
     }
 
