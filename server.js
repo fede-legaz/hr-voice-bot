@@ -3962,6 +3962,59 @@ app.get("/admin/ui", (req, res) => {
       return Array.from(map.values());
     }
 
+    function buildCvGroupKey(item) {
+      const brandKey = (item.brandKey || item.brand || '').toLowerCase().trim();
+      const roleKey = (item.roleKey || item.role || '').toLowerCase().trim();
+      const phone = normalizePhoneKey(item.phone || '');
+      const applicant = (item.applicant || '').toLowerCase().trim();
+      if (phone) return "p:" + brandKey + "|" + roleKey + "|" + phone;
+      return "a:" + brandKey + "|" + roleKey + "|" + applicant;
+    }
+
+    function groupCandidates(list) {
+      const map = new Map();
+      (list || []).forEach((item) => {
+        const key = buildCvGroupKey(item);
+        const createdAt = item.created_at ? new Date(item.created_at).getTime() : 0;
+        const lastCallAt = item.last_call_at ? new Date(item.last_call_at).getTime() : 0;
+        let entry = map.get(key);
+        if (!entry) {
+          entry = {
+            ...item,
+            cvIds: [],
+            call_count: Number(item.call_count || 0),
+            _latestAt: createdAt,
+            _lastCallAt: lastCallAt
+          };
+          map.set(key, entry);
+        }
+        if (item.id) entry.cvIds.push(item.id);
+        entry.call_count = Math.max(entry.call_count || 0, Number(item.call_count || 0));
+        if (!entry._latestAt || createdAt >= entry._latestAt) {
+          entry._latestAt = createdAt;
+          entry.brand = item.brand;
+          entry.brandKey = item.brandKey;
+          entry.role = item.role;
+          entry.roleKey = item.roleKey;
+          entry.applicant = item.applicant;
+          entry.phone = item.phone;
+          entry.cv_text = item.cv_text;
+          entry.cv_url = item.cv_url;
+          entry.created_at = item.created_at;
+          entry.source = item.source;
+        }
+        if (lastCallAt && (!entry._lastCallAt || lastCallAt >= entry._lastCallAt)) {
+          entry._lastCallAt = lastCallAt;
+          entry.last_call_at = item.last_call_at;
+          entry.last_outcome = item.last_outcome;
+          entry.last_outcome_detail = item.last_outcome_detail;
+          entry.last_audio_url = item.last_audio_url;
+          entry.last_call_sid = item.last_call_sid;
+        }
+      });
+      return Array.from(map.values());
+    }
+
     const summaryTooltipEl = document.createElement('div');
     summaryTooltipEl.className = 'summary-tooltip';
     document.body.appendChild(summaryTooltipEl);
@@ -4062,6 +4115,29 @@ app.get("/admin/ui", (req, res) => {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'delete failed');
+        loadCvList();
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
+    async function deleteCandidateGroup(item) {
+      const ids = Array.isArray(item?.cvIds) ? item.cvIds.filter(Boolean) : [];
+      const primaryId = item?.id || '';
+      const list = ids.length ? ids : (primaryId ? [primaryId] : []);
+      if (!list.length) return;
+      if (!confirm('¿Seguro que querés borrar este candidato?')) return;
+      try {
+        for (const id of list) {
+          const resp = await fetch('/admin/cv/' + encodeURIComponent(id), {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer ' + tokenEl.value }
+          });
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            throw new Error(data.error || 'delete failed');
+          }
+        }
         loadCvList();
       } catch (err) {
         alert('Error: ' + err.message);
@@ -4266,8 +4342,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderCvList(list) {
-      lastCvList = Array.isArray(list) ? list : [];
-      const filtered = lastCvList.filter((item) => {
+      const grouped = groupCandidates(Array.isArray(list) ? list : []);
+      lastCvList = grouped;
+      const filtered = grouped.filter((item) => {
         const info = cvStatusInfo(item);
         if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
         if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
@@ -4360,7 +4437,7 @@ app.get("/admin/ui", (req, res) => {
           delBtn.type = 'button';
           delBtn.className = 'secondary';
           delBtn.textContent = 'Eliminar';
-          delBtn.onclick = () => deleteCandidate(item.id || '');
+          delBtn.onclick = () => deleteCandidateGroup(item);
           actionWrap.appendChild(delBtn);
         }
         actionTd.appendChild(actionWrap);
