@@ -15,6 +15,9 @@ const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL || "";
 const DATABASE_SSL = process.env.DATABASE_SSL !== "0";
+const DATABASE_SSL_CA_RAW = process.env.DATABASE_SSL_CA || "";
+const DATABASE_SSL_CA_BASE64 = process.env.DATABASE_SSL_CA_BASE64 || "";
+const DATABASE_SSL_REJECT_UNAUTHORIZED = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === "1";
 const SPACES_ENDPOINT = process.env.SPACES_ENDPOINT || "";
 const SPACES_REGION = process.env.SPACES_REGION || "";
 const SPACES_BUCKET = process.env.SPACES_BUCKET || "";
@@ -709,10 +712,29 @@ const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
 const rolesConfigPath = path.join(__dirname, "config", "roles.json");
 const ROLE_CONFIG_DB_KEY = "roles_config";
+function buildDbSslConfig() {
+  if (!DATABASE_SSL) return undefined;
+  let ca = "";
+  if (DATABASE_SSL_CA_BASE64) {
+    try {
+      ca = Buffer.from(DATABASE_SSL_CA_BASE64, "base64").toString("utf8");
+    } catch (err) {
+      console.error("[db] failed to decode DATABASE_SSL_CA_BASE64", err.message);
+    }
+  } else if (DATABASE_SSL_CA_RAW) {
+    ca = DATABASE_SSL_CA_RAW.includes("\\n") ? DATABASE_SSL_CA_RAW.replace(/\\n/g, "\n") : DATABASE_SSL_CA_RAW;
+  }
+  if (ca) {
+    const rejectUnauthorized = DATABASE_SSL_REJECT_UNAUTHORIZED || false;
+    return { rejectUnauthorized, ca };
+  }
+  return { rejectUnauthorized: false };
+}
+
 const dbPool = DATABASE_URL
   ? new Pool({
       connectionString: DATABASE_URL,
-      ssl: DATABASE_SSL ? { rejectUnauthorized: false } : undefined
+      ssl: buildDbSslConfig()
     })
   : null;
 const spacesEnabled = !!(SPACES_BUCKET && SPACES_KEY && SPACES_SECRET && SPACES_ENDPOINT);
