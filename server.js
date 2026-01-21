@@ -3046,6 +3046,33 @@ app.get("/admin/ui", (req, res) => {
       return name;
     }
 
+    function isLikelyInvalidName(name) {
+      if (!name) return true;
+      const lower = name.toLowerCase();
+      if (/\\b(restaurant|restaurante|experience|experiencia|profile|perfil|skills|habilidades|education|educacion|objective|objetivo|summary|resumen|curriculum|cv|resume|miami|fl|server|bartender|cook|cashier|runner|manager)\\b/i.test(lower)) {
+        return true;
+      }
+      if (/[0-9]/.test(name)) return true;
+      return false;
+    }
+
+    function extractEmailFromCv(text) {
+      if (!text) return '';
+      const match = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);
+      return match ? match[0] : '';
+    }
+
+    function deriveNameFromEmail(email) {
+      if (!email) return '';
+      const local = email.split('@')[0] || '';
+      const cleaned = local.replace(/[^a-zA-Z._-]/g, '');
+      const parts = cleaned.split(/[._-]+/).filter(Boolean);
+      if (parts.length < 2) return '';
+      if (parts.some((p) => p.length < 2)) return '';
+      const name = parts.slice(0, 3).map((p) => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase()).join(' ');
+      return name;
+    }
+
     function extractNameFromCv(text) {
       if (!text) return '';
       const normalized = text.replace(/\\r/g, '\\n');
@@ -3053,7 +3080,7 @@ app.get("/admin/ui", (req, res) => {
       const inlineMatch = normalized.match(labelInlineRe);
       if (inlineMatch && inlineMatch[1]) {
         const cleaned = cleanNameCandidate(inlineMatch[1]);
-        if (cleaned.split(' ').length >= 2) return cleaned;
+        if (cleaned.split(' ').length >= 2 && !isLikelyInvalidName(cleaned)) return cleaned;
       }
       const lines = normalized.split(/\\n+/).map((l) => l.trim()).filter(Boolean);
       const labelRe = /^(?:name|nombre|candidate|applicant|nombre\\s+y\\s+apellido|apellido\\s+y\\s+nombre)\\s*[:\\-]\\s*(.+)$/i;
@@ -3061,7 +3088,7 @@ app.get("/admin/ui", (req, res) => {
         const match = line.match(labelRe);
         if (match && match[1]) {
           const cleaned = cleanNameCandidate(match[1]);
-          if (cleaned.split(' ').length >= 2) return cleaned;
+          if (cleaned.split(' ').length >= 2 && !isLikelyInvalidName(cleaned)) return cleaned;
         }
       }
       const inlineRe = /\\b(?:name|nombre)\\s*[:\\-]\\s*([A-Za-zÁÉÍÓÚÑñ'.-]+\\s+[A-Za-zÁÉÍÓÚÑñ'.-]+(?:\\s+[A-Za-zÁÉÍÓÚÑñ'.-]+){0,2})/i;
@@ -3069,7 +3096,7 @@ app.get("/admin/ui", (req, res) => {
         const match = line.match(inlineRe);
         if (match && match[1]) {
           const cleaned = cleanNameCandidate(match[1]);
-          if (cleaned.split(' ').length >= 2) return cleaned;
+          if (cleaned.split(' ').length >= 2 && !isLikelyInvalidName(cleaned)) return cleaned;
         }
       }
       for (const line of lines.slice(0, 4)) {
@@ -3077,7 +3104,7 @@ app.get("/admin/ui", (req, res) => {
         if (/\\d/.test(line)) continue;
         const cleaned = cleanNameCandidate(line);
         const parts = cleaned.split(' ').filter(Boolean);
-        if (parts.length >= 2 && parts.length <= 4) return cleaned;
+        if (parts.length >= 2 && parts.length <= 4 && !isLikelyInvalidName(cleaned)) return cleaned;
       }
       const head = normalized.slice(0, 200);
       const stopIdx = head.search(/\\b(email|correo|phone|tel|telefono|tel[ée]fono|address|direccion|direcci[oó]n)\\b/i);
@@ -3088,8 +3115,14 @@ app.get("/admin/ui", (req, res) => {
         .trim();
       if (headClean) {
         const parts = headClean.split(' ').filter(Boolean);
-        if (parts.length >= 2) return parts.slice(0, 4).join(' ');
+        if (parts.length >= 2) {
+          const candidate = parts.slice(0, 4).join(' ');
+          if (!isLikelyInvalidName(candidate)) return candidate;
+        }
       }
+      const email = extractEmailFromCv(normalized);
+      const derived = deriveNameFromEmail(email);
+      if (derived && !isLikelyInvalidName(derived)) return derived;
       return '';
     }
 
@@ -3144,6 +3177,14 @@ app.get("/admin/ui", (req, res) => {
     function maybeFillContactFromCv(text) {
       maybeFillNameFromCv(text);
       maybeFillPhoneFromCv(text);
+    }
+
+    function needsContactOcr() {
+      const name = (callNameEl.value || '').trim();
+      const phone = (callPhoneEl.value || '').trim();
+      if (!name || isLikelyInvalidName(name)) return true;
+      if (!phone) return true;
+      return false;
     }
 
     async function loadPdfDocument(file) {
@@ -3245,6 +3286,17 @@ app.get("/admin/ui", (req, res) => {
         }
         callCvTextEl.value = truncateText(text, CV_CHAR_LIMIT);
         maybeFillContactFromCv(callCvTextEl.value);
+        if (needsContactOcr() && file.type === 'application/pdf') {
+          setCvStatus('Buscando datos de contacto...');
+          try {
+            const pdf = await loadPdfDocument(file);
+            const images = await renderPdfToImages(pdf, 1);
+            const ocrText = await runOcr(images);
+            maybeFillContactFromCv(ocrText);
+          } catch (err) {
+            console.error('[cv-contact] ocr fallback failed', err);
+          }
+        }
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
       } catch (err) {
         setCvStatus('Error: ' + err.message);
