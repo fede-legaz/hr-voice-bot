@@ -1293,7 +1293,6 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
       return res.json({ ok: true, calls });
     } catch (err) {
       console.error("[admin/calls] db failed", err);
-      return res.status(500).json({ error: "db_failed" });
     }
   }
 
@@ -1357,7 +1356,6 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
       return res.json({ ok: true, cvs });
     } catch (err) {
       console.error("[admin/cv] db failed", err);
-      return res.status(500).json({ error: "db_failed" });
     }
   }
 
@@ -1974,6 +1972,7 @@ app.get("/admin/ui", (req, res) => {
           </div>
           <div class="inline" style="margin-top:12px;">
             <button class="secondary" id="cv-save-btn" type="button">Guardar CV</button>
+            <button class="secondary" id="call-clear" type="button">Limpiar</button>
             <button id="call-btn" type="button">Llamar</button>
             <span class="small" id="call-status"></span>
           </div>
@@ -2203,6 +2202,7 @@ app.get("/admin/ui", (req, res) => {
     const callBtnEl = document.getElementById('call-btn');
     const callStatusEl = document.getElementById('call-status');
     const cvSaveBtnEl = document.getElementById('cv-save-btn');
+    const callClearEl = document.getElementById('call-clear');
     const cvDropEl = document.getElementById('cv-drop');
     const cvFileEl = document.getElementById('cv-file');
     const cvStatusEl = document.getElementById('cv-status');
@@ -2269,6 +2269,20 @@ app.get("/admin/ui", (req, res) => {
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
+
+    function clearCallForm() {
+      callNameEl.value = '';
+      callPhoneEl.value = '';
+      callCvTextEl.value = '';
+      currentCvSource = '';
+      currentCvFileDataUrl = '';
+      currentCvFileName = '';
+      currentCvFileType = '';
+      currentCvId = '';
+      if (cvFileEl) cvFileEl.value = '';
+      setCvStatus('');
+      setCallStatus('');
+    }
 
     function setLoginMode(mode) {
       loginMode = mode === 'viewer' ? 'viewer' : 'admin';
@@ -3679,6 +3693,7 @@ app.get("/admin/ui", (req, res) => {
     callNameEl.addEventListener('input', () => { currentCvId = ''; });
     callPhoneEl.addEventListener('input', () => { currentCvId = ''; });
     callBtnEl.onclick = placeCall;
+    callClearEl.onclick = clearCallForm;
     cvSaveBtnEl.onclick = saveCv;
     resultsRefreshEl.onclick = loadResults;
     resultsBrandEl.addEventListener('change', () => {
