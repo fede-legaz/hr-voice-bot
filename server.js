@@ -3034,8 +3034,15 @@ app.get("/admin/ui", (req, res) => {
 
     function extractNameFromCv(text) {
       if (!text) return '';
-      const lines = text.split(/\\n+/).map((l) => l.trim()).filter(Boolean);
-      const labelRe = /^(?:name|nombre|candidate|applicant)\\s*[:\\-]\\s*(.+)$/i;
+      const normalized = text.replace(/\\r/g, '\\n');
+      const labelInlineRe = /\\b(?:name|nombre|candidate|applicant|nombre\\s+y\\s+apellido|apellido\\s+y\\s+nombre)\\b\\s*[:\\-]?\\s*([^\\n]+?)(?:\\bemail\\b|\\bcorreo\\b|\\bphone\\b|\\btel\\b|\\btelefono\\b|\\btel[ée]fono\\b|\\bdireccion\\b|\\bdirecci[oó]n\\b|\\baddress\\b|$)/i;
+      const inlineMatch = normalized.match(labelInlineRe);
+      if (inlineMatch && inlineMatch[1]) {
+        const cleaned = cleanNameCandidate(inlineMatch[1]);
+        if (cleaned.split(' ').length >= 2) return cleaned;
+      }
+      const lines = normalized.split(/\\n+/).map((l) => l.trim()).filter(Boolean);
+      const labelRe = /^(?:name|nombre|candidate|applicant|nombre\\s+y\\s+apellido|apellido\\s+y\\s+nombre)\\s*[:\\-]\\s*(.+)$/i;
       for (const line of lines) {
         const match = line.match(labelRe);
         if (match && match[1]) {
@@ -3058,7 +3065,50 @@ app.get("/admin/ui", (req, res) => {
         const parts = cleaned.split(' ').filter(Boolean);
         if (parts.length >= 2 && parts.length <= 4) return cleaned;
       }
+      const head = normalized.slice(0, 200);
+      const stopIdx = head.search(/\\b(email|correo|phone|tel|telefono|tel[ée]fono|address|direccion|direcci[oó]n)\\b/i);
+      const headSegment = stopIdx > 0 ? head.slice(0, stopIdx) : head;
+      const headClean = headSegment
+        .replace(/[^A-Za-zÁÉÍÓÚÑñ'.-\\s]/g, ' ')
+        .replace(/\\s+/g, ' ')
+        .trim();
+      if (headClean) {
+        const parts = headClean.split(' ').filter(Boolean);
+        if (parts.length >= 2) return parts.slice(0, 4).join(' ');
+      }
       return '';
+    }
+
+    function formatPhoneForUi(raw) {
+      const digits = String(raw || '').replace(/\\D/g, '');
+      if (!digits) return '';
+      if (digits.length === 10) return '+1' + digits;
+      if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;
+      if (String(raw).trim().startsWith('+')) return '+' + digits;
+      if (digits.length >= 12 && digits.length <= 15) return '+' + digits;
+      return String(raw || '').trim();
+    }
+
+    function extractPhoneFromCv(text) {
+      if (!text) return '';
+      const candidates = [];
+      const normalized = text.replace(/\\s+/g, ' ');
+      const patterns = [
+        /(?:\\+?\\d{1,3}[\\s().-]?)?(?:\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4})/g,
+        /\\+?\\d[\\d\\s().-]{8,}\\d/g
+      ];
+      patterns.forEach((re) => {
+        let match;
+        while ((match = re.exec(normalized))) {
+          const raw = match[0] || '';
+          const digits = raw.replace(/\\D/g, '');
+          if (digits.length < 10 || digits.length > 15) continue;
+          candidates.push({ raw, index: match.index || 0 });
+        }
+      });
+      if (!candidates.length) return '';
+      candidates.sort((a, b) => a.index - b.index);
+      return formatPhoneForUi(candidates[0].raw);
     }
 
     function maybeFillNameFromCv(text) {
@@ -3067,6 +3117,19 @@ app.get("/admin/ui", (req, res) => {
       if (name) {
         callNameEl.value = name;
       }
+    }
+
+    function maybeFillPhoneFromCv(text) {
+      if (callPhoneEl.value && callPhoneEl.value.trim()) return;
+      const phone = extractPhoneFromCv(text || '');
+      if (phone) {
+        callPhoneEl.value = phone;
+      }
+    }
+
+    function maybeFillContactFromCv(text) {
+      maybeFillNameFromCv(text);
+      maybeFillPhoneFromCv(text);
     }
 
     async function loadPdfDocument(file) {
@@ -3167,7 +3230,7 @@ app.get("/admin/ui", (req, res) => {
           throw new Error('Formato no soportado (PDF, imagen o TXT).');
         }
         callCvTextEl.value = truncateText(text, CV_CHAR_LIMIT);
-        maybeFillNameFromCv(callCvTextEl.value);
+        maybeFillContactFromCv(callCvTextEl.value);
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
       } catch (err) {
         setCvStatus('Error: ' + err.message);
@@ -3186,12 +3249,17 @@ app.get("/admin/ui", (req, res) => {
           cv_text: callCvTextEl.value || '',
           source: currentCvSource || ''
         };
-        if (!basePayload.applicant.trim()) {
-          maybeFillNameFromCv(basePayload.cv_text || basePayload.cv_summary || '');
-          basePayload.applicant = callNameEl.value || '';
+        if (!basePayload.applicant.trim() || !basePayload.to.trim()) {
+          maybeFillContactFromCv(basePayload.cv_text || basePayload.cv_summary || '');
+          basePayload.applicant = callNameEl.value || basePayload.applicant;
+          basePayload.to = callPhoneEl.value || basePayload.to;
         }
         if (!basePayload.applicant.trim()) {
           setCallStatus('Error: falta nombre y apellido.');
+          return;
+        }
+        if (!basePayload.to.trim()) {
+          setCallStatus('Error: falta teléfono.');
           return;
         }
         if (!basePayload.cv_summary) {
@@ -3496,9 +3564,10 @@ app.get("/admin/ui", (req, res) => {
         cv_file_data_url: currentCvFileDataUrl || '',
         cv_file_name: currentCvFileName || ''
       };
-      if (!payload.applicant.trim()) {
-        maybeFillNameFromCv(payload.cv_text || '');
-        payload.applicant = callNameEl.value || '';
+      if (!payload.applicant.trim() || !payload.phone.trim()) {
+        maybeFillContactFromCv(payload.cv_text || '');
+        payload.applicant = callNameEl.value || payload.applicant;
+        payload.phone = callPhoneEl.value || payload.phone;
       }
       if (!payload.applicant.trim()) {
         if (!silent) setCallStatus('Error: falta nombre y apellido.');
@@ -3640,7 +3709,7 @@ app.get("/admin/ui", (req, res) => {
     });
     callCvTextEl.addEventListener('blur', () => {
       if (!callNameEl.value || !callNameEl.value.trim()) {
-        maybeFillNameFromCv(callCvTextEl.value || '');
+        maybeFillContactFromCv(callCvTextEl.value || '');
       }
     });
     cvModalCloseEl.addEventListener('click', closeCvModal);
