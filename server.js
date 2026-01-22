@@ -547,18 +547,40 @@ function renderPromptTemplate(template, vars) {
   });
 }
 
+function buildMetaOpener({ brand, role, applicant, lang }) {
+  const metaCfg = roleConfig?.meta || {};
+  const brandDisplay = resolveBrandDisplay(brand);
+  const spokenRole = displayRole(role, brand);
+  const firstName = (applicant || "").split(/\s+/)[0] || "";
+  const nameVar = firstName || (lang === "en" ? "there" : "allí");
+  const template = (lang === "en" ? metaCfg.opener_en : metaCfg.opener_es) || "";
+  const fallback = lang === "en"
+    ? (firstName
+        ? `Hi ${firstName}, I'm calling about your application for ${spokenRole} at ${brandDisplay}. Do you have a minute to talk?`
+        : `Hi, I'm calling about your application for ${spokenRole} at ${brandDisplay}. Do you have a minute to talk?`)
+    : (firstName
+        ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${brandDisplay} para ${spokenRole}. ¿Tenés un minuto para hablar?`
+        : `Hola, te llamo por una entrevista de trabajo en ${brandDisplay} para ${spokenRole}. ¿Tenés un minuto para hablar?`);
+  const rendered = template && template.trim()
+    ? renderPromptTemplate(template, {
+      name: nameVar,
+      brand: brandDisplay,
+      role: spokenRole,
+      spoken_role: spokenRole,
+      first_name_or_blank: firstName ? ` ${firstName}` : "",
+      first_name_or_there: nameVar,
+      first_name_or_question: firstName || "¿cómo te llamás?",
+      first_name_or_postulante: firstName || "el postulante"
+    }).trim()
+    : "";
+  return rendered || fallback;
+}
+
 function buildInstructions(ctx) {
   const metaCfg = roleConfig?.meta || {};
   const brandDisplay = resolveBrandDisplay(ctx.brand);
-  const applyTemplate = (tpl) => {
-    if (!tpl) return "";
-    return String(tpl)
-      .replace(/{name}/gi, (ctx.applicant || "").split(/\s+/)[0] || "")
-      .replace(/{brand}/gi, brandDisplay)
-      .replace(/{role}/gi, ctx.spokenRole || displayRole(ctx.role, ctx.brand));
-  };
-  const openerEs = applyTemplate(metaCfg.opener_es) || `Hola${(ctx.applicant || "").split(/\s+/)[0] ? " " + (ctx.applicant || "").split(/\s+/)[0] : ""}, te llamo por una entrevista de trabajo en ${brandDisplay}. ¿Tenés un minuto para hablar?`;
-  const openerEn = applyTemplate(metaCfg.opener_en) || `Hi ${(ctx.applicant || "").split(/\s+/)[0] || "there"}, I'm calling about your application for ${ctx.spokenRole || displayRole(ctx.role, ctx.brand)} at ${brandDisplay}. Do you have a minute to talk?`;
+  const openerEs = buildMetaOpener({ brand: ctx.brand, role: ctx.role, applicant: ctx.applicant, lang: "es" });
+  const openerEn = buildMetaOpener({ brand: ctx.brand, role: ctx.role, applicant: ctx.applicant, lang: "en" });
   const langNote = metaCfg.lang_rules ? `Notas de idioma: ${metaCfg.lang_rules}` : "";
   const rKey = roleKey(ctx.role);
   const bKey = brandKey(ctx.brand);
@@ -2313,7 +2335,7 @@ app.get("/admin/ui", (req, res) => {
       align-items: center;
       gap: 10px;
       min-width: 180px;
-      max-width: 260px;
+      max-width: 220px;
     }
     .candidate-avatar {
       width: 32px;
@@ -2516,7 +2538,24 @@ app.get("/admin/ui", (req, res) => {
     }
     .summary-tooltip.visible { display: block; }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-    .cv-table td { vertical-align: middle; }
+    .cv-table {
+      table-layout: fixed;
+    }
+    .cv-table td { vertical-align: middle; white-space: nowrap; }
+    .cv-table th:nth-child(1), .cv-table td:nth-child(1) { width: 140px; }
+    .cv-table th:nth-child(2), .cv-table td:nth-child(2) { width: 190px; }
+    .cv-table th:nth-child(3), .cv-table td:nth-child(3) { width: 130px; }
+    .cv-table th:nth-child(4), .cv-table td:nth-child(4) { width: 220px; }
+    .cv-table th:nth-child(5), .cv-table td:nth-child(5) { width: 130px; }
+    .cv-table th:nth-child(6), .cv-table td:nth-child(6) { width: 170px; }
+    .cv-table th:nth-child(7), .cv-table td:nth-child(7) { width: 90px; }
+    .cv-table th:nth-child(8), .cv-table td:nth-child(8) { width: 220px; }
+    .cv-status {
+      max-width: 170px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .action-cell { white-space: nowrap; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
       position: sticky;
@@ -5397,7 +5436,7 @@ app.get("/admin/ui", (req, res) => {
           if (title) td.title = title;
           tr.appendChild(td);
         };
-        addCell(formatDate(item.created_at));
+        addCell(formatDate(item.created_at), 'cell-compact', formatDate(item.created_at));
         const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
         const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
         addCell(brandLabel, 'cell-compact', brandLabel);
@@ -5424,7 +5463,12 @@ app.get("/admin/ui", (req, res) => {
           tr.classList.add('call-active');
           hasActiveCall = true;
         }
-        addCell(info.statusText, info.statusClass);
+        const statusText = info.statusText || '';
+        const statusTd = document.createElement('td');
+        statusTd.className = 'cv-status ' + (info.statusClass || '');
+        statusTd.textContent = statusText || '—';
+        if (statusText) statusTd.title = statusText;
+        tr.appendChild(statusTd);
         const cvTd = document.createElement('td');
         if (item.cv_url) {
           const wrap = document.createElement('div');
@@ -5446,6 +5490,7 @@ app.get("/admin/ui", (req, res) => {
         }
         tr.appendChild(cvTd);
         const actionTd = document.createElement('td');
+        actionTd.className = 'action-cell';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
         const callBtn = document.createElement('button');
@@ -5847,10 +5892,11 @@ app.post("/voice", (req, res) => {
     attempt: "1",
     lang: "es"
   }).toString();
-  const introName = (applicant || "").split(/\s+/)[0] || "allí";
+  const openerLine = buildMetaOpener({ brand, role, applicant, lang: "es" });
+  const introLine = `${openerLine} Soy Mariana. Si preferís en inglés, decí English.`;
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="es-US" voice="Polly.Lupe-Neural">Hola ${xmlEscapeAttr(introName)}, te llamo por una entrevista de trabajo en ${xmlEscapeAttr(brandDisplay)} para ${xmlEscapeAttr(displayRole(role, brand))}. Soy Mariana. Si preferís en inglés, decí English.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(introLine)}</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2, english">
     <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
   </Gather>
@@ -6390,14 +6436,12 @@ const openaiWs = new WebSocket(
     flushAudio();
     const firstName = (call.applicant || "").split(/\s+/)[0] || "";
     const spokenRole = call.spokenRole || displayRole(call.role || "", call.brand);
-    const openerLine =
-      call.lang === "en"
-        ? (firstName
-            ? `Hi ${firstName}, I'm calling you about an interview for ${spokenRole} at ${call.brand}. Do you have a minute to talk?`
-            : `Hi, I'm calling you about an interview for ${spokenRole} at ${call.brand}. Do you have a minute to talk?`)
-        : (firstName
-            ? `Hola ${firstName}, te llamo por una entrevista de trabajo en ${call.brand} para ${spokenRole}. ¿Tenés un minuto para hablar?`
-            : `Hola, te llamo por una entrevista de trabajo en ${call.brand} para ${spokenRole}. ¿Tenés un minuto para hablar?`);
+    const openerLine = buildMetaOpener({
+      brand: call.brand || DEFAULT_BRAND,
+      role: call.role || DEFAULT_ROLE,
+      applicant: call.applicant || "",
+      lang: call.lang === "en" ? "en" : "es"
+    });
     const introAfterYes =
       call.lang === "en"
         ? `Great. You applied for ${spokenRole}. Can you tell me about your experience in this position?`
