@@ -49,6 +49,7 @@ const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
 const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
 const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
+const USER_SESSION_TTL_MS = Number(process.env.USER_SESSION_TTL_MS) || VIEWER_SESSION_TTL_MS;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -738,19 +739,23 @@ function isActiveCallStatus(status) {
   return ACTIVE_CALL_STATUSES.has(normalized);
 }
 
-function collectActiveCalls() {
+function collectActiveCalls(allowedBrands) {
   const byCv = new Map();
   const byPhone = new Map();
   const now = Date.now();
+  const allowedSet = Array.isArray(allowedBrands) && allowedBrands.length
+    ? new Set(allowedBrands.map((b) => brandKey(b)).filter(Boolean))
+    : null;
   for (const call of callsByCallSid.values()) {
     if (!call) continue;
     if (call.expiresAt && call.expiresAt < now) continue;
     const status = normalizeCallStatus(call.callStatus || call.status);
     if (!isActiveCallStatus(status)) continue;
+    const bKey = brandKey(call.brand || "");
+    if (allowedSet && bKey && !allowedSet.has(bKey)) continue;
     const cvId = call.cvId || call.cv_id || "";
     if (cvId) byCv.set(cvId, status);
     const phone = normalizePhone(call.to || call.phone || "");
-    const bKey = brandKey(call.brand || "");
     if (phone && bKey) {
       const key = `${bKey}|${phone}`;
       if (!byPhone.has(key)) byPhone.set(key, status);
@@ -788,7 +793,7 @@ const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const tokens = new Map(); // token -> { path, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
-const viewerSessions = new Map(); // token -> { email, expiresAt }
+const userSessions = new Map(); // token -> { email, role, allowedBrands, expiresAt }
 const MAX_CALL_HISTORY = 500;
 const CALL_HISTORY_PATH = process.env.CALL_HISTORY_PATH || path.join(__dirname, "data", "calls.json");
 const CALL_HISTORY_SAVE_DELAY_MS = 2000;
@@ -867,8 +872,8 @@ function cleanup() {
   for (const [k, v] of tokens.entries()) {
     if (v.expiresAt && v.expiresAt < now) tokens.delete(k);
   }
-  for (const [k, v] of viewerSessions.entries()) {
-    if (v.expiresAt && v.expiresAt < now) viewerSessions.delete(k);
+  for (const [k, v] of userSessions.entries()) {
+    if (v.expiresAt && v.expiresAt < now) userSessions.delete(k);
   }
 }
 setInterval(cleanup, 5 * 60 * 1000).unref();
@@ -1089,6 +1094,46 @@ function getRoleConfig(brand, role) {
   return null;
 }
 
+const USER_ROLES = new Set(["admin", "interviewer", "viewer"]);
+
+function normalizeUserRole(role) {
+  const value = String(role || "").trim().toLowerCase();
+  return USER_ROLES.has(value) ? value : "viewer";
+}
+
+function normalizeAllowedBrands(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seen = new Set();
+  list.forEach((item) => {
+    const key = brandKey(item || "");
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(key);
+  });
+  return out;
+}
+
+function isBrandAllowed(allowedBrands, brand) {
+  if (!Array.isArray(allowedBrands) || !allowedBrands.length) return true;
+  const key = brandKey(brand || "");
+  return key ? allowedBrands.includes(key) : false;
+}
+
+function filterConfigByBrands(config, allowedBrands) {
+  if (!config || !Array.isArray(allowedBrands) || !allowedBrands.length) return config;
+  const filtered = {};
+  if (config.meta) filtered.meta = { ...config.meta };
+  for (const key of Object.keys(config)) {
+    if (key === "meta") continue;
+    const bKey = brandKey(key);
+    if (allowedBrands.includes(bKey)) {
+      filtered[key] = config[key];
+    }
+  }
+  return filtered;
+}
+
 function extractBearerToken(authHeader) {
   if (!authHeader) return "";
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
@@ -1100,22 +1145,38 @@ function isConfigAuth(authHeader) {
   return authHeader === `Bearer ${CONFIG_TOKEN}`;
 }
 
-function createViewerSession(email) {
+function createUserSession({ email, role, allowedBrands }) {
   const token = randomToken();
-  viewerSessions.set(token, { email, expiresAt: Date.now() + VIEWER_SESSION_TTL_MS });
+  userSessions.set(token, {
+    email,
+    role: normalizeUserRole(role),
+    allowedBrands: normalizeAllowedBrands(allowedBrands),
+    expiresAt: Date.now() + USER_SESSION_TTL_MS
+  });
   return token;
 }
 
-function isViewerAuth(authHeader) {
+function getUserSession(authHeader) {
   const token = extractBearerToken(authHeader);
-  if (!token) return false;
-  const session = viewerSessions.get(token);
-  if (!session) return false;
+  if (!token) return null;
+  const session = userSessions.get(token);
+  if (!session) return null;
   if (session.expiresAt && session.expiresAt < Date.now()) {
-    viewerSessions.delete(token);
-    return false;
+    userSessions.delete(token);
+    return null;
   }
-  return true;
+  return session;
+}
+
+function resolveAuthContext(authHeader) {
+  if (isConfigAuth(authHeader)) {
+    return { role: "admin", allowedBrands: null };
+  }
+  const session = getUserSession(authHeader);
+  if (!session) return null;
+  const role = normalizeUserRole(session.role);
+  const allowedBrands = role === "admin" ? null : normalizeAllowedBrands(session.allowedBrands);
+  return { role, allowedBrands };
 }
 
 function requireConfig(req, res, next) {
@@ -1127,11 +1188,50 @@ function requireConfig(req, res, next) {
 
 function requireConfigOrViewer(req, res, next) {
   const auth = req.headers.authorization || "";
-  if (isConfigAuth(auth) || isViewerAuth(auth)) return next();
-  if (!CONFIG_TOKEN && !VIEWER_EMAIL) {
+  const ctx = resolveAuthContext(auth);
+  if (ctx) {
+    req.userRole = ctx.role;
+    req.allowedBrands = ctx.allowedBrands;
+    return next();
+  }
+  if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
     return res.status(403).json({ error: "auth not configured" });
   }
   return res.status(401).json({ error: "unauthorized" });
+}
+
+function requireWrite(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const ctx = resolveAuthContext(auth);
+  if (!ctx) {
+    if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
+      return res.status(403).json({ error: "auth not configured" });
+    }
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (ctx.role === "viewer") {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  req.userRole = ctx.role;
+  req.allowedBrands = ctx.allowedBrands;
+  next();
+}
+
+function requireAdminUser(req, res, next) {
+  const auth = req.headers.authorization || "";
+  const ctx = resolveAuthContext(auth);
+  if (!ctx) {
+    if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
+      return res.status(403).json({ error: "auth not configured" });
+    }
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  if (ctx.role !== "admin") {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  req.userRole = ctx.role;
+  req.allowedBrands = null;
+  next();
 }
 
 function requireAdmin(req, res, next) {
@@ -1164,6 +1264,116 @@ function estimateDataUrlBytes(dataUrl) {
 async function dbQuery(sql, params = []) {
   if (!dbPool) return null;
   return dbPool.query(sql, params);
+}
+
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function hashPassword(password) {
+  const raw = String(password || "");
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(raw, salt, 64);
+  return `${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+function verifyPassword(password, stored) {
+  const raw = String(password || "");
+  const parts = String(stored || "").split(":");
+  if (!raw || parts.length !== 2) return false;
+  const [saltHex, hashHex] = parts;
+  if (!saltHex || !hashHex) return false;
+  const salt = Buffer.from(saltHex, "hex");
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = crypto.scryptSync(raw, salt, expected.length);
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+async function fetchUserByEmail(email) {
+  if (!dbPool) return null;
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const result = await dbQuery(
+    "SELECT id, email, password_hash, role, allowed_brands, active FROM users WHERE email = $1 LIMIT 1",
+    [normalized]
+  );
+  return result?.rows?.[0] || null;
+}
+
+async function listUsersFromDb() {
+  if (!dbPool) return [];
+  const result = await dbQuery(
+    "SELECT id, email, role, allowed_brands, active, created_at, updated_at FROM users ORDER BY created_at DESC"
+  );
+  return (result?.rows || []).map((row) => ({
+    id: row.id,
+    email: row.email,
+    role: normalizeUserRole(row.role),
+    allowed_brands: Array.isArray(row.allowed_brands) ? row.allowed_brands : [],
+    active: row.active !== false,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : ""
+  }));
+}
+
+async function createUserInDb({ email, password, role, allowed_brands, active }) {
+  if (!dbPool) return null;
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !password) return null;
+  const id = randomToken();
+  const normalizedRole = normalizeUserRole(role);
+  const allowed = normalizeAllowedBrands(allowed_brands);
+  const passwordHash = hashPassword(password);
+  const result = await dbQuery(
+    `INSERT INTO users (id, email, password_hash, role, allowed_brands, active)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, email, role, allowed_brands, active, created_at, updated_at`,
+    [id, normalizedEmail, passwordHash, normalizedRole, allowed, active !== false]
+  );
+  return result?.rows?.[0] || null;
+}
+
+async function updateUserInDb(id, { email, password, role, allowed_brands, active }) {
+  if (!dbPool || !id) return null;
+  const fields = [];
+  const values = [];
+  if (email) {
+    values.push(normalizeEmail(email));
+    fields.push(`email = $${values.length}`);
+  }
+  if (password) {
+    values.push(hashPassword(password));
+    fields.push(`password_hash = $${values.length}`);
+  }
+  if (role) {
+    values.push(normalizeUserRole(role));
+    fields.push(`role = $${values.length}`);
+  }
+  if (allowed_brands) {
+    values.push(normalizeAllowedBrands(allowed_brands));
+    fields.push(`allowed_brands = $${values.length}`);
+  }
+  if (active !== undefined) {
+    values.push(active !== false);
+    fields.push(`active = $${values.length}`);
+  }
+  if (!fields.length) return null;
+  values.push(id);
+  const sql = `
+    UPDATE users
+    SET ${fields.join(", ")}, updated_at = NOW()
+    WHERE id = $${values.length}
+    RETURNING id, email, role, allowed_brands, active, created_at, updated_at
+  `;
+  const result = await dbQuery(sql, values);
+  return result?.rows?.[0] || null;
+}
+
+async function deleteUserFromDb(id) {
+  if (!dbPool || !id) return 0;
+  const result = await dbQuery("DELETE FROM users WHERE id = $1", [id]);
+  return result?.rowCount || 0;
 }
 
 async function initDb() {
@@ -1235,6 +1445,22 @@ async function initDb() {
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_score ON calls (score);`);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        allowed_brands TEXT[] NOT NULL DEFAULT '{}'::text[],
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_brands TEXT[] NOT NULL DEFAULT '{}'::text[];`);
+    await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);`);
 
     const loaded = await loadRoleConfigFromDb();
     if (!loaded && roleConfig) {
@@ -1353,17 +1579,126 @@ const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
 
-app.post("/admin/login", (req, res) => {
+app.post("/admin/login", async (req, res) => {
+  const email = normalizeEmail(req.body?.email || "");
+  const password = req.body?.password || "";
+  if (!email || !password) {
+    return res.status(400).json({ error: "missing_credentials" });
+  }
+  try {
+    if (dbPool) {
+      const user = await fetchUserByEmail(email);
+      if (user) {
+        if (user.active === false) {
+          return res.status(403).json({ error: "inactive_user" });
+        }
+        if (verifyPassword(password, user.password_hash)) {
+          const role = normalizeUserRole(user.role);
+          const allowed = Array.isArray(user.allowed_brands) ? user.allowed_brands : [];
+          const token = createUserSession({ email: user.email, role, allowedBrands: allowed });
+          return res.json({ ok: true, token, role, allowed_brands: allowed });
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[admin/login] failed", err);
+  }
   if (!VIEWER_EMAIL || !VIEWER_PASSWORD) {
     return res.status(403).json({ error: "viewer login disabled" });
   }
-  const email = (req.body?.email || "").trim().toLowerCase();
-  const password = req.body?.password || "";
   if (email !== VIEWER_EMAIL.toLowerCase() || password !== VIEWER_PASSWORD) {
     return res.status(401).json({ error: "invalid_credentials" });
   }
-  const token = createViewerSession(email);
-  return res.json({ ok: true, token, role: "viewer" });
+  const token = createUserSession({ email, role: "viewer", allowedBrands: [] });
+  return res.json({ ok: true, token, role: "viewer", allowed_brands: [] });
+});
+
+app.get("/admin/users", requireAdminUser, async (req, res) => {
+  if (!dbPool) return res.status(503).json({ error: "db_unavailable" });
+  try {
+    const users = await listUsersFromDb();
+    return res.json({ ok: true, users });
+  } catch (err) {
+    console.error("[admin/users] list failed", err);
+    return res.status(500).json({ error: "users_list_failed" });
+  }
+});
+
+app.post("/admin/users", requireAdminUser, async (req, res) => {
+  if (!dbPool) return res.status(503).json({ error: "db_unavailable" });
+  const email = normalizeEmail(req.body?.email || "");
+  const password = req.body?.password || "";
+  const role = normalizeUserRole(req.body?.role || "");
+  const allowed_brands = Array.isArray(req.body?.allowed_brands) ? req.body.allowed_brands : [];
+  const active = req.body?.active !== false;
+  if (!email || !password) {
+    return res.status(400).json({ error: "missing_fields" });
+  }
+  try {
+    const user = await createUserInDb({ email, password, role, allowed_brands, active });
+    if (!user) return res.status(400).json({ error: "user_create_failed" });
+    return res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: normalizeUserRole(user.role),
+        allowed_brands: Array.isArray(user.allowed_brands) ? user.allowed_brands : [],
+        active: user.active !== false,
+        created_at: user.created_at ? new Date(user.created_at).toISOString() : "",
+        updated_at: user.updated_at ? new Date(user.updated_at).toISOString() : ""
+      }
+    });
+  } catch (err) {
+    console.error("[admin/users] create failed", err);
+    return res.status(400).json({ error: "user_create_failed", detail: err.message });
+  }
+});
+
+app.put("/admin/users/:id", requireAdminUser, async (req, res) => {
+  if (!dbPool) return res.status(503).json({ error: "db_unavailable" });
+  const id = (req.params?.id || "").trim();
+  if (!id) return res.status(400).json({ error: "missing_user_id" });
+  const payload = {
+    email: req.body?.email ? normalizeEmail(req.body.email) : "",
+    password: req.body?.password || "",
+    role: req.body?.role || "",
+    allowed_brands: Array.isArray(req.body?.allowed_brands) ? req.body.allowed_brands : [],
+    active: req.body?.active
+  };
+  try {
+    const user = await updateUserInDb(id, payload);
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    return res.json({
+      ok: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: normalizeUserRole(user.role),
+        allowed_brands: Array.isArray(user.allowed_brands) ? user.allowed_brands : [],
+        active: user.active !== false,
+        created_at: user.created_at ? new Date(user.created_at).toISOString() : "",
+        updated_at: user.updated_at ? new Date(user.updated_at).toISOString() : ""
+      }
+    });
+  } catch (err) {
+    console.error("[admin/users] update failed", err);
+    return res.status(400).json({ error: "user_update_failed", detail: err.message });
+  }
+});
+
+app.delete("/admin/users/:id", requireAdminUser, async (req, res) => {
+  if (!dbPool) return res.status(503).json({ error: "db_unavailable" });
+  const id = (req.params?.id || "").trim();
+  if (!id) return res.status(400).json({ error: "missing_user_id" });
+  try {
+    const removed = await deleteUserFromDb(id);
+    if (!removed) return res.status(404).json({ error: "user_not_found" });
+    return res.json({ ok: true, removed });
+  } catch (err) {
+    console.error("[admin/users] delete failed", err);
+    return res.status(400).json({ error: "user_delete_failed", detail: err.message });
+  }
 });
 
 // Config endpoints (protect with CALL_BEARER_TOKEN)
@@ -1372,10 +1707,12 @@ app.get("/admin/config", requireConfigOrViewer, async (req, res) => {
     await loadRoleConfigFromDb();
   }
   if (!roleConfig) return res.json({ config: null, source: "defaults" });
-  return res.json({ config: roleConfig, source: roleConfigSource || "file" });
+  const isAdmin = req.userRole === "admin";
+  const filtered = isAdmin ? roleConfig : filterConfigByBrands(roleConfig, req.allowedBrands);
+  return res.json({ config: filtered, source: roleConfigSource || "file", allowed_brands: req.allowedBrands || [] });
 });
 
-app.post("/admin/config", requireConfig, async (req, res) => {
+app.post("/admin/config", requireAdminUser, async (req, res) => {
   try {
     const body = req.body;
     const config = body?.config ?? body;
@@ -1400,7 +1737,7 @@ app.post("/admin/config", requireConfig, async (req, res) => {
   }
 });
 
-app.post("/admin/preview", requireConfig, (req, res) => {
+app.post("/admin/preview", requireAdminUser, (req, res) => {
   try {
     const body = req.body || {};
     const brand = body.brand || DEFAULT_BRAND;
@@ -1454,10 +1791,24 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   const minScore = Number(req.query?.minScore);
   const maxScore = Number(req.query?.maxScore);
   const limit = Math.min(Number(req.query?.limit) || 200, 500);
+  const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+
+  if (brandParam && allowedBrands.length && !isBrandAllowed(allowedBrands, brandParam)) {
+    return res.json({ ok: true, calls: [] });
+  }
 
   if (dbPool) {
     try {
-      const calls = await fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit });
+      const calls = await fetchCallsFromDb({
+        brandParam,
+        roleParam,
+        recParam,
+        qParam,
+        minScore,
+        maxScore,
+        limit,
+        allowedBrands
+      });
       return res.json({ ok: true, calls });
     } catch (err) {
       console.error("[admin/calls] db failed", err);
@@ -1465,6 +1816,9 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   }
 
   let list = callHistory.slice();
+  if (allowedBrands.length) {
+    list = list.filter((c) => allowedBrands.includes(c.brandKey || brandKey(c.brand || "")));
+  }
   if (brandParam) {
     const bKey = brandKey(brandParam);
     list = list.filter((c) => c.brandKey === bKey);
@@ -1512,7 +1866,7 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   return res.json({ ok: true, calls: results });
 });
 
-app.delete("/admin/calls/:callId", requireConfig, async (req, res) => {
+app.delete("/admin/calls/:callId", requireAdminUser, async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   let removed = 0;
@@ -1537,7 +1891,7 @@ app.delete("/admin/calls/:callId", requireConfig, async (req, res) => {
   return res.json({ ok: true, removed });
 });
 
-app.post("/admin/calls/:callId/whatsapp", requireConfig, async (req, res) => {
+app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   try {
@@ -1576,6 +1930,10 @@ app.get("/admin/calls/:callId/audio", requireConfigOrViewer, async (req, res) =>
       call = await fetchCallById(callId);
     }
     if (!call) return res.status(404).json({ error: "call_not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, call.brand || call.brandKey || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
     const mediaUrl = await getCallAudioMediaUrl(call);
     if (!mediaUrl) return res.status(404).json({ error: "no_audio" });
     const resp = await fetch(mediaUrl);
@@ -1601,11 +1959,16 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   const roleParam = (req.query?.role || "").toString();
   const qParam = (req.query?.q || "").toString().toLowerCase();
   const limit = Math.min(Number(req.query?.limit) || 200, 500);
+  const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+
+  if (brandParam && allowedBrands.length && !isBrandAllowed(allowedBrands, brandParam)) {
+    return res.json({ ok: true, cvs: [] });
+  }
 
   if (dbPool) {
     try {
-      const cvs = await fetchCvFromDb({ brandParam, roleParam, qParam, limit });
-      const activeIndex = collectActiveCalls();
+      const cvs = await fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBrands });
+      const activeIndex = collectActiveCalls(allowedBrands);
       const withActive = cvs.map((entry) => attachActiveCall(entry, activeIndex));
       return res.json({ ok: true, cvs: withActive });
     } catch (err) {
@@ -1614,6 +1977,9 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   }
 
   let list = cvStore.slice();
+  if (allowedBrands.length) {
+    list = list.filter((c) => allowedBrands.includes(c.brandKey || brandKey(c.brand || "")));
+  }
   if (brandParam) {
     const bKey = brandKey(brandParam);
     list = list.filter((c) => c.brandKey === bKey);
@@ -1630,7 +1996,10 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
 
   const callStatsByCv = new Map();
   const callStatsByPhone = new Map();
-  for (const call of callHistory) {
+  const scopedCalls = allowedBrands.length
+    ? callHistory.filter((call) => allowedBrands.includes(call.brandKey || brandKey(call.brand || "")))
+    : callHistory;
+  for (const call of scopedCalls) {
     if (!call) continue;
     const callTime = call.created_at ? new Date(call.created_at).getTime() : 0;
     if (call.cv_id) {
@@ -1679,7 +2048,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
     }
   }
 
-  const activeIndex = collectActiveCalls();
+  const activeIndex = collectActiveCalls(allowedBrands);
   const results = [];
   for (const entry of list.slice(0, limit)) {
     if (!entry) continue;
@@ -1709,9 +2078,13 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   return res.json({ ok: true, cvs: results });
 });
 
-app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
+app.post("/admin/cv", requireWrite, async (req, res) => {
   try {
     const body = req.body || {};
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, body.brand || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
     let cvUrl = "";
     let cvPhotoUrl = "";
     const fileDataUrl = body.cv_file_data_url || "";
@@ -1771,7 +2144,7 @@ app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
   }
 });
 
-app.delete("/admin/cv/:id", requireConfig, async (req, res) => {
+app.delete("/admin/cv/:id", requireAdminUser, async (req, res) => {
   const id = (req.params?.id || "").trim();
   if (!id) return res.status(400).json({ error: "missing_cv_id" });
   let removed = 0;
@@ -1794,7 +2167,7 @@ app.delete("/admin/cv/:id", requireConfig, async (req, res) => {
   return res.json({ ok: true, removed });
 });
 
-app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
+app.post("/admin/ocr", requireWrite, async (req, res) => {
   try {
     const images = normalizeOcrImages(req.body?.images || []);
     if (!images.length) {
@@ -1839,7 +2212,7 @@ app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
   }
 });
 
-app.post("/admin/face-detect", requireConfigOrViewer, async (req, res) => {
+app.post("/admin/face-detect", requireWrite, async (req, res) => {
   try {
     const image = (req.body?.image || "").toString();
     if (!image) return res.status(400).json({ error: "missing_image" });
@@ -1922,7 +2295,7 @@ app.post("/admin/face-detect", requireConfigOrViewer, async (req, res) => {
   }
 });
 
-app.post("/admin/extract-contact", requireConfigOrViewer, async (req, res) => {
+app.post("/admin/extract-contact", requireWrite, async (req, res) => {
   try {
     const rawText = (req.body?.text || "").toString();
     if (!rawText.trim()) {
@@ -2537,6 +2910,37 @@ app.get("/admin/ui", (req, res) => {
       z-index: 9999;
     }
     .summary-tooltip.visible { display: block; }
+    .readonly {
+      opacity: 0.65;
+    }
+    .readonly .drop-zone,
+    .readonly input,
+    .readonly textarea,
+    .readonly select,
+    .readonly button {
+      pointer-events: none;
+    }
+    .user-brand-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .brand-check {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+      font-size: 12px;
+    }
+    .brand-check input { margin: 0; }
+    .user-actions {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     .cv-table {
       table-layout: fixed;
@@ -2840,6 +3244,64 @@ app.get("/admin/ui", (req, res) => {
               <button class="secondary" id="admin-unlock" type="button">Unlock</button>
             </div>
             <span class="small" id="admin-status"></span>
+          </div>
+        </div>
+        <div class="panel" id="users-panel" style="--delay:.07s;">
+          <div class="panel-title">Usuarios</div>
+          <div class="panel-sub">Administrá accesos por rol y locales.</div>
+          <div class="grid">
+            <div>
+              <label>Email</label>
+              <input type="text" id="user-email" placeholder="usuario@empresa.com" />
+            </div>
+            <div>
+              <label>Password</label>
+              <input type="password" id="user-password" placeholder="********" />
+              <div class="small">En edición, dejalo vacío para mantener la clave actual.</div>
+            </div>
+            <div>
+              <label>Rol</label>
+              <select id="user-role">
+                <option value="admin">Admin</option>
+                <option value="interviewer">Interviewer</option>
+                <option value="viewer">Viewer</option>
+              </select>
+            </div>
+            <div>
+              <label>Activo</label>
+              <div class="check-row">
+                <input type="checkbox" id="user-active" checked />
+                <span class="small">Puede iniciar sesión.</span>
+              </div>
+            </div>
+          </div>
+          <div class="row">
+            <label>Locales permitidos</label>
+            <div id="user-brand-list" class="user-brand-list"></div>
+            <div class="small">Si no seleccionás ninguno, accede a todos.</div>
+          </div>
+          <div class="inline" style="justify-content: space-between;">
+            <div class="user-actions">
+              <button id="user-save" type="button">Guardar usuario</button>
+              <button class="secondary" id="user-clear" type="button">Limpiar</button>
+            </div>
+            <span class="status" id="user-status"></span>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-title" style="font-size:14px;">Usuarios cargados</div>
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Rol</th>
+                  <th>Locales</th>
+                  <th>Activo</th>
+                  <th>Acción</th>
+                </tr>
+              </thead>
+              <tbody id="user-table-body"></tbody>
+            </table>
           </div>
         </div>
         <div class="panel" style="--delay:.08s;">
@@ -3216,6 +3678,16 @@ app.get("/admin/ui", (req, res) => {
     const previewCvEl = document.getElementById('preview-cv');
     const previewOutputEl = document.getElementById('preview-output');
     const previewStatusEl = document.getElementById('preview-status');
+    const usersPanelEl = document.getElementById('users-panel');
+    const userEmailEl = document.getElementById('user-email');
+    const userPasswordEl = document.getElementById('user-password');
+    const userRoleEl = document.getElementById('user-role');
+    const userActiveEl = document.getElementById('user-active');
+    const userBrandListEl = document.getElementById('user-brand-list');
+    const userSaveEl = document.getElementById('user-save');
+    const userClearEl = document.getElementById('user-clear');
+    const userStatusEl = document.getElementById('user-status');
+    const userTableBodyEl = document.getElementById('user-table-body');
     const callBrandEl = document.getElementById('call-brand');
     const callRoleEl = document.getElementById('call-role');
     const callNameEl = document.getElementById('call-name');
@@ -3223,6 +3695,7 @@ app.get("/admin/ui", (req, res) => {
     const callCvTextEl = document.getElementById('call-cv-text');
     const callBtnEl = document.getElementById('call-btn');
     const callStatusEl = document.getElementById('call-status');
+    const callPanelEl = document.getElementById('call-panel');
     const cvSaveBtnEl = document.getElementById('cv-save-btn');
     const callClearEl = document.getElementById('call-clear');
     const cvDropEl = document.getElementById('cv-drop');
@@ -3253,6 +3726,7 @@ app.get("/admin/ui", (req, res) => {
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
+    let authBrands = [];
     let adminToken = '';
     let systemPromptUnlocked = false;
     let lastLoadError = '';
@@ -3273,6 +3747,8 @@ app.get("/admin/ui", (req, res) => {
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
+    let usersList = [];
+    let editingUserId = '';
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -3310,6 +3786,7 @@ app.get("/admin/ui", (req, res) => {
     function setAdminStatus(msg) { adminStatusEl.textContent = msg || ''; }
     function setCallStatus(msg) { callStatusEl.textContent = msg || ''; }
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
+    function setUserStatus(msg) { if (userStatusEl) userStatusEl.textContent = msg || ''; }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
     const SIDEBAR_STATE_KEY = 'hrbot_sidebar_collapsed';
@@ -3378,14 +3855,205 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function applyRoleAccess() {
-      const isViewer = authRole === 'viewer';
-      if (navGeneralEl) navGeneralEl.style.display = isViewer ? 'none' : '';
-      if (brandListEl) brandListEl.style.display = isViewer ? 'none' : '';
-      if (addBrandEl) addBrandEl.style.display = isViewer ? 'none' : '';
-      if (loadBtnEl) loadBtnEl.style.display = isViewer ? 'none' : '';
-      if (saveBtnEl) saveBtnEl.style.display = isViewer ? 'none' : '';
-      if (isViewer && activeView === 'general') {
+      const isAdmin = authRole === 'admin';
+      const canWrite = authRole !== 'viewer';
+      if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
+      if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
+      if (addBrandEl) addBrandEl.style.display = isAdmin ? '' : 'none';
+      if (loadBtnEl) loadBtnEl.style.display = isAdmin ? '' : 'none';
+      if (saveBtnEl) saveBtnEl.style.display = isAdmin ? '' : 'none';
+      if (usersPanelEl) usersPanelEl.style.display = isAdmin ? 'block' : 'none';
+      if (callPanelEl) callPanelEl.classList.toggle('readonly', !canWrite);
+      if (callBtnEl) callBtnEl.disabled = !canWrite;
+      if (cvSaveBtnEl) cvSaveBtnEl.disabled = !canWrite;
+      if (callClearEl) callClearEl.disabled = !canWrite;
+      if (cvFileEl) cvFileEl.disabled = !canWrite;
+      if (!isAdmin && activeView === 'general') {
         setActiveView(VIEW_CALLS);
+      }
+    }
+
+    function listBrandsForUsers() {
+      const cfg = state.config || {};
+      const list = [];
+      Object.keys(cfg).forEach((key) => {
+        if (key === 'meta') return;
+        const meta = cfg[key]?._meta || {};
+        const display = (meta.displayName || key || '').trim();
+        if (!key) return;
+        list.push({ key, display: display || key });
+      });
+      return list.sort((a, b) => a.display.localeCompare(b.display));
+    }
+
+    function getSelectedUserBrands() {
+      if (!userBrandListEl) return [];
+      return Array.from(userBrandListEl.querySelectorAll('input[type="checkbox"]:checked'))
+        .map((el) => el.value);
+    }
+
+    function renderUserBrandList(selected = []) {
+      if (!userBrandListEl) return;
+      const selectedSet = new Set((selected || []).map((val) => normalizeKeyUi(val)));
+      userBrandListEl.innerHTML = '';
+      const brands = listBrandsForUsers();
+      if (!brands.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'Sin locales cargados.';
+        userBrandListEl.appendChild(empty);
+        return;
+      }
+      brands.forEach((brand) => {
+        const label = document.createElement('label');
+        label.className = 'brand-check';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = brand.key;
+        if (selectedSet.has(normalizeKeyUi(brand.key))) input.checked = true;
+        const span = document.createElement('span');
+        span.textContent = brand.display || brand.key;
+        label.appendChild(input);
+        label.appendChild(span);
+        userBrandListEl.appendChild(label);
+      });
+    }
+
+    function resetUserForm() {
+      editingUserId = '';
+      if (userEmailEl) userEmailEl.value = '';
+      if (userPasswordEl) userPasswordEl.value = '';
+      if (userRoleEl) userRoleEl.value = 'viewer';
+      if (userActiveEl) userActiveEl.checked = true;
+      renderUserBrandList([]);
+      if (userSaveEl) userSaveEl.textContent = 'Guardar usuario';
+      setUserStatus('');
+    }
+
+    function formatUserBrands(list = []) {
+      if (!Array.isArray(list) || !list.length) return 'Todos';
+      return list.map((key) => getBrandDisplayByKey(key) || key).join(', ');
+    }
+
+    function renderUsersTable(list) {
+      if (!userTableBodyEl) return;
+      userTableBodyEl.innerHTML = '';
+      if (!Array.isArray(list) || !list.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 5;
+        td.textContent = 'No hay usuarios todavía.';
+        tr.appendChild(td);
+        userTableBodyEl.appendChild(tr);
+        return;
+      }
+      list.forEach((user) => {
+        const tr = document.createElement('tr');
+        const addCell = (value) => {
+          const td = document.createElement('td');
+          td.textContent = value || '—';
+          tr.appendChild(td);
+        };
+        addCell(user.email || '');
+        addCell(user.role || '');
+        addCell(formatUserBrands(user.allowed_brands || []));
+        addCell(user.active === false ? 'No' : 'Sí');
+        const actionTd = document.createElement('td');
+        const wrap = document.createElement('div');
+        wrap.className = 'user-actions';
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'secondary btn-compact';
+        editBtn.textContent = 'Editar';
+        editBtn.onclick = () => {
+          editingUserId = user.id;
+          if (userEmailEl) userEmailEl.value = user.email || '';
+          if (userPasswordEl) userPasswordEl.value = '';
+          if (userRoleEl) userRoleEl.value = user.role || 'viewer';
+          if (userActiveEl) userActiveEl.checked = user.active !== false;
+          renderUserBrandList(user.allowed_brands || []);
+          if (userSaveEl) userSaveEl.textContent = 'Actualizar';
+          setUserStatus('');
+        };
+        wrap.appendChild(editBtn);
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'secondary btn-compact';
+        delBtn.textContent = 'Eliminar';
+        delBtn.onclick = () => deleteUser(user.id);
+        wrap.appendChild(delBtn);
+        actionTd.appendChild(wrap);
+        tr.appendChild(actionTd);
+        userTableBodyEl.appendChild(tr);
+      });
+    }
+
+    async function loadUsers() {
+      if (!usersPanelEl || authRole !== 'admin') return;
+      try {
+        setUserStatus('Cargando...');
+        const resp = await fetch('/admin/users', {
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'users failed');
+        usersList = data.users || [];
+        renderUsersTable(usersList);
+        setUserStatus('');
+      } catch (err) {
+        setUserStatus('Error: ' + err.message);
+      }
+    }
+
+    async function saveUser() {
+      if (authRole !== 'admin') return;
+      const email = (userEmailEl?.value || '').trim();
+      const password = userPasswordEl?.value || '';
+      const role = userRoleEl?.value || 'viewer';
+      const active = userActiveEl?.checked !== false;
+      const allowed_brands = getSelectedUserBrands();
+      if (!email) {
+        setUserStatus('Ingresá un email.');
+        return;
+      }
+      if (!editingUserId && !password) {
+        setUserStatus('Ingresá un password.');
+        return;
+      }
+      const payload = { email, password, role, allowed_brands, active };
+      setUserStatus('Guardando...');
+      try {
+        const url = editingUserId ? '/admin/users/' + encodeURIComponent(editingUserId) : '/admin/users';
+        const method = editingUserId ? 'PUT' : 'POST';
+        const resp = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'user save failed');
+        resetUserForm();
+        await loadUsers();
+      } catch (err) {
+        setUserStatus('Error: ' + err.message);
+      }
+    }
+
+    async function deleteUser(id) {
+      if (!id) return;
+      if (!confirm('¿Seguro que querés eliminar este usuario?')) return;
+      setUserStatus('Eliminando...');
+      try {
+        const resp = await fetch('/admin/users/' + encodeURIComponent(id), {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'user delete failed');
+        if (editingUserId === id) resetUserForm();
+        await loadUsers();
+      } catch (err) {
+        setUserStatus('Error: ' + err.message);
       }
     }
 
@@ -3813,7 +4481,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function setActiveView(key) {
-      if (authRole === 'viewer' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS) {
+      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS) {
         key = VIEW_CALLS;
       }
       if (key === VIEW_CALLS) {
@@ -4006,6 +4674,10 @@ app.get("/admin/ui", (req, res) => {
       } else {
         setActiveView('');
       }
+      if (authRole === 'admin') {
+        renderUserBrandList(getSelectedUserBrands());
+        renderUsersTable(usersList);
+      }
     }
 
     async function generatePreview() {
@@ -4048,6 +4720,10 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'load failed');
         state.config = data.config || {};
         renderConfig(state.config);
+        if (authRole === 'admin') {
+          renderUserBrandList(getSelectedUserBrands());
+          loadUsers();
+        }
         lastLoadError = '';
         setStatus('Loaded (' + (data.source || 'defaults') + ')');
         return true;
@@ -4561,6 +5237,10 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function placeCall(payloadOverride = null) {
+      if (authRole === 'viewer') {
+        setCallStatus('Solo lectura.');
+        return;
+      }
       setCallStatus('Enviando llamada...');
       try {
         const basePayload = {
@@ -5543,42 +6223,45 @@ app.get("/admin/ui", (req, res) => {
         actionTd.className = 'action-cell';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        const callBtn = document.createElement('button');
-        callBtn.type = 'button';
-        callBtn.className = 'btn-compact';
-        callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
-        callBtn.onclick = () => {
-          if (info.hasCalls) {
-            const name = item.applicant ? item.applicant.trim() : '';
-            const label = name || 'este candidato';
-            if (!confirm('¿Seguro que querés volver a llamar a ' + label + '?')) return;
-          }
-          currentCvId = item.id || '';
-          callBrandEl.value = item.brandKey || item.brand || '';
-          updateCallRoleOptions(callBrandEl.value);
-          const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
-          if (item.role && roleOptions.includes(item.role)) {
-            callRoleEl.value = item.role;
-          } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
-            callRoleEl.value = item.roleKey;
-          } else {
-            callRoleEl.value = item.role || item.roleKey || '';
-          }
-          callNameEl.value = item.applicant || '';
-          callPhoneEl.value = item.phone || '';
-          callCvTextEl.value = item.cv_text || '';
-          currentCvSource = item.source || '';
-          placeCall({
-            to: item.phone || '',
-            brand: item.brandKey || item.brand || '',
-            role: callRoleEl.value || item.role || item.roleKey || '',
-            applicant: item.applicant || '',
-            cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
-            cv_text: item.cv_text || '',
-            cv_id: item.id || ''
-          });
-        };
-        actionWrap.appendChild(callBtn);
+        const canWrite = authRole !== 'viewer';
+        if (canWrite) {
+          const callBtn = document.createElement('button');
+          callBtn.type = 'button';
+          callBtn.className = 'btn-compact';
+          callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
+          callBtn.onclick = () => {
+            if (info.hasCalls) {
+              const name = item.applicant ? item.applicant.trim() : '';
+              const label = name || 'este candidato';
+              if (!confirm('¿Seguro que querés volver a llamar a ' + label + '?')) return;
+            }
+            currentCvId = item.id || '';
+            callBrandEl.value = item.brandKey || item.brand || '';
+            updateCallRoleOptions(callBrandEl.value);
+            const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
+            if (item.role && roleOptions.includes(item.role)) {
+              callRoleEl.value = item.role;
+            } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
+              callRoleEl.value = item.roleKey;
+            } else {
+              callRoleEl.value = item.role || item.roleKey || '';
+            }
+            callNameEl.value = item.applicant || '';
+            callPhoneEl.value = item.phone || '';
+            callCvTextEl.value = item.cv_text || '';
+            currentCvSource = item.source || '';
+            placeCall({
+              to: item.phone || '',
+              brand: item.brandKey || item.brand || '',
+              role: callRoleEl.value || item.role || item.roleKey || '',
+              applicant: item.applicant || '',
+              cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
+              cv_text: item.cv_text || '',
+              cv_id: item.id || ''
+            });
+          };
+          actionWrap.appendChild(callBtn);
+        }
         if (info.hasCalls) {
           const viewBtn = document.createElement('button');
           viewBtn.type = 'button';
@@ -5597,7 +6280,11 @@ app.get("/admin/ui", (req, res) => {
           delBtn.onclick = () => deleteCandidateGroup(item);
           actionWrap.appendChild(delBtn);
         }
-        actionTd.appendChild(actionWrap);
+        if (actionWrap.children.length) {
+          actionTd.appendChild(actionWrap);
+        } else {
+          actionTd.textContent = '—';
+        }
         tr.appendChild(actionTd);
         cvListBodyEl.appendChild(tr);
       });
@@ -5642,6 +6329,10 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function saveCvEntry({ silent } = {}) {
+      if (authRole === 'viewer') {
+        if (!silent) setCallStatus('Solo lectura.');
+        return null;
+      }
       if (!silent) setCallStatus('Guardando CV...');
       const payload = {
         brand: callBrandEl.value || '',
@@ -5708,12 +6399,14 @@ app.get("/admin/ui", (req, res) => {
           if (!resp.ok) throw new Error(data.error || 'login failed');
           tokenEl.value = data.token || '';
           authRole = data.role || 'viewer';
+          authBrands = data.allowed_brands || data.allowedBrands || [];
           const ok = await loadConfig();
           if (!ok) throw new Error(lastLoadError || 'load failed');
           setLoginStatus('');
           loginScreenEl.style.display = 'none';
           appEl.style.display = 'flex';
           applyRoleAccess();
+          if (authRole === 'admin') loadUsers();
           setActiveView(VIEW_CALLS);
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
@@ -5729,12 +6422,14 @@ app.get("/admin/ui", (req, res) => {
       setLoginStatus('Verificando...');
       tokenEl.value = key;
       authRole = 'admin';
+      authBrands = [];
       const ok = await loadConfig();
       if (ok) {
         setLoginStatus('');
         loginScreenEl.style.display = 'none';
         appEl.style.display = 'flex';
         applyRoleAccess();
+        loadUsers();
       } else {
         setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
       }
@@ -5751,6 +6446,8 @@ app.get("/admin/ui", (req, res) => {
     loginModeAdminEl.onclick = () => setLoginMode('admin');
     loginModeViewerEl.onclick = () => setLoginMode('viewer');
     loginBtnEl.onclick = login;
+    if (userSaveEl) userSaveEl.onclick = saveUser;
+    if (userClearEl) userClearEl.onclick = resetUserForm;
     loginTokenEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
@@ -5772,6 +6469,7 @@ app.get("/admin/ui", (req, res) => {
     callBrandEl.addEventListener('change', () => { currentCvId = ''; });
     callRoleEl.addEventListener('change', () => { currentCvId = ''; });
     callNameEl.addEventListener('input', () => { currentCvId = ''; });
+    if (usersPanelEl) resetUserForm();
     callPhoneEl.addEventListener('input', () => { currentCvId = ''; });
     callBtnEl.onclick = placeCall;
     callClearEl.onclick = clearCallForm;
@@ -6188,17 +6886,8 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
   }
 });
 
-app.post("/call", async (req, res) => {
+app.post("/call", requireWrite, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization || "";
-    const authed = isConfigAuth(authHeader) || isViewerAuth(authHeader);
-    if (!authed) {
-      if (!CALL_BEARER_TOKEN && !VIEWER_EMAIL) {
-        return res.status(403).json({ error: "auth not configured" });
-      }
-      return res.status(401).json({ error: "unauthorized" });
-    }
-
     const body = req.body || {};
     const {
       to,
@@ -6221,6 +6910,10 @@ app.post("/call", async (req, res) => {
     const fromNorm = normalizePhone(from);
 
     const englishReqBool = resolveEnglishRequired(brand, roleClean, body);
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
 
     console.log("[/call] inbound", {
       to: toNorm,
@@ -7183,10 +7876,14 @@ async function upsertCallDb(entry) {
   await dbQuery(sql, values);
 }
 
-async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit }) {
+async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit, allowedBrands }) {
   if (!dbPool) return [];
   const where = [];
   const values = [];
+  if (Array.isArray(allowedBrands) && allowedBrands.length) {
+    values.push(allowedBrands);
+    where.push(`c.brand_key = ANY($${values.length})`);
+  }
   if (brandParam) {
     values.push(brandKey(brandParam));
     where.push(`c.brand_key = $${values.length}`);
@@ -7379,10 +8076,16 @@ async function fetchCallById(callId) {
   };
 }
 
-async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
+async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBrands }) {
   if (!dbPool) return [];
   const where = [];
   const values = [];
+  let allowedIndex = 0;
+  if (Array.isArray(allowedBrands) && allowedBrands.length) {
+    values.push(allowedBrands);
+    allowedIndex = values.length;
+    where.push(`c.brand_key = ANY($${values.length})`);
+  }
   if (brandParam) {
     values.push(brandKey(brandParam));
     where.push(`c.brand_key = $${values.length}`);
@@ -7397,6 +8100,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
   }
   values.push(limit);
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const callBrandFilter = allowedIndex ? ` AND brand_key = ANY($${allowedIndex})` : "";
   const sql = `
     WITH stats AS (
       SELECT
@@ -7408,7 +8112,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
         (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
         (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
       FROM calls
-      WHERE cv_id IS NOT NULL AND cv_id <> ''
+      WHERE cv_id IS NOT NULL AND cv_id <> ''${callBrandFilter}
       GROUP BY cv_id
     ),
     stats_phone AS (
@@ -7422,7 +8126,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
         (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
         (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
       FROM calls
-      WHERE phone IS NOT NULL AND phone <> ''
+      WHERE phone IS NOT NULL AND phone <> ''${callBrandFilter}
       GROUP BY phone, brand_key
     )
     SELECT
