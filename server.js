@@ -282,6 +282,8 @@ function displayRole(role, brand) {
       : Object.entries(roleConfig);
     let aliasMatch = "";
     let keyAliasMatch = "";
+    const containsMatches = [];
+    const rawTokens = rawKey ? rawKey.split(" ").filter(Boolean) : [];
     for (const [bKey, val] of entries) {
       if (bKey === "meta") continue;
       for (const [rk, entry] of Object.entries(val)) {
@@ -300,10 +302,20 @@ function displayRole(role, brand) {
         if (!keyAliasMatch && aliases.includes(k)) {
           keyAliasMatch = entry?.displayName || role || rk;
         }
+        if (rawTokens.length === 1 && norm) {
+          const tokens = norm.split(" ").filter(Boolean);
+          if (tokens.includes(rawTokens[0])) {
+            containsMatches.push(entry?.displayName || rk);
+          }
+        }
       }
     }
     if (aliasMatch) return aliasMatch;
     if (keyAliasMatch) return keyAliasMatch;
+    if (containsMatches.length === 1) return containsMatches[0];
+    if (containsMatches.length > 1) {
+      return containsMatches.sort((a, b) => String(b).length - String(a).length)[0];
+    }
   }
   switch (k) {
     case "cashier": return "cajero (front)";
@@ -1530,6 +1542,38 @@ app.post("/admin/calls/:callId/whatsapp", requireConfig, async (req, res) => {
   }
 });
 
+app.get("/admin/calls/:callId/audio", requireConfigOrViewer, async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  try {
+    let call = callsByCallSid.get(callId);
+    if (!call) {
+      call = callHistory.find((c) => c && (c.callId === callId || c.callSid === callId));
+    }
+    if (!call && dbPool) {
+      call = await fetchCallById(callId);
+    }
+    if (!call) return res.status(404).json({ error: "call_not_found" });
+    const mediaUrl = await getCallAudioMediaUrl(call);
+    if (!mediaUrl) return res.status(404).json({ error: "no_audio" });
+    const resp = await fetch(mediaUrl);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      return res.status(502).send(`audio_fetch_failed ${resp.status} ${detail}`);
+    }
+    const contentType = resp.headers.get("content-type") || "audio/mpeg";
+    const ext = contentType.includes("wav") ? "wav" : "mp3";
+    const safeName = sanitizeFilename(call.applicant || callId || "interview");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${safeName}.${ext}"`);
+    const buf = Buffer.from(await resp.arrayBuffer());
+    return res.send(buf);
+  } catch (err) {
+    console.error("[admin/calls] audio download failed", err);
+    return res.status(500).json({ error: "download_failed" });
+  }
+});
+
 app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
@@ -2250,6 +2294,7 @@ app.get("/admin/ui", (req, res) => {
       font-size: 11px;
       border-radius: 10px;
       box-shadow: none;
+      white-space: nowrap;
     }
     .btn-compact.secondary { box-shadow: none; }
     .btn-compact.icon-only {
@@ -2268,6 +2313,7 @@ app.get("/admin/ui", (req, res) => {
       align-items: center;
       gap: 10px;
       min-width: 180px;
+      max-width: 260px;
     }
     .candidate-avatar {
       width: 32px;
@@ -2277,7 +2323,13 @@ app.get("/admin/ui", (req, res) => {
       border: 1px solid var(--border);
       background: #efe6d8;
     }
-    .candidate-name { font-weight: 600; }
+    .candidate-name {
+      font-weight: 600;
+      max-width: 200px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
     .status-live::after {
@@ -2437,6 +2489,7 @@ app.get("/admin/ui", (req, res) => {
       background: #fff;
     }
     .audio-download:hover { box-shadow: var(--glow); }
+    .audio-download:disabled { opacity: 0.45; cursor: not-allowed; }
     .summary-cell {
       max-width: 220px;
       display: -webkit-box;
@@ -2463,6 +2516,7 @@ app.get("/admin/ui", (req, res) => {
     }
     .summary-tooltip.visible { display: block; }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .cv-table td { vertical-align: middle; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
       position: sticky;
@@ -2867,7 +2921,7 @@ app.get("/admin/ui", (req, res) => {
             <button class="tab-pill" data-filter="all" type="button">Todos</button>
           </div>
           <div class="table-wrapper" style="margin-top:10px;">
-            <table>
+            <table class="cv-table">
               <thead>
                 <tr>
                   <th>Fecha</th>
@@ -3584,7 +3638,11 @@ app.get("/admin/ui", (req, res) => {
           const roleKey = (roleCard.querySelector('.role-name')?.value || '').trim();
           if (!roleKey) return null;
           const display = (roleCard.querySelector('.role-display')?.value || '').trim() || roleKey;
-          return { key: roleKey, display };
+          const aliasesRaw = (roleCard.querySelector('.role-aliases')?.value || '').trim();
+          const aliases = aliasesRaw
+            ? aliasesRaw.split(',').map((a) => a.trim()).filter(Boolean)
+            : [];
+          return { key: roleKey, display, aliases };
         })
         .filter(Boolean);
     }
@@ -3606,6 +3664,20 @@ app.get("/admin/ui", (req, res) => {
       if (matchKey) return matchKey.display;
       const matchDisplay = roles.find((r) => normalizeKeyUi(r.display) === norm);
       if (matchDisplay) return matchDisplay.display;
+      const matchAlias = roles.find((r) => (r.aliases || []).some((a) => normalizeKeyUi(a) === norm));
+      if (matchAlias) return matchAlias.display;
+      const token = norm.split(' ').filter(Boolean);
+      if (token.length === 1) {
+        const matches = roles.filter((r) => {
+          const keyTokens = normalizeKeyUi(r.key).split(' ').filter(Boolean);
+          const displayTokens = normalizeKeyUi(r.display).split(' ').filter(Boolean);
+          return keyTokens.includes(token[0]) || displayTokens.includes(token[0]);
+        });
+        if (matches.length) {
+          matches.sort((a, b) => String(b.display).length - String(a.display).length);
+          return matches[0].display;
+        }
+      }
       return roleKey;
     }
 
@@ -4498,7 +4570,36 @@ app.get("/admin/ui", (req, res) => {
       return mins + ":" + String(secs).padStart(2, "0");
     }
 
-    function buildAudioPlayer(url) {
+    async function downloadAudio(url, filename) {
+      if (!url) return;
+      try {
+        const headers = {};
+        if (url.startsWith('/') && tokenEl.value) {
+          headers.Authorization = 'Bearer ' + tokenEl.value;
+        }
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) throw new Error('download failed');
+        const contentType = resp.headers.get('content-type') || '';
+        let ext = '';
+        if (contentType.includes('wav')) ext = 'wav';
+        else if (contentType.includes('mpeg')) ext = 'mp3';
+        const blob = await resp.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = objectUrl;
+        link.download = filename || ('audio' + (ext ? '.' + ext : ''));
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      } catch (err) {
+        window.open(url, '_blank');
+      }
+    }
+
+    function buildAudioPlayer(url, opts = {}) {
+      const downloadUrl = opts.downloadUrl || url;
+      const downloadName = opts.downloadName || 'audio.mp3';
       const wrap = document.createElement('div');
       wrap.className = 'audio-player';
       const audio = document.createElement('audio');
@@ -4550,14 +4651,17 @@ app.get("/admin/ui", (req, res) => {
       menu.appendChild(menuBtn);
       menu.appendChild(menuList);
 
-      const downloadLink = document.createElement('a');
-      downloadLink.href = url;
-      downloadLink.className = 'audio-download';
-      downloadLink.textContent = '⬇';
-      downloadLink.title = 'Descargar audio';
-      downloadLink.setAttribute('aria-label', 'Descargar audio');
-      downloadLink.setAttribute('download', '');
-      downloadLink.onclick = (event) => event.stopPropagation();
+      const downloadBtn = document.createElement('button');
+      downloadBtn.type = 'button';
+      downloadBtn.className = 'audio-download';
+      downloadBtn.textContent = '⬇';
+      downloadBtn.title = 'Descargar audio';
+      downloadBtn.setAttribute('aria-label', 'Descargar audio');
+      downloadBtn.disabled = !downloadUrl;
+      downloadBtn.onclick = (event) => {
+        event.stopPropagation();
+        downloadAudio(downloadUrl || url, downloadName);
+      };
 
       playBtn.onclick = (event) => {
         event.stopPropagation();
@@ -4593,7 +4697,7 @@ app.get("/admin/ui", (req, res) => {
       wrap.appendChild(playBtn);
       wrap.appendChild(progress);
       wrap.appendChild(time);
-      wrap.appendChild(downloadLink);
+      wrap.appendChild(downloadBtn);
       wrap.appendChild(menu);
       wrap.appendChild(audio);
       return wrap;
@@ -4716,7 +4820,10 @@ app.get("/admin/ui", (req, res) => {
         actions.appendChild(cvLink);
       }
       if (call.audio_url) {
-        actions.appendChild(buildAudioPlayer(call.audio_url));
+        const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
+        const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
+        const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
+        actions.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
       }
       if (authRole === 'admin' && call.callId) {
         const waBtn = document.createElement('button');
@@ -5170,7 +5277,10 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(cvTd);
         const audioTd = document.createElement('td');
         if (call.audio_url) {
-          audioTd.appendChild(buildAudioPlayer(call.audio_url));
+          const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
+          const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
+          const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
+          audioTd.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
         } else {
           audioTd.textContent = '—';
         }
@@ -5280,17 +5390,18 @@ app.get("/admin/ui", (req, res) => {
       let hasActiveCall = false;
       filtered.forEach((item) => {
         const tr = document.createElement('tr');
-        const addCell = (value, className) => {
+        const addCell = (value, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
           if (className) td.className = className;
+          if (title) td.title = title;
           tr.appendChild(td);
         };
         addCell(formatDate(item.created_at));
         const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
         const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
-        addCell(brandLabel);
-        addCell(roleLabel);
+        addCell(brandLabel, 'cell-compact', brandLabel);
+        addCell(roleLabel, 'cell-compact', roleLabel);
         const candidateTd = document.createElement('td');
         candidateTd.className = 'candidate-cell';
         if (item.cv_photo_url) {
@@ -5304,6 +5415,7 @@ app.get("/admin/ui", (req, res) => {
         const nameSpan = document.createElement('span');
         nameSpan.className = 'candidate-name';
         nameSpan.textContent = item.applicant || '—';
+        if (item.applicant) nameSpan.title = item.applicant;
         candidateTd.appendChild(nameSpan);
         tr.appendChild(candidateTd);
         addCell(item.phone || '');
@@ -5364,7 +5476,7 @@ app.get("/admin/ui", (req, res) => {
           placeCall({
             to: item.phone || '',
             brand: item.brandKey || item.brand || '',
-            role: item.roleKey || item.role || '',
+            role: callRoleEl.value || item.role || item.roleKey || '',
             applicant: item.applicant || '',
             cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
             cv_text: item.cv_text || '',
