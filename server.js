@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const { createPortalRouter } = require("./portal");
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
@@ -1580,6 +1581,18 @@ async function uploadToSpaces({ key, body, contentType }) {
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
+
+const portalRouter = createPortalRouter({
+  dataDir: path.join(__dirname, "data"),
+  uploadsDir: path.join(__dirname, "data", "uploads"),
+  uploadsBaseUrl: "/uploads",
+  resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
+  photoMaxBytes: CV_PHOTO_MAX_BYTES,
+  requireAdmin: requireAdminUser,
+  requireWrite,
+  saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
+});
+app.use("/", portalRouter);
 
 app.post("/admin/login", async (req, res) => {
   const email = normalizeEmail(req.body?.email || "");
