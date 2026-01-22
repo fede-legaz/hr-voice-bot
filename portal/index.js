@@ -120,6 +120,7 @@ function createPortalRouter(options = {}) {
   const logger = options.logger || console;
   const requireAdmin = options.requireAdmin || ((req, res, next) => next());
   const requireWrite = options.requireWrite || requireAdmin;
+  const requireAdminPage = options.requireAdminPage || null;
   const saveCvEntry = typeof options.saveCvEntry === "function" ? options.saveCvEntry : null;
 
   router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
@@ -263,7 +264,12 @@ function createPortalRouter(options = {}) {
     }
   });
 
-  router.get("/admin/portal", requireAdmin, (req, res) => {
+  router.get("/admin/portal", (req, res, next) => {
+    if (requireAdminPage) {
+      return requireAdminPage(req, res, () => {
+        res.type("text/html").send(renderAdminPage({ title: "Portal Admin" }));
+      });
+    }
     res.type("text/html").send(renderAdminPage({ title: "Portal Admin" }));
   });
 
