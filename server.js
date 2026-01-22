@@ -3422,6 +3422,10 @@ app.get("/admin/ui", (req, res) => {
           <span class="nav-icon">I</span>
           <span class="nav-label">Interviews</span>
         </button>
+        <button class="nav-item" id="nav-portal" type="button" title="Portal">
+          <span class="nav-icon">P</span>
+          <span class="nav-label">Portal</span>
+        </button>
         <div class="nav-section-title">Restaurantes</div>
         <div id="brand-list" class="brand-list"></div>
         <button class="secondary nav-add" id="add-brand" type="button" title="Nuevo local">+ Nuevo local</button>
@@ -3814,6 +3818,17 @@ app.get("/admin/ui", (req, res) => {
         </div>
       </section>
 
+      <section id="portal-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.06s;">
+          <div class="panel-title">Portal de aplicaciones</div>
+          <div class="panel-sub">Creá páginas públicas por restaurante, con CV y preguntas personalizadas.</div>
+          <div class="inline" style="margin-top:12px;">
+            <button id="portal-open" type="button">Abrir portal</button>
+          </div>
+          <div class="small" style="margin-top:8px;">Usa la misma clave/token que este admin.</div>
+        </div>
+      </section>
+
       <section id="brand-view" class="view" style="display:none;">
         <div class="panel" style="--delay:.06s;">
           <div class="panel-title">Preview instrucciones</div>
@@ -3917,6 +3932,7 @@ app.get("/admin/ui", (req, res) => {
     const navGeneralEl = document.getElementById('nav-general');
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
+    const navPortalEl = document.getElementById('nav-portal');
     const brandListEl = document.getElementById('brand-list');
     const addBrandEl = document.getElementById('add-brand');
     const viewTitleEl = document.getElementById('view-title');
@@ -3924,10 +3940,12 @@ app.get("/admin/ui", (req, res) => {
     const generalViewEl = document.getElementById('general-view');
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
+    const portalViewEl = document.getElementById('portal-view');
     const brandViewEl = document.getElementById('brand-view');
     const loadBtnEl = document.getElementById('load');
     const saveBtnEl = document.getElementById('save');
     const logoutBtnEl = document.getElementById('logout');
+    const portalOpenEl = document.getElementById('portal-open');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -4047,6 +4065,7 @@ app.get("/admin/ui", (req, res) => {
     };
     const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
+    const VIEW_PORTAL = '__portal__';
 
     if (window.pdfjsLib) {
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
@@ -4103,6 +4122,9 @@ app.get("/admin/ui", (req, res) => {
       if (loginTokenEl) loginTokenEl.value = '';
       if (loginEmailEl) loginEmailEl.value = '';
       if (loginPasswordEl) loginPasswordEl.value = '';
+      try {
+        localStorage.removeItem('portalToken');
+      } catch (err) {}
       setLoginMode('admin');
       setLoggedInUI(false);
     }
@@ -4170,10 +4192,18 @@ app.get("/admin/ui", (req, res) => {
       setLoginStatus('');
     }
 
+    function syncPortalToken() {
+      if (!tokenEl || !tokenEl.value) return;
+      try {
+        localStorage.setItem('portalToken', tokenEl.value);
+      } catch (err) {}
+    }
+
     function applyRoleAccess() {
       const isAdmin = authRole === 'admin';
       const canWrite = authRole !== 'viewer';
       if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
+      if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
       if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
       if (addBrandEl) addBrandEl.style.display = isAdmin ? '' : 'none';
       if (loadBtnEl) loadBtnEl.style.display = isAdmin ? '' : 'none';
@@ -4791,6 +4821,7 @@ app.get("/admin/ui", (req, res) => {
       navGeneralEl.classList.toggle('active', activeView === 'general');
       navCallsEl.classList.toggle('active', activeView === 'calls');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
+      if (navPortalEl) navPortalEl.classList.toggle('active', activeView === 'portal');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
         btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
       });
@@ -4806,6 +4837,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (key === VIEW_INTERVIEWS) {
         activeView = 'interviews';
         activeBrandKey = '';
+      } else if (key === VIEW_PORTAL) {
+        activeView = 'portal';
+        activeBrandKey = '';
       } else if (key) {
         activeView = 'brand';
         activeBrandKey = key;
@@ -4816,6 +4850,7 @@ app.get("/admin/ui", (req, res) => {
       generalViewEl.style.display = activeView === 'general' ? 'block' : 'none';
       callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
+      if (portalViewEl) portalViewEl.style.display = activeView === 'portal' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
         const show = activeView === 'brand' && card.dataset.brandKey === activeBrandKey;
@@ -4830,6 +4865,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'interviews') {
         viewTitleEl.textContent = 'Interviews';
         viewLabelEl.textContent = 'Listado';
+      } else if (activeView === 'portal') {
+        viewTitleEl.textContent = 'Portal';
+        viewLabelEl.textContent = 'Aplicaciones';
       } else {
         viewTitleEl.textContent = 'General';
         viewLabelEl.textContent = 'Configuración';
@@ -6922,6 +6960,7 @@ app.get("/admin/ui", (req, res) => {
           if (!ok) throw new Error(lastLoadError || 'load failed');
           setLoginStatus('');
           setLoggedInUI(true);
+          syncPortalToken();
           applyRoleAccess();
           if (authRole === 'admin') loadUsers();
           setActiveView(VIEW_CALLS);
@@ -6944,6 +6983,7 @@ app.get("/admin/ui", (req, res) => {
       if (ok) {
         setLoginStatus('');
         setLoggedInUI(true);
+        syncPortalToken();
         applyRoleAccess();
         loadUsers();
       } else {
@@ -6982,6 +7022,7 @@ app.get("/admin/ui", (req, res) => {
     navGeneralEl.onclick = () => setActiveView('');
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
+    if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
     callBrandEl.addEventListener('change', () => { currentCvId = ''; });
     callRoleEl.addEventListener('change', () => { currentCvId = ''; });
@@ -7060,6 +7101,16 @@ app.get("/admin/ui", (req, res) => {
       photoModalEl.addEventListener('click', (event) => {
         if (event.target === photoModalEl) closePhotoModal();
       });
+    }
+    if (portalOpenEl) {
+      portalOpenEl.onclick = () => {
+        syncPortalToken();
+        const url = '/admin/portal';
+        const win = window.open(url, '_blank');
+        if (!win) {
+          window.location.href = url;
+        }
+      };
     }
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
