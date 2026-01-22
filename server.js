@@ -32,6 +32,7 @@ const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
 const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
 const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
+const CV_PHOTO_MAX_BYTES = Number(process.env.CV_PHOTO_MAX_BYTES) || 350 * 1024;
 const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.AUDIO_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
 const VOICE = process.env.VOICE || "marin";
 const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
@@ -1140,9 +1141,11 @@ async function initDb() {
         phone TEXT,
         cv_text TEXT,
         cv_url TEXT,
+        cv_photo_url TEXT,
         source TEXT
       );
     `);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
 
@@ -1575,6 +1578,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   for (const entry of list.slice(0, limit)) {
     if (!entry) continue;
     const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+    const cvPhotoUrl = await resolveStoredUrl(entry.cv_photo_url || "");
     let stats = callStatsByCv.get(entry.id);
     if (!stats || !stats.call_count) {
       const bKey = entry.brandKey || brandKey(entry.brand || "");
@@ -1587,6 +1591,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
     results.push(attachActiveCall({
       ...entry,
       cv_url: cvUrl || entry.cv_url || "",
+      cv_photo_url: cvPhotoUrl || entry.cv_photo_url || "",
       call_count: stats?.call_count || 0,
       last_call_at: stats?.last_call_at || "",
       last_outcome: stats?.last_outcome || "",
@@ -1602,8 +1607,15 @@ app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
   try {
     const body = req.body || {};
     let cvUrl = "";
+    let cvPhotoUrl = "";
     const fileDataUrl = body.cv_file_data_url || "";
+    const photoDataUrl = body.cv_photo_data_url || "";
     const fileName = body.cv_file_name || body.file_name || "";
+    let id = body.id || "";
+    if ((fileDataUrl || photoDataUrl) && !id) {
+      id = randomToken();
+      body.id = id;
+    }
     if (fileDataUrl) {
       const size = estimateDataUrlBytes(fileDataUrl);
       if (size > CV_UPLOAD_MAX_BYTES) {
@@ -1612,11 +1624,22 @@ app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
       const parsed = parseDataUrl(fileDataUrl);
       if (parsed && spacesEnabled) {
         const ext = path.extname(fileName || "") || (parsed.mime === "application/pdf" ? ".pdf" : ".bin");
-        const id = body.id || randomToken();
         const key = `cvs/${id}/${sanitizeFilename(path.basename(fileName || `cv${ext}`))}`;
         await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
         cvUrl = key;
-        body.id = id;
+      }
+    }
+    if (photoDataUrl) {
+      const size = estimateDataUrlBytes(photoDataUrl);
+      if (size > CV_PHOTO_MAX_BYTES) {
+        return res.status(400).json({ error: "cv_photo_too_large" });
+      }
+      const parsed = parseDataUrl(photoDataUrl);
+      if (parsed && spacesEnabled) {
+        const ext = parsed.mime === "image/png" ? ".png" : ".jpg";
+        const key = `cvs/${id}/photo${ext}`;
+        await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
+        cvPhotoUrl = key;
       }
     }
     const entry = buildCvEntry(body);
@@ -1624,9 +1647,18 @@ app.post("/admin/cv", requireConfigOrViewer, async (req, res) => {
       return res.status(400).json({ error: "missing_cv_text" });
     }
     if (cvUrl) entry.cv_url = cvUrl;
+    if (cvPhotoUrl) entry.cv_photo_url = cvPhotoUrl;
     recordCvEntry(entry);
     const resolvedUrl = await resolveStoredUrl(entry.cv_url || "");
-    return res.json({ ok: true, cv: { ...entry, cv_url: resolvedUrl || entry.cv_url || "" } });
+    const resolvedPhotoUrl = await resolveStoredUrl(entry.cv_photo_url || "");
+    return res.json({
+      ok: true,
+      cv: {
+        ...entry,
+        cv_url: resolvedUrl || entry.cv_url || "",
+        cv_photo_url: resolvedPhotoUrl || entry.cv_photo_url || ""
+      }
+    });
   } catch (err) {
     console.error("[admin/cv] failed", err);
     return res.status(400).json({ error: "cv_failed", detail: err.message });
@@ -1698,6 +1730,89 @@ app.post("/admin/ocr", requireConfigOrViewer, async (req, res) => {
   } catch (err) {
     console.error("[admin/ocr] failed", err);
     return res.status(400).json({ error: "ocr_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/face-detect", requireConfigOrViewer, async (req, res) => {
+  try {
+    const image = (req.body?.image || "").toString();
+    if (!image) return res.status(400).json({ error: "missing_image" });
+    const size = estimateDataUrlBytes(image);
+    if (size && size > OCR_MAX_IMAGE_BYTES) {
+      return res.status(400).json({ error: "image_too_large" });
+    }
+    const content = [
+      {
+        type: "text",
+        text:
+          "Detecta el rostro humano principal en la imagen. " +
+          "Respondé SOLO JSON con left, top, width, height normalizados (0-1). " +
+          "Si no hay rostro, devolvé {}."
+      },
+      { type: "image_url", image_url: { url: image } }
+    ];
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: OPENAI_MODEL_OCR,
+        temperature: 0,
+        max_tokens: 120,
+        messages: [{ role: "user", content }]
+      })
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      throw new Error(`face_detect failed ${resp.status} ${detail}`);
+    }
+    const data = await resp.json();
+    const raw = (data.choices?.[0]?.message?.content || "").trim();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const match = raw.match(/\{[\s\S]*\}/);
+      if (match) {
+        try { parsed = JSON.parse(match[0]); } catch {}
+      }
+    }
+    const box = parsed && typeof parsed === "object"
+      ? (parsed.face && typeof parsed.face === "object" ? parsed.face : parsed)
+      : null;
+    const toNum = (val) => {
+      const num = Number(val);
+      return Number.isFinite(num) ? num : null;
+    };
+    let left = box ? toNum(box.left) : null;
+    let top = box ? toNum(box.top) : null;
+    let width = box ? toNum(box.width) : null;
+    let height = box ? toNum(box.height) : null;
+    if ([left, top, width, height].some((v) => v === null)) {
+      return res.json({ ok: true, face: null });
+    }
+    if (left > 1 || top > 1 || width > 1 || height > 1) {
+      if (left <= 100 && top <= 100 && width <= 100 && height <= 100) {
+        left /= 100;
+        top /= 100;
+        width /= 100;
+        height /= 100;
+      }
+    }
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    left = clamp(left);
+    top = clamp(top);
+    width = clamp(width);
+    height = clamp(height);
+    if (!width || !height) {
+      return res.json({ ok: true, face: null });
+    }
+    return res.json({ ok: true, face: { left, top, width, height } });
+  } catch (err) {
+    console.error("[admin/face-detect] failed", err);
+    return res.status(400).json({ error: "face_detect_failed", detail: err.message });
   }
 });
 
@@ -2108,6 +2223,21 @@ app.get("/admin/ui", (req, res) => {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .candidate-cell {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 180px;
+    }
+    .candidate-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 10px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      background: #efe6d8;
+    }
+    .candidate-name { font-weight: 600; }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
     .detail-row td {
@@ -2655,6 +2785,7 @@ app.get("/admin/ui", (req, res) => {
             <table>
               <thead>
                 <tr>
+                  <th>Score</th>
                   <th>Fecha</th>
                   <th>Local</th>
                   <th>Posición</th>
@@ -2662,6 +2793,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Teléfono</th>
                   <th>Estado</th>
                   <th>CV</th>
+                  <th>Audio</th>
                   <th>Acción</th>
                 </tr>
               </thead>
@@ -2846,6 +2978,7 @@ app.get("/admin/ui", (req, res) => {
     let lastResults = [];
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
+    let currentCvPhotoDataUrl = '';
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
@@ -2928,6 +3061,7 @@ app.get("/admin/ui", (req, res) => {
       callCvTextEl.value = '';
       currentCvSource = '';
       currentCvFileDataUrl = '';
+      currentCvPhotoDataUrl = '';
       currentCvFileName = '';
       currentCvFileType = '';
       currentCvId = '';
@@ -3966,16 +4100,69 @@ app.get("/admin/ui", (req, res) => {
       };
     }
 
+    async function runFaceDetect(imageDataUrl) {
+      if (!tokenEl.value) throw new Error('Necesitás autenticarte para detectar foto.');
+      const resp = await fetch('/admin/face-detect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ image: imageDataUrl })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'face detect failed');
+      return data.face || null;
+    }
+
+    function clampValue(val, min, max) {
+      return Math.min(max, Math.max(min, val));
+    }
+
+    async function cropFaceThumbnail(imageDataUrl, face) {
+      if (!imageDataUrl || !face) return '';
+      const img = new Image();
+      const loaded = new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('No se pudo cargar la imagen.'));
+      });
+      img.src = imageDataUrl;
+      await loaded;
+      const w = img.naturalWidth || img.width || 0;
+      const h = img.naturalHeight || img.height || 0;
+      if (!w || !h) return '';
+      const box = {
+        left: clampValue(face.left || 0, 0, 1),
+        top: clampValue(face.top || 0, 0, 1),
+        width: clampValue(face.width || 0, 0, 1),
+        height: clampValue(face.height || 0, 0, 1)
+      };
+      if (!box.width || !box.height) return '';
+      const centerX = (box.left + box.width / 2) * w;
+      const centerY = (box.top + box.height / 2) * h;
+      const baseSize = Math.max(box.width * w, box.height * h) * 1.35;
+      const minSize = Math.min(w, h, 140);
+      const cropSize = clampValue(baseSize, minSize, Math.min(w, h));
+      const sx = clampValue(centerX - cropSize / 2, 0, w - cropSize);
+      const sy = clampValue(centerY - cropSize / 2, 0, h - cropSize);
+      const canvas = document.createElement('canvas');
+      const outSize = 160;
+      canvas.width = outSize;
+      canvas.height = outSize;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, outSize, outSize);
+      return canvas.toDataURL('image/jpeg', 0.86);
+    }
+
     async function handleCvFile(file) {
       if (!file) return;
       currentCvSource = file.name || '';
       currentCvFileName = file.name || '';
       currentCvFileType = file.type || '';
       currentCvFileDataUrl = '';
+      currentCvPhotoDataUrl = '';
       currentCvId = '';
       setCvStatus('Leyendo CV...');
       try {
         let text = '';
+        let faceImage = '';
         if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
           const pdf = await loadPdfDocument(file);
           text = await extractPdfTextFromDoc(pdf);
@@ -3983,6 +4170,14 @@ app.get("/admin/ui", (req, res) => {
             setCvStatus('PDF escaneado, aplicando OCR...');
             const images = await renderPdfToImages(pdf, OCR_MAX_PAGES);
             text = await runOcr(images);
+            faceImage = images[0] || '';
+          } else {
+            try {
+              const images = await renderPdfToImages(pdf, 1);
+              faceImage = images[0] || '';
+            } catch (err) {
+              console.error('[cv-face] render pdf failed', err);
+            }
           }
           currentCvFileDataUrl = await readFileAsDataUrl(file);
         } else if (file.type.startsWith('image/')) {
@@ -3990,6 +4185,7 @@ app.get("/admin/ui", (req, res) => {
           const dataUrl = await fileToDataUrl(file);
           text = await runOcr([dataUrl]);
           currentCvFileDataUrl = dataUrl;
+          faceImage = dataUrl;
         } else if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
           text = await file.text();
           currentCvFileDataUrl = '';
@@ -4016,6 +4212,17 @@ app.get("/admin/ui", (req, res) => {
             applyAiContactResult(ai);
           } catch (err) {
             console.error('[cv-contact] ai failed', err);
+          }
+        }
+        if (faceImage) {
+          try {
+            const face = await runFaceDetect(faceImage);
+            if (face) {
+              const thumb = await cropFaceThumbnail(faceImage, face);
+              if (thumb) currentCvPhotoDataUrl = thumb;
+            }
+          } catch (err) {
+            console.error('[cv-face] detect failed', err);
           }
         }
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
@@ -4410,6 +4617,7 @@ app.get("/admin/ui", (req, res) => {
           entry.phone = item.phone;
           entry.cv_text = item.cv_text;
           entry.cv_url = item.cv_url;
+          entry.cv_photo_url = item.cv_photo_url;
           entry.created_at = item.created_at;
           entry.source = item.source;
         }
@@ -4716,7 +4924,21 @@ app.get("/admin/ui", (req, res) => {
         const roleLabel = item.roleKey ? getRoleDisplayForBrand(item.brandKey || item.brand, item.roleKey) : (item.role || '');
         addCell(brandLabel);
         addCell(roleLabel);
-        addCell(item.applicant || '');
+        const candidateTd = document.createElement('td');
+        candidateTd.className = 'candidate-cell';
+        if (item.cv_photo_url) {
+          const avatar = document.createElement('img');
+          avatar.src = item.cv_photo_url;
+          avatar.alt = '';
+          avatar.loading = 'lazy';
+          avatar.className = 'candidate-avatar';
+          candidateTd.appendChild(avatar);
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'candidate-name';
+        nameSpan.textContent = item.applicant || '—';
+        candidateTd.appendChild(nameSpan);
+        tr.appendChild(candidateTd);
         addCell(item.phone || '');
         const info = cvStatusInfo(item);
         if (info.inCall) {
@@ -4840,7 +5062,8 @@ app.get("/admin/ui", (req, res) => {
         cv_text: callCvTextEl.value || '',
         source: currentCvSource || '',
         cv_file_data_url: currentCvFileDataUrl || '',
-        cv_file_name: currentCvFileName || ''
+        cv_file_name: currentCvFileName || '',
+        cv_photo_data_url: currentCvPhotoDataUrl || ''
       };
       if (!payload.applicant.trim() || !payload.phone.trim()) {
         maybeFillContactFromCv(payload.cv_text || '');
@@ -6208,6 +6431,7 @@ function buildCvEntry(payload = {}) {
   const source = (payload.source || payload.file_name || "").trim();
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || "";
+  const cvPhotoUrl = payload.cv_photo_url || "";
   return {
     id,
     created_at: createdAt,
@@ -6220,6 +6444,7 @@ function buildCvEntry(payload = {}) {
     cv_text: cvText,
     cv_len: cvText.length,
     cv_url: cvUrl,
+    cv_photo_url: cvPhotoUrl,
     source
   };
 }
@@ -6252,9 +6477,9 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, source
+      cv_text, cv_url, cv_photo_url, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -6265,6 +6490,7 @@ async function upsertCvDb(entry) {
       phone = EXCLUDED.phone,
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
+      cv_photo_url = EXCLUDED.cv_photo_url,
       source = EXCLUDED.source
   `;
   const values = [
@@ -6278,6 +6504,7 @@ async function upsertCvDb(entry) {
     entry.phone || "",
     entry.cv_text || "",
     entry.cv_url || "",
+    entry.cv_photo_url || "",
     entry.source || ""
   ];
   await dbQuery(sql, values);
@@ -6528,7 +6755,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -6547,6 +6774,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
   const mapped = [];
   for (const row of rows) {
     const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    const cvPhotoUrl = await resolveStoredUrl(row.cv_photo_url || "");
     const lastAudioUrl = await resolveStoredUrl(row.last_audio_url || "");
     mapped.push({
       id: row.id,
@@ -6559,6 +6787,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
       phone: row.phone || "",
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
+      cv_photo_url: cvPhotoUrl || "",
       source: row.source || "",
       call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
       last_call_at: row.last_call_at ? new Date(row.last_call_at).toISOString() : "",
