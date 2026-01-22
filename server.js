@@ -272,6 +272,7 @@ function roleNeedsEnglish(roleK, brand) {
 }
 
 function displayRole(role, brand) {
+  const rawKey = normalizeKey(role);
   const k = roleKey(role);
   if (roleConfig) {
     // try to find displayName (prefer brand-specific)
@@ -279,18 +280,30 @@ function displayRole(role, brand) {
     const entries = brandK && roleConfig[brandK]
       ? [[brandK, roleConfig[brandK]]]
       : Object.entries(roleConfig);
+    let aliasMatch = "";
+    let keyAliasMatch = "";
     for (const [bKey, val] of entries) {
       if (bKey === "meta") continue;
       for (const [rk, entry] of Object.entries(val)) {
         if (rk === "_meta") continue;
         const norm = normalizeKey(rk);
         const aliases = Array.isArray(entry?.aliases) ? entry.aliases.map((a) => normalizeKey(a)) : [];
-        if (norm === k || aliases.includes(k)) {
-          if (entry?.displayName) return entry.displayName;
-          break;
+        if (rawKey && norm === rawKey) {
+          return entry?.displayName || role || rk;
+        }
+        if (!aliasMatch && rawKey && aliases.includes(rawKey)) {
+          aliasMatch = entry?.displayName || role || rk;
+        }
+        if (norm === k) {
+          return entry?.displayName || role || rk;
+        }
+        if (!keyAliasMatch && aliases.includes(k)) {
+          keyAliasMatch = entry?.displayName || role || rk;
         }
       }
     }
+    if (aliasMatch) return aliasMatch;
+    if (keyAliasMatch) return keyAliasMatch;
   }
   switch (k) {
     case "cashier": return "cajero (front)";
@@ -3576,11 +3589,24 @@ app.get("/admin/ui", (req, res) => {
         .filter(Boolean);
     }
 
+    function normalizeKeyUi(value) {
+      return (value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    }
+
     function getRoleDisplayForBrand(brandKey, roleKey) {
       if (!brandKey || !roleKey) return roleKey || '';
       const roles = listRolesForBrand(brandKey);
-      const match = roles.find((r) => r.key === roleKey);
-      return match ? match.display : roleKey;
+      const norm = normalizeKeyUi(roleKey);
+      const matchKey = roles.find((r) => normalizeKeyUi(r.key) === norm);
+      if (matchKey) return matchKey.display;
+      const matchDisplay = roles.find((r) => normalizeKeyUi(r.display) === norm);
+      if (matchDisplay) return matchDisplay.display;
+      return roleKey;
     }
 
     function syncSidebar() {
@@ -4627,7 +4653,7 @@ app.get("/admin/ui", (req, res) => {
       const grid = document.createElement('div');
       grid.className = 'detail-grid';
       const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
-      const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
+      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
       const statusText = formatInterviewSummary(call);
       const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '';
       const englishLabel = call.english_detail ? (call.english + ' (' + call.english_detail + ')') : (call.english || '');
@@ -5110,7 +5136,7 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(buildDateCell(call.created_at));
         const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
         addCell(brandLabel, 'cell-compact', brandLabel);
-        const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
+      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
         addCell(roleLabel, 'cell-compact', roleLabel);
         addCell(call.applicant);
         addCell(call.phone);
@@ -5262,7 +5288,7 @@ app.get("/admin/ui", (req, res) => {
         };
         addCell(formatDate(item.created_at));
         const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
-        const roleLabel = item.roleKey ? getRoleDisplayForBrand(item.brandKey || item.brand, item.roleKey) : (item.role || '');
+        const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
         addCell(brandLabel);
         addCell(roleLabel);
         const candidateTd = document.createElement('td');
@@ -5323,7 +5349,14 @@ app.get("/admin/ui", (req, res) => {
           currentCvId = item.id || '';
           callBrandEl.value = item.brandKey || item.brand || '';
           updateCallRoleOptions(callBrandEl.value);
-          callRoleEl.value = item.roleKey || item.role || '';
+          const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
+          if (item.role && roleOptions.includes(item.role)) {
+            callRoleEl.value = item.role;
+          } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
+            callRoleEl.value = item.roleKey;
+          } else {
+            callRoleEl.value = item.role || item.roleKey || '';
+          }
           callNameEl.value = item.applicant || '';
           callPhoneEl.value = item.phone || '';
           callCvTextEl.value = item.cv_text || '';
