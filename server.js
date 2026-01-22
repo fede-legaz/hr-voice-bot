@@ -700,6 +700,7 @@ function buildCallFromPayload(payload, extra = {}) {
   const roleClean = sanitizeRole(payload?.role || DEFAULT_ROLE);
   const englishRequired = resolveEnglishRequired(brand, roleClean, payload || {});
   const address = resolveAddress(brand, payload?.address || null);
+  const resumeUrl = payload?.resume_url || payload?.resumeUrl || "";
   return {
     callSid: extra.callSid || null,
     to: normalizePhone(extra.to || payload?.to || ""),
@@ -713,7 +714,7 @@ function buildCallFromPayload(payload, extra = {}) {
     cvSummary: payload?.cv_summary || payload?.cvSummary || "",
     cvText: payload?.cv_text || payload?.cvText || payload?.cv_summary || "",
     cvId: payload?.cv_id || payload?.cvId || "",
-    resumeUrl: payload?.resume_url || "",
+    resumeUrl,
     recordingStarted: false,
     transcriptText: "",
     scoring: null,
@@ -721,7 +722,7 @@ function buildCallFromPayload(payload, extra = {}) {
     recordingToken: null,
     whatsappSent: false,
     audioUrl: payload?.audio_url || "",
-    cvUrl: payload?.cv_url || "",
+    cvUrl: payload?.cv_url || payload?.cvUrl || resumeUrl || "",
     outcome: null,
     noTranscriptReason: null,
     incomplete: true,
@@ -751,6 +752,7 @@ function collectActiveCalls(allowedBrands) {
     if (call.expiresAt && call.expiresAt < now) continue;
     const status = normalizeCallStatus(call.callStatus || call.status);
     if (!isActiveCallStatus(status)) continue;
+    if (call.outcome) continue;
     const bKey = brandKey(call.brand || "");
     if (allowedSet && bKey && !allowedSet.has(bKey)) continue;
     const cvId = call.cvId || call.cv_id || "";
@@ -2705,10 +2707,11 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-cell {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 10px;
       min-width: 180px;
       max-width: 220px;
+      padding-top: 2px;
     }
     .candidate-avatar {
       width: 32px;
@@ -2717,6 +2720,12 @@ app.get("/admin/ui", (req, res) => {
       object-fit: cover;
       border: 1px solid var(--border);
       background: #efe6d8;
+      cursor: zoom-in;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+    .candidate-avatar:hover {
+      transform: scale(1.08);
+      box-shadow: 0 6px 16px rgba(20, 24, 22, 0.18);
     }
     .candidate-name {
       font-weight: 600;
@@ -3067,6 +3076,33 @@ app.get("/admin/ui", (req, res) => {
       max-height: 55vh;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .photo-modal-card { width: min(720px, 92vw); }
+    .photo-modal-card img {
+      width: auto;
+      max-width: 86vw;
+      max-height: 70vh;
+      border-radius: 14px;
+      object-fit: contain;
+      background: #fff;
+      border: 1px solid var(--border);
+    }
+    .photo-tooltip {
+      position: fixed;
+      display: none;
+      padding: 6px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      z-index: 12;
+    }
+    .photo-tooltip img {
+      width: 140px;
+      height: 140px;
+      border-radius: 10px;
+      object-fit: cover;
+      display: block;
+    }
     .login-title { font-size: 22px; font-weight: 700; font-family: "Space Grotesk", sans-serif; }
     .login-sub { color: var(--muted); font-size: 14px; }
     @keyframes fadeUp {
@@ -3204,6 +3240,7 @@ app.get("/admin/ui", (req, res) => {
           <input type="hidden" id="token" />
           <button class="secondary" id="load" type="button">Reload</button>
           <button id="save" type="button">Save</button>
+          <button class="secondary" id="logout" type="button" style="display:none;">Salir</button>
         </div>
       </div>
       <div class="status-line"><span id="status"></span></div>
@@ -3630,6 +3667,15 @@ app.get("/admin/ui", (req, res) => {
       <textarea id="interview-modal-text" readonly></textarea>
     </div>
   </div>
+  <div id="photo-modal" class="cv-modal">
+    <div class="cv-modal-card photo-modal-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">Foto</div>
+        <button class="secondary" id="photo-modal-close" type="button">Cerrar</button>
+      </div>
+      <img id="photo-modal-img" alt="Foto del CV" />
+    </div>
+  </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
@@ -3660,6 +3706,7 @@ app.get("/admin/ui", (req, res) => {
     const brandViewEl = document.getElementById('brand-view');
     const loadBtnEl = document.getElementById('load');
     const saveBtnEl = document.getElementById('save');
+    const logoutBtnEl = document.getElementById('logout');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -3713,6 +3760,9 @@ app.get("/admin/ui", (req, res) => {
     const interviewModalEl = document.getElementById('interview-modal');
     const interviewModalTextEl = document.getElementById('interview-modal-text');
     const interviewModalCloseEl = document.getElementById('interview-modal-close');
+    const photoModalEl = document.getElementById('photo-modal');
+    const photoModalImgEl = document.getElementById('photo-modal-img');
+    const photoModalCloseEl = document.getElementById('photo-modal-close');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -3790,6 +3840,50 @@ app.get("/admin/ui", (req, res) => {
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
     const SIDEBAR_STATE_KEY = 'hrbot_sidebar_collapsed';
+
+    function stopPolling() {
+      if (resultsTimer) {
+        clearTimeout(resultsTimer);
+        resultsTimer = null;
+      }
+      if (cvTimer) {
+        clearTimeout(cvTimer);
+        cvTimer = null;
+      }
+      if (cvActiveTimer) {
+        clearTimeout(cvActiveTimer);
+        cvActiveTimer = null;
+      }
+      cvPollUntil = 0;
+    }
+
+    function setLoggedInUI(isLoggedIn) {
+      if (loginScreenEl) loginScreenEl.style.display = isLoggedIn ? 'none' : 'flex';
+      if (appEl) appEl.style.display = isLoggedIn ? 'flex' : 'none';
+      if (logoutBtnEl) logoutBtnEl.style.display = isLoggedIn ? '' : 'none';
+    }
+
+    function clearAuthState() {
+      tokenEl.value = '';
+      adminToken = '';
+      authRole = 'viewer';
+      authBrands = [];
+      systemPromptUnlocked = false;
+      lockSystemPrompt();
+      setAdminStatus('Bloqueado');
+      setStatus('');
+      setLoginStatus('');
+    }
+
+    function logout() {
+      stopPolling();
+      clearAuthState();
+      if (loginTokenEl) loginTokenEl.value = '';
+      if (loginEmailEl) loginEmailEl.value = '';
+      if (loginPasswordEl) loginPasswordEl.value = '';
+      setLoginMode('admin');
+      setLoggedInUI(false);
+    }
 
     function setSidebarCollapsed(collapsed, persist = true) {
       if (!sidebarEl) return;
@@ -5148,12 +5242,60 @@ app.get("/admin/ui", (req, res) => {
       const sx = clampValue(centerX - cropSize / 2, 0, w - cropSize);
       const sy = clampValue(centerY - cropSize / 2, 0, h - cropSize);
       const canvas = document.createElement('canvas');
-      const outSize = 160;
+      const outSize = 240;
       canvas.width = outSize;
       canvas.height = outSize;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, outSize, outSize);
       return canvas.toDataURL('image/jpeg', 0.86);
+    }
+
+    const photoTooltipEl = document.createElement('div');
+    photoTooltipEl.className = 'photo-tooltip';
+    const photoTooltipImg = document.createElement('img');
+    photoTooltipImg.alt = 'Foto';
+    photoTooltipEl.appendChild(photoTooltipImg);
+    document.body.appendChild(photoTooltipEl);
+
+    function positionPhotoTooltip(rect) {
+      if (!rect) return;
+      const pad = 12;
+      const tipRect = photoTooltipEl.getBoundingClientRect();
+      let left = rect.right + 10;
+      if (left + tipRect.width + pad > window.innerWidth) {
+        left = rect.left - tipRect.width - 10;
+      }
+      if (left < pad) left = pad;
+      let top = rect.top;
+      if (top + tipRect.height + pad > window.innerHeight) {
+        top = window.innerHeight - tipRect.height - pad;
+      }
+      if (top < pad) top = pad;
+      photoTooltipEl.style.left = left + 'px';
+      photoTooltipEl.style.top = top + 'px';
+    }
+
+    function showPhotoTooltip(target, url) {
+      if (!target || !url) return;
+      photoTooltipImg.src = url;
+      photoTooltipEl.style.display = 'block';
+      positionPhotoTooltip(target.getBoundingClientRect());
+    }
+
+    function hidePhotoTooltip() {
+      photoTooltipEl.style.display = 'none';
+    }
+
+    function openPhotoModal(url) {
+      if (!photoModalEl || !photoModalImgEl || !url) return;
+      photoModalImgEl.src = url;
+      photoModalEl.style.display = 'flex';
+    }
+
+    function closePhotoModal() {
+      if (!photoModalEl || !photoModalImgEl) return;
+      photoModalEl.style.display = 'none';
+      photoModalImgEl.src = '';
     }
 
     async function handleCvFile(file) {
@@ -5167,7 +5309,7 @@ app.get("/admin/ui", (req, res) => {
       setCvStatus('Leyendo CV...');
       try {
         let text = '';
-        let faceImage = '';
+        let faceCandidates = [];
         if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
           const pdf = await loadPdfDocument(file);
           text = await extractPdfTextFromDoc(pdf);
@@ -5175,11 +5317,11 @@ app.get("/admin/ui", (req, res) => {
             setCvStatus('PDF escaneado, aplicando OCR...');
             const images = await renderPdfToImages(pdf, OCR_MAX_PAGES);
             text = await runOcr(images);
-            faceImage = images[0] || '';
+            faceCandidates = images;
           } else {
             try {
-              const images = await renderPdfToImages(pdf, 1);
-              faceImage = images[0] || '';
+              const images = await renderPdfToImages(pdf, Math.min(2, OCR_MAX_PAGES));
+              faceCandidates = images;
             } catch (err) {
               console.error('[cv-face] render pdf failed', err);
             }
@@ -5190,7 +5332,7 @@ app.get("/admin/ui", (req, res) => {
           const dataUrl = await fileToDataUrl(file);
           text = await runOcr([dataUrl]);
           currentCvFileDataUrl = dataUrl;
-          faceImage = dataUrl;
+          faceCandidates = [dataUrl];
         } else if (file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt')) {
           text = await file.text();
           currentCvFileDataUrl = '';
@@ -5219,15 +5361,19 @@ app.get("/admin/ui", (req, res) => {
             console.error('[cv-contact] ai failed', err);
           }
         }
-        if (faceImage) {
-          try {
-            const face = await runFaceDetect(faceImage);
-            if (face) {
-              const thumb = await cropFaceThumbnail(faceImage, face);
-              if (thumb) currentCvPhotoDataUrl = thumb;
+        if (faceCandidates.length) {
+          for (const candidate of faceCandidates) {
+            try {
+              const face = await runFaceDetect(candidate);
+              if (!face) continue;
+              const thumb = await cropFaceThumbnail(candidate, face);
+              if (thumb) {
+                currentCvPhotoDataUrl = thumb;
+                break;
+              }
+            } catch (err) {
+              console.error('[cv-face] detect failed', err);
             }
-          } catch (err) {
-            console.error('[cv-face] detect failed', err);
           }
         }
         setCvStatus('CV listo (' + callCvTextEl.value.length + ' caracteres).');
@@ -6179,6 +6325,15 @@ app.get("/admin/ui", (req, res) => {
           avatar.alt = '';
           avatar.loading = 'lazy';
           avatar.className = 'candidate-avatar';
+          avatar.tabIndex = 0;
+          avatar.addEventListener('click', () => openPhotoModal(item.cv_photo_url));
+          avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, item.cv_photo_url));
+          avatar.addEventListener('mouseleave', hidePhotoTooltip);
+          avatar.addEventListener('focus', () => showPhotoTooltip(avatar, item.cv_photo_url));
+          avatar.addEventListener('blur', hidePhotoTooltip);
+          avatar.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') openPhotoModal(item.cv_photo_url);
+          });
           candidateTd.appendChild(avatar);
         }
         const nameSpan = document.createElement('span');
@@ -6215,6 +6370,13 @@ app.get("/admin/ui", (req, res) => {
           link.style.border = '1px solid var(--border)';
           wrap.appendChild(link);
           cvTd.appendChild(wrap);
+        } else if (item.cv_text) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary btn-compact';
+          btn.textContent = 'Ver CV';
+          btn.onclick = () => openCvModal(item.cv_text || '');
+          cvTd.appendChild(btn);
         } else {
           cvTd.textContent = '—';
         }
@@ -6403,8 +6565,7 @@ app.get("/admin/ui", (req, res) => {
           const ok = await loadConfig();
           if (!ok) throw new Error(lastLoadError || 'load failed');
           setLoginStatus('');
-          loginScreenEl.style.display = 'none';
-          appEl.style.display = 'flex';
+          setLoggedInUI(true);
           applyRoleAccess();
           if (authRole === 'admin') loadUsers();
           setActiveView(VIEW_CALLS);
@@ -6426,8 +6587,7 @@ app.get("/admin/ui", (req, res) => {
       const ok = await loadConfig();
       if (ok) {
         setLoginStatus('');
-        loginScreenEl.style.display = 'none';
-        appEl.style.display = 'flex';
+        setLoggedInUI(true);
         applyRoleAccess();
         loadUsers();
       } else {
@@ -6448,6 +6608,7 @@ app.get("/admin/ui", (req, res) => {
     loginBtnEl.onclick = login;
     if (userSaveEl) userSaveEl.onclick = saveUser;
     if (userClearEl) userClearEl.onclick = resetUserForm;
+    if (logoutBtnEl) logoutBtnEl.onclick = logout;
     loginTokenEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
@@ -6536,6 +6697,14 @@ app.get("/admin/ui", (req, res) => {
         if (event.target === interviewModalEl) closeInterviewModal();
       });
     }
+    if (photoModalCloseEl) {
+      photoModalCloseEl.addEventListener('click', closePhotoModal);
+    }
+    if (photoModalEl) {
+      photoModalEl.addEventListener('click', (event) => {
+        if (event.target === photoModalEl) closePhotoModal();
+      });
+    }
     const urlToken = new URLSearchParams(window.location.search).get('token');
     if (urlToken) {
       setLoginMode('admin');
@@ -6574,8 +6743,12 @@ app.get("/r/:token", (req, res) => {
 async function hardStopNoAnswer({ callSid, to, brand, role, applicant, reason }) {
   const toNorm = normalizePhone(to);
   if (!toNorm) return;
-  if (callSid && noAnswerSentBySid.has(callSid)) return;
-  const call = {
+  const tracked = callSid ? callsByCallSid.get(callSid) : null;
+  if (callSid && noAnswerSentBySid.has(callSid)) {
+    if (tracked) deactivateActiveCall(tracked);
+    return;
+  }
+  const call = tracked || {
     callSid: callSid || null,
     to: toNorm,
     from: null,
@@ -6588,6 +6761,14 @@ async function hardStopNoAnswer({ callSid, to, brand, role, applicant, reason })
     userSpoke: false,
     hangupTimer: null
   };
+  if (callSid) call.callSid = callSid;
+  if (toNorm) call.to = toNorm;
+  if (brand) call.brand = brand;
+  if (role) call.role = role;
+  if (applicant) call.applicant = applicant;
+  call.spokenRole = displayRole(call.role || DEFAULT_ROLE, call.brand || DEFAULT_BRAND);
+  call.englishRequired = roleNeedsEnglish(roleKey(call.role || DEFAULT_ROLE), call.brand || DEFAULT_BRAND);
+  if (!call.address) call.address = resolveAddress(call.brand || DEFAULT_BRAND, null);
   await markNoAnswer(call, reason || "no_answer");
 }
 
@@ -6936,13 +7117,26 @@ app.post("/call", requireWrite, async (req, res) => {
 
     const resolvedAddress = address || resolveAddress(brand, null);
 
+    if (cvId && resume_url) {
+      const cvEntry = buildCvEntry({
+        id: cvId,
+        brand,
+        role: roleClean,
+        applicant,
+        phone: toNorm,
+        cv_text: cv_text || cvSummary,
+        resume_url
+      });
+      recordCvEntry(cvEntry);
+    }
     if (!cvId && cvSummary && dbPool) {
       const cvEntry = buildCvEntry({
         brand,
         role: roleClean,
         applicant,
         phone: toNorm,
-        cv_text: cv_text || cvSummary
+        cv_text: cv_text || cvSummary,
+        resume_url
       });
       recordCvEntry(cvEntry);
       cvId = cvEntry.id;
@@ -7712,7 +7906,7 @@ function buildCvEntry(payload = {}) {
   const cvText = (payload.cv_text || payload.cv_summary || "").trim();
   const source = (payload.source || payload.file_name || "").trim();
   const id = payload.id || randomToken();
-  const cvUrl = payload.cv_url || "";
+  const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
   return {
     id,
@@ -8350,13 +8544,26 @@ async function placeOutboundCall(payload) {
   }
 
   const resolvedAddress = address || resolveAddress(brand, null);
+  if (cvId && resume_url) {
+    const cvEntry = buildCvEntry({
+      id: cvId,
+      brand,
+      role: roleClean,
+      applicant,
+      phone: toNorm,
+      cv_text: cv_text || cvSummary,
+      resume_url
+    });
+    recordCvEntry(cvEntry);
+  }
   if (!cvId && cvSummary && dbPool) {
     const cvEntry = buildCvEntry({
       brand,
       role: roleClean,
       applicant,
       phone: toNorm,
-      cv_text: cv_text || cvSummary
+      cv_text: cv_text || cvSummary,
+      resume_url
     });
     recordCvEntry(cvEntry);
     cvId = cvEntry.id;
@@ -8475,15 +8682,40 @@ async function hangupCall(call) {
   }
 }
 
+function syncTrackedCall(call) {
+  if (!call?.callSid) return call;
+  const tracked = callsByCallSid.get(call.callSid);
+  if (tracked && tracked !== call) {
+    Object.assign(tracked, call);
+    return tracked;
+  }
+  return call;
+}
+
+function deactivateActiveCall(call) {
+  if (!call?.callSid) return;
+  const tracked = callsByCallSid.get(call.callSid);
+  const target = tracked || call;
+  if (isActiveCallStatus(target.callStatus)) {
+    target.callStatus = "completed";
+  }
+}
+
 async function markNoAnswer(call, reason) {
   try {
     if (!call) return;
-    if (call.callSid && noAnswerSentBySid.has(call.callSid)) return;
+    call = syncTrackedCall(call);
+    if (call.callSid && noAnswerSentBySid.has(call.callSid)) {
+      deactivateActiveCall(call);
+      return;
+    }
     setOutcome(call, "NO_ANSWER", outcomeLabel("NO_ANSWER"));
     call.noAnswerReason = reason || "No contestó";
     call.incomplete = true;
     call.scoring = null;
     call.whatsappSent = false;
+    call.callStatus = "completed";
+    call.expiresAt = Date.now() + CALL_TTL_MS;
     if (call.hangupTimer) {
       clearTimeout(call.hangupTimer);
       call.hangupTimer = null;
@@ -8510,12 +8742,18 @@ async function markNoAnswer(call, reason) {
 async function markNoSpeech(call, reason) {
   try {
     if (!call) return;
-    if (call.callSid && noAnswerSentBySid.has(call.callSid)) return;
+    call = syncTrackedCall(call);
+    if (call.callSid && noAnswerSentBySid.has(call.callSid)) {
+      deactivateActiveCall(call);
+      return;
+    }
     setOutcome(call, "NO_SPEECH", outcomeLabel("NO_SPEECH"));
     call.noAnswerReason = reason || "No emitió opinión";
     call.incomplete = true;
     call.scoring = null;
     call.whatsappSent = false;
+    call.callStatus = "completed";
+    call.expiresAt = Date.now() + CALL_TTL_MS;
     if (call.hangupTimer) {
       clearTimeout(call.hangupTimer);
       call.hangupTimer = null;
