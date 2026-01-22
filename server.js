@@ -2671,19 +2671,62 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 980px) {
       .app { flex-direction: column; }
-      .sidebar { width: 100%; flex-basis: auto; }
+      .sidebar {
+        width: 100%;
+        flex-basis: auto;
+        position: sticky;
+        top: 0;
+        z-index: 12;
+        max-height: 60vh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .content { padding: 20px; }
+    }
+    @media (max-width: 820px) {
+      .sidebar { padding: 18px; }
       .sidebar.collapsed {
         width: 100%;
         flex-basis: auto;
-        padding: 24px;
+        padding: 14px 16px;
         align-items: stretch;
+        max-height: 68px;
+        overflow: hidden;
       }
-      .sidebar.collapsed .brand-title,
-      .sidebar.collapsed .nav-label,
+      .sidebar.collapsed .brand-title { display: block; }
+      .sidebar.collapsed .nav,
+      .sidebar.collapsed .brand-list,
       .sidebar.collapsed .nav-section-title,
-      .sidebar.collapsed .nav-add { display: block; }
-      .sidebar.collapsed .nav { align-items: stretch; }
-      .content { padding: 20px; }
+      .sidebar.collapsed .nav-add { display: none; }
+      .content-header { align-items: flex-start; }
+      .header-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
+      .panel { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      .inline { align-items: stretch; }
+      .table-wrapper { max-height: none; }
+    }
+    @media (max-width: 640px) {
+      body { font-size: 14px; }
+      .content { padding: 16px; }
+      .panel { padding: 16px; border-radius: 16px; }
+      .panel-title { font-size: 16px; }
+      .tab-pill { padding: 6px 10px; }
+      th, td { padding: 8px 10px; font-size: 11.5px; }
+      .audio-player { min-width: 0; flex-wrap: wrap; gap: 6px; }
+      .audio-progress { width: 70px; }
+      .audio-time { min-width: 56px; }
+      .detail-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .brand-mark { font-size: 16px; }
+      .brand-sub { font-size: 10px; }
+      .nav-item { padding: 8px 10px; }
+      .nav-label { font-size: 12px; }
+      .brand-list { max-height: 200px; overflow-y: auto; }
+      .icon-btn { width: 36px; height: 36px; }
+      .btn-compact { padding: 6px 8px; }
+      .candidate-cell { max-width: 180px; }
+      .candidate-name { max-width: 140px; }
     }
   </style>
 </head>
@@ -3291,7 +3334,14 @@ app.get("/admin/ui", (req, res) => {
       if (!sidebarEl) return;
       const isMobile = window.matchMedia && window.matchMedia('(max-width: 980px)').matches;
       if (isMobile) {
-        setSidebarCollapsed(false, false);
+        let collapsed = true;
+        try {
+          const stored = localStorage.getItem(SIDEBAR_STATE_KEY);
+          if (stored !== null) collapsed = stored === '1';
+        } catch (err) {
+          collapsed = true;
+        }
+        setSidebarCollapsed(collapsed, false);
         return;
       }
       let collapsed = false;
