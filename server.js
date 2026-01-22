@@ -1490,6 +1490,33 @@ app.delete("/admin/calls/:callId", requireConfig, async (req, res) => {
   return res.json({ ok: true, removed });
 });
 
+app.post("/admin/calls/:callId/whatsapp", requireConfig, async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  try {
+    let call = callsByCallSid.get(callId);
+    if (!call) {
+      call = callHistory.find((c) => c && (c.callId === callId || c.callSid === callId));
+    }
+    if (!call && dbPool) {
+      call = await fetchCallById(callId);
+    }
+    if (!call) return res.status(404).json({ error: "call_not_found" });
+    const hydrated = hydrateCallForWhatsapp(call);
+    const scoring = buildScoringFromCall(hydrated);
+    const note = hydrated.noTranscriptReason || hydrated.noAnswerReason || hydrated.outcome_detail || "";
+    await sendWhatsappMessage({ body: formatWhatsapp(scoring, hydrated, { note }) });
+    const mediaUrl = await getCallAudioMediaUrl(hydrated);
+    if (mediaUrl) {
+      await sendWhatsappMessage({ mediaUrl });
+    }
+    return res.json({ ok: true, media: !!mediaUrl });
+  } catch (err) {
+    console.error("[admin/whatsapp] failed", err);
+    return res.status(400).json({ error: "whatsapp_failed", detail: err.message });
+  }
+});
+
 app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
@@ -2383,6 +2410,20 @@ app.get("/admin/ui", (req, res) => {
     }
     .audio-speed-menu button:hover { background: rgba(27, 122, 140, 0.12); }
     .audio-menu.open .audio-speed-menu { display: block; }
+    .audio-download {
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--primary);
+      text-decoration: none;
+      font-size: 12px;
+      background: #fff;
+    }
+    .audio-download:hover { box-shadow: var(--glow); }
     .summary-cell {
       max-width: 220px;
       display: -webkit-box;
@@ -4483,6 +4524,15 @@ app.get("/admin/ui", (req, res) => {
       menu.appendChild(menuBtn);
       menu.appendChild(menuList);
 
+      const downloadLink = document.createElement('a');
+      downloadLink.href = url;
+      downloadLink.className = 'audio-download';
+      downloadLink.textContent = '⬇';
+      downloadLink.title = 'Descargar audio';
+      downloadLink.setAttribute('aria-label', 'Descargar audio');
+      downloadLink.setAttribute('download', '');
+      downloadLink.onclick = (event) => event.stopPropagation();
+
       playBtn.onclick = (event) => {
         event.stopPropagation();
         if (audio.paused) {
@@ -4517,6 +4567,7 @@ app.get("/admin/ui", (req, res) => {
       wrap.appendChild(playBtn);
       wrap.appendChild(progress);
       wrap.appendChild(time);
+      wrap.appendChild(downloadLink);
       wrap.appendChild(menu);
       wrap.appendChild(audio);
       return wrap;
@@ -4640,6 +4691,17 @@ app.get("/admin/ui", (req, res) => {
       }
       if (call.audio_url) {
         actions.appendChild(buildAudioPlayer(call.audio_url));
+      }
+      if (authRole === 'admin' && call.callId) {
+        const waBtn = document.createElement('button');
+        waBtn.type = 'button';
+        waBtn.className = 'secondary btn-compact';
+        waBtn.textContent = 'WhatsApp';
+        waBtn.onclick = (event) => {
+          event.stopPropagation();
+          sendInterviewWhatsapp(call);
+        };
+        actions.appendChild(waBtn);
       }
       if (actions.children.length) {
         card.appendChild(actions);
@@ -4957,6 +5019,29 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function sendInterviewWhatsapp(call) {
+      const callId = call?.callId || '';
+      if (!callId) return;
+      setStatus('Enviando entrevista por WhatsApp...');
+      try {
+        const resp = await fetch('/admin/calls/' + encodeURIComponent(callId) + '/whatsapp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'whatsapp failed');
+        setStatus('Entrevista enviada por WhatsApp.');
+      } catch (err) {
+        setStatus('Error: ' + err.message);
+      } finally {
+        setTimeout(() => {
+          if (statusEl.textContent.startsWith('Entrevista enviada') || statusEl.textContent.startsWith('Enviando')) {
+            setStatus('');
+          }
+        }, 3000);
+      }
+    }
+
     async function deleteCandidate(cvId) {
       if (!cvId) return;
       if (!confirm('¿Seguro que querés borrar este candidato?')) return;
@@ -5067,6 +5152,17 @@ app.get("/admin/ui", (req, res) => {
         const actionTd = document.createElement('td');
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
+        if (authRole === 'admin' && call.callId) {
+          const waBtn = document.createElement('button');
+          waBtn.type = 'button';
+          waBtn.className = 'secondary btn-compact';
+          waBtn.textContent = 'WhatsApp';
+          waBtn.onclick = (event) => {
+            event.stopPropagation();
+            sendInterviewWhatsapp(call);
+          };
+          actionWrap.appendChild(waBtn);
+        }
         if (authRole === 'admin' && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
@@ -6962,6 +7058,88 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
   return mapped;
 }
 
+async function fetchCallById(callId) {
+  if (!dbPool || !callId) return null;
+  const sql = `
+    SELECT
+      c.call_sid,
+      c.created_at,
+      c.brand,
+      c.brand_key,
+      c.role,
+      c.role_key,
+      c.applicant,
+      c.phone,
+      c.score,
+      c.recommendation,
+      c.summary,
+      c.warmth,
+      c.fluency,
+      c.english,
+      c.english_detail,
+      c.experience,
+      c.area,
+      c.availability,
+      c.salary,
+      c.trial,
+      c.stay_plan,
+      c.stay_detail,
+      c.mobility,
+      c.outcome,
+      c.outcome_detail,
+      c.duration_sec,
+      c.audio_url,
+      c.english_required,
+      c.cv_id,
+      COALESCE(c.cv_text, cv.cv_text) AS cv_text,
+      COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
+      COALESCE(c.phone, cv.phone) AS phone_resolved
+    FROM calls c
+    LEFT JOIN cvs cv ON c.cv_id = cv.id
+    WHERE c.call_sid = $1
+    LIMIT 1
+  `;
+  const result = await dbQuery(sql, [callId]);
+  const row = result?.rows?.[0];
+  if (!row) return null;
+  const audioUrl = await resolveStoredUrl(row.audio_url || "");
+  const cvUrl = await resolveStoredUrl(row.cv_url || "");
+  return {
+    callId: row.call_sid,
+    brand: row.brand || "",
+    brandKey: row.brand_key || "",
+    role: row.role || "",
+    roleKey: row.role_key || "",
+    applicant: row.applicant_resolved || row.applicant || "",
+    phone: row.phone_resolved || row.phone || "",
+    score: row.score !== null ? Number(row.score) : null,
+    recommendation: row.recommendation || null,
+    summary: row.summary || "",
+    warmth: row.warmth !== null ? Number(row.warmth) : null,
+    fluency: row.fluency !== null ? Number(row.fluency) : null,
+    english: row.english || "",
+    english_detail: row.english_detail || "",
+    experience: row.experience || "",
+    area: row.area || "",
+    availability: row.availability || "",
+    salary: row.salary || "",
+    trial: row.trial || "",
+    stay_plan: row.stay_plan || "",
+    stay_detail: row.stay_detail || "",
+    mobility: row.mobility || "",
+    outcome: row.outcome || "",
+    outcome_detail: row.outcome_detail || "",
+    duration_sec: row.duration_sec !== null ? Number(row.duration_sec) : null,
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    audio_url: audioUrl || "",
+    english_required: !!row.english_required,
+    cv_id: row.cv_id || "",
+    cv_text: row.cv_text || "",
+    cv_url: cvUrl || ""
+  };
+}
+
 async function fetchCvFromDb({ brandParam, roleParam, qParam, limit }) {
   if (!dbPool) return [];
   const where = [];
@@ -7126,6 +7304,45 @@ function formatWhatsapp(scoring, call, opts = {}) {
   ].filter(Boolean).join("\n");
 }
 
+function buildScoringFromCall(call) {
+  if (!call) return null;
+  if (call.outcome) return null;
+  const hasScore = call.score !== null && call.score !== undefined;
+  const hasData = !!call.summary || hasScore || !!call.recommendation;
+  if (!hasData) return null;
+  return {
+    score_0_100: hasScore ? call.score : "n/d",
+    recommendation: call.recommendation || "review",
+    summary: call.summary || "",
+    extracted: {
+      warmth_score: call.warmth,
+      fluency_score: call.fluency,
+      english_level: call.english || "",
+      english_detail: call.english_detail || "",
+      experience: call.experience || "",
+      area: call.area || "",
+      availability: call.availability || "",
+      salary_expectation: call.salary || "",
+      trial_date: call.trial || "",
+      stay_plan: call.stay_plan || "",
+      stay_detail: call.stay_detail || "",
+      mobility: call.mobility || ""
+    }
+  };
+}
+
+function hydrateCallForWhatsapp(call) {
+  if (!call) return null;
+  const hydrated = { ...call };
+  hydrated.callSid = hydrated.callSid || hydrated.callId || hydrated.call_sid || "";
+  hydrated.durationSec = hydrated.durationSec || hydrated.duration_sec || null;
+  hydrated.audioUrl = hydrated.audioUrl || hydrated.audio_url || "";
+  if (!hydrated.spokenRole) {
+    hydrated.spokenRole = displayRole(hydrated.role || "", hydrated.brand || "");
+  }
+  return hydrated;
+}
+
 async function sendWhatsappMessage({ body, mediaUrl }) {
   if (!WHATSAPP_FROM || !WHATSAPP_TO || !TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
     throw new Error("missing whatsapp credentials/from/to");
@@ -7152,8 +7369,9 @@ async function sendWhatsappMessage({ body, mediaUrl }) {
 
 async function getCallAudioMediaUrl(call) {
   if (!call) return "";
-  if (call.audioUrl) {
-    return resolveStoredUrl(call.audioUrl, 24 * 60 * 60);
+  const audioKey = call.audioUrl || call.audio_url || "";
+  if (audioKey) {
+    return resolveStoredUrl(audioKey, 24 * 60 * 60);
   }
   if (call.recordingToken) {
     return `${PUBLIC_BASE_URL}/r/${call.recordingToken}`;
