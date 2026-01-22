@@ -2712,16 +2712,19 @@ app.get("/admin/ui", (req, res) => {
       gap: 10px;
       min-width: 180px;
       max-width: 220px;
+      min-height: 32px;
     }
     .candidate-avatar {
       width: 32px;
       height: 32px;
       border-radius: 10px;
       object-fit: cover;
+      object-position: center;
       border: 1px solid var(--border);
       background: #efe6d8;
       cursor: zoom-in;
       transition: transform 0.15s ease, box-shadow 0.15s ease;
+      flex: 0 0 32px;
     }
     .candidate-avatar:hover {
       transform: scale(1.08);
@@ -2729,11 +2732,12 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-name {
       font-weight: 600;
-      line-height: 1.2;
+      line-height: 1.1;
       max-width: 200px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      display: block;
     }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
@@ -3094,7 +3098,7 @@ app.get("/admin/ui", (req, res) => {
     .cv-table {
       table-layout: fixed;
     }
-    .cv-table td { vertical-align: middle; white-space: nowrap; }
+    .cv-table td { vertical-align: middle; white-space: nowrap; line-height: 1.2; }
     .cv-table th:nth-child(1), .cv-table td:nth-child(1) { width: 140px; }
     .cv-table th:nth-child(2), .cv-table td:nth-child(2) { width: 190px; }
     .cv-table th:nth-child(3), .cv-table td:nth-child(3) { width: 130px; }
@@ -3110,6 +3114,7 @@ app.get("/admin/ui", (req, res) => {
     }
     .action-cell { white-space: nowrap; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .cv-table th, .cv-table td { vertical-align: middle; }
     th {
       position: sticky;
       top: 0;
@@ -3963,6 +3968,7 @@ app.get("/admin/ui", (req, res) => {
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
+    const faceFocusCache = new Map();
     let usersList = [];
     let editingUserId = '';
     const CV_CHAR_LIMIT = 4000;
@@ -5381,6 +5387,30 @@ app.get("/admin/ui", (req, res) => {
       return Math.min(max, Math.max(min, val));
     }
 
+    function normalizeFaceBox(face) {
+      if (!face) return null;
+      const box = {
+        left: clampValue(face.left || 0, 0, 1),
+        top: clampValue(face.top || 0, 0, 1),
+        width: clampValue(face.width || 0, 0, 1),
+        height: clampValue(face.height || 0, 0, 1)
+      };
+      if (!box.width || !box.height) return null;
+      const area = box.width * box.height;
+      const aspect = box.width / box.height;
+      if (box.width > 0.65 || box.height > 0.65 || area > 0.35) return null;
+      if (box.width < 0.05 || box.height < 0.05 || area < 0.003) return null;
+      if (!Number.isFinite(aspect) || aspect < 0.5 || aspect > 1.8) return null;
+      return {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        centerX: box.left + box.width / 2,
+        centerY: box.top + box.height / 2
+      };
+    }
+
     async function cropFaceThumbnail(imageDataUrl, face) {
       if (!imageDataUrl || !face) return '';
       const img = new Image();
@@ -5421,6 +5451,41 @@ app.get("/admin/ui", (req, res) => {
       return canvas.toDataURL('image/jpeg', 0.86);
     }
 
+    async function resolveFaceFocus(url) {
+      if (!url) return null;
+      if (faceFocusCache.has(url)) return faceFocusCache.get(url);
+      const task = (async () => {
+        try {
+          const face = await runFaceDetect(url);
+          return normalizeFaceBox(face);
+        } catch (err) {
+          console.error('[cv-face] detect failed', err);
+          return null;
+        }
+      })();
+      faceFocusCache.set(url, task);
+      return task;
+    }
+
+    function applyFaceFocusToImg(imgEl, focus) {
+      if (!imgEl) return;
+      if (!focus || !Number.isFinite(focus.centerX) || !Number.isFinite(focus.centerY)) {
+        imgEl.style.objectPosition = 'center';
+        return;
+      }
+      const x = Math.round(clampValue(focus.centerX, 0, 1) * 100);
+      const y = Math.round(clampValue(focus.centerY, 0, 1) * 100);
+      imgEl.style.objectPosition = x + '% ' + y + '%';
+    }
+
+    function getFaceFocusFromEl(el) {
+      if (!el) return null;
+      const x = Number(el.dataset.faceX);
+      const y = Number(el.dataset.faceY);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+      return { centerX: x, centerY: y };
+    }
+
     const photoTooltipEl = document.createElement('div');
     photoTooltipEl.className = 'photo-tooltip';
     const photoTooltipImg = document.createElement('img');
@@ -5448,6 +5513,7 @@ app.get("/admin/ui", (req, res) => {
 
     function showPhotoTooltip(target, url) {
       if (!target || !url) return;
+      applyFaceFocusToImg(photoTooltipImg, getFaceFocusFromEl(target));
       photoTooltipImg.src = url;
       photoTooltipEl.style.display = 'block';
       positionPhotoTooltip(target.getBoundingClientRect());
@@ -5457,9 +5523,21 @@ app.get("/admin/ui", (req, res) => {
       photoTooltipEl.style.display = 'none';
     }
 
-    function openPhotoModal(url) {
+    function openPhotoModal(url, focus) {
       if (!photoModalEl || !photoModalImgEl || !url) return;
       photoModalImgEl.src = url;
+      if (focus && Number.isFinite(focus.centerX) && Number.isFinite(focus.centerY)) {
+        const size = Math.min(window.innerWidth * 0.6, 420);
+        photoModalImgEl.style.width = size + 'px';
+        photoModalImgEl.style.height = size + 'px';
+        photoModalImgEl.style.objectFit = 'cover';
+        applyFaceFocusToImg(photoModalImgEl, focus);
+      } else {
+        photoModalImgEl.style.width = '';
+        photoModalImgEl.style.height = '';
+        photoModalImgEl.style.objectFit = 'contain';
+        photoModalImgEl.style.objectPosition = 'center';
+      }
       photoModalEl.style.display = 'flex';
     }
 
@@ -5467,6 +5545,23 @@ app.get("/admin/ui", (req, res) => {
       if (!photoModalEl || !photoModalImgEl) return;
       photoModalEl.style.display = 'none';
       photoModalImgEl.src = '';
+      photoModalImgEl.style.width = '';
+      photoModalImgEl.style.height = '';
+      photoModalImgEl.style.objectFit = 'contain';
+      photoModalImgEl.style.objectPosition = 'center';
+    }
+
+    function attachAvatarHandlers(avatar, url, focus) {
+      if (!avatar || !url) return;
+      avatar.tabIndex = 0;
+      avatar.addEventListener('click', () => openPhotoModal(url, focus));
+      avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, url));
+      avatar.addEventListener('mouseleave', hidePhotoTooltip);
+      avatar.addEventListener('focus', () => showPhotoTooltip(avatar, url));
+      avatar.addEventListener('blur', hidePhotoTooltip);
+      avatar.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') openPhotoModal(url, focus);
+      });
     }
 
     async function handleCvFile(file) {
@@ -6483,7 +6578,10 @@ app.get("/admin/ui", (req, res) => {
           if (title) td.title = title;
           tr.appendChild(td);
         };
-        addCell(formatDate(item.created_at), 'cell-compact', formatDate(item.created_at));
+        const dateTd = buildDateCell(item.created_at);
+        dateTd.classList.add('cell-compact');
+        dateTd.title = formatDate(item.created_at);
+        tr.appendChild(dateTd);
         const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
         const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
         addCell(brandLabel, 'cell-compact', brandLabel);
@@ -6492,29 +6590,25 @@ app.get("/admin/ui", (req, res) => {
         candidateTd.className = 'candidate-cell';
         if (item.cv_photo_url) {
           const avatar = document.createElement('img');
-          avatar.src = item.cv_photo_url;
           avatar.alt = '';
           avatar.loading = 'lazy';
           avatar.className = 'candidate-avatar';
-          avatar.onload = () => {
-            const ratio = avatar.naturalWidth && avatar.naturalHeight
-              ? avatar.naturalWidth / avatar.naturalHeight
-              : 0;
-            if (!ratio || ratio < 0.85 || ratio > 1.15) {
+          avatar.style.visibility = 'hidden';
+          avatar.onerror = () => avatar.remove();
+          const photoUrl = item.cv_photo_url;
+          resolveFaceFocus(photoUrl).then((focus) => {
+            if (!avatar.isConnected) return;
+            if (!focus) {
               avatar.remove();
               return;
             }
-            avatar.tabIndex = 0;
-            avatar.addEventListener('click', () => openPhotoModal(item.cv_photo_url));
-            avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, item.cv_photo_url));
-            avatar.addEventListener('mouseleave', hidePhotoTooltip);
-            avatar.addEventListener('focus', () => showPhotoTooltip(avatar, item.cv_photo_url));
-            avatar.addEventListener('blur', hidePhotoTooltip);
-            avatar.addEventListener('keydown', (event) => {
-              if (event.key === 'Enter') openPhotoModal(item.cv_photo_url);
-            });
-          };
-          avatar.onerror = () => avatar.remove();
+            avatar.dataset.faceX = String(focus.centerX || 0);
+            avatar.dataset.faceY = String(focus.centerY || 0);
+            avatar.src = photoUrl;
+            applyFaceFocusToImg(avatar, focus);
+            avatar.style.visibility = 'visible';
+            attachAvatarHandlers(avatar, photoUrl, focus);
+          });
           candidateTd.appendChild(avatar);
         }
         const nameSpan = document.createElement('span');
