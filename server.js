@@ -2240,21 +2240,33 @@ app.get("/admin/ui", (req, res) => {
     .candidate-name { font-weight: 600; }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
+    .status-live::after {
+      content: "...";
+      display: inline-block;
+      width: 0;
+      overflow: hidden;
+      vertical-align: bottom;
+      margin-left: 2px;
+      animation: ellipsis 1.2s infinite steps(4, end);
+    }
+    @keyframes ellipsis {
+      to { width: 1.2em; }
+    }
     .detail-row td {
-      background: #fbf7f0;
-      padding: 14px 16px;
+      background: #fff;
+      padding: 12px 14px;
     }
     .detail-card {
       border: 1px solid var(--border);
       border-radius: 14px;
       background: #fff;
-      padding: 12px;
-      box-shadow: var(--shadow);
+      padding: 14px;
+      box-shadow: none;
     }
     .detail-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 10px 14px;
+      gap: 8px 12px;
     }
     .detail-item {
       display: flex;
@@ -2273,7 +2285,7 @@ app.get("/admin/ui", (req, res) => {
     .detail-block {
       grid-column: 1 / -1;
       border: 1px solid var(--border);
-      background: #fbfaf6;
+      background: #fdfbf7;
       border-radius: 12px;
       padding: 10px 12px;
       white-space: pre-wrap;
@@ -2283,6 +2295,94 @@ app.get("/admin/ui", (req, res) => {
     }
     .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .audio-wrap { display: flex; align-items: center; gap: 8px; }
+    .detail-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .detail-head-left { display: flex; flex-direction: column; gap: 4px; }
+    .detail-name { font-size: 14px; font-weight: 700; color: #1f2a24; }
+    .detail-meta { font-size: 12px; color: var(--muted); }
+    .detail-head-right { display: flex; align-items: center; gap: 10px; }
+    .detail-status { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .detail-score { min-width: 52px; }
+    .date-stack { display: flex; flex-direction: column; gap: 2px; }
+    .date-main { font-weight: 700; color: #1f2a24; }
+    .date-sub { font-size: 11px; color: var(--muted); }
+    .audio-player {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+      min-width: 210px;
+    }
+    .audio-hidden { display: none; }
+    .audio-play {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      font-size: 12px;
+      background: var(--primary);
+      color: #fff;
+      box-shadow: none;
+    }
+    .audio-progress {
+      width: 90px;
+      accent-color: var(--primary);
+    }
+    .audio-time {
+      font-size: 11px;
+      color: var(--muted);
+      min-width: 62px;
+      text-align: right;
+    }
+    .audio-menu { position: relative; }
+    .audio-menu-btn {
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--primary);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+    .audio-speed-menu {
+      position: absolute;
+      right: 0;
+      top: 34px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 6px;
+      display: none;
+      z-index: 10;
+      box-shadow: var(--shadow);
+      min-width: 90px;
+    }
+    .audio-speed-menu button {
+      width: 100%;
+      background: transparent;
+      border: none;
+      color: var(--ink);
+      font-size: 11px;
+      padding: 6px 8px;
+      text-align: left;
+      border-radius: 8px;
+      box-shadow: none;
+    }
+    .audio-speed-menu button:hover { background: rgba(27, 122, 140, 0.12); }
+    .audio-menu.open .audio-speed-menu { display: block; }
     .summary-cell {
       max-width: 220px;
       display: -webkit-box;
@@ -2972,6 +3072,7 @@ app.get("/admin/ui", (req, res) => {
     let resultsTimer = null;
     let cvTimer = null;
     let cvActiveTimer = null;
+    let cvPollUntil = 0;
     let cvFilterMode = 'no_calls';
     let resultsFilterMode = 'completed';
     let lastCvList = [];
@@ -4281,6 +4382,7 @@ app.get("/admin/ui", (req, res) => {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'call failed');
         setCallStatus('Llamada encolada: ' + (data.callId || data.status || 'OK'));
+        cvPollUntil = Date.now() + 120000;
         scheduleResultsLoad();
         scheduleCvLoad();
       } catch (err) {
@@ -4293,6 +4395,131 @@ app.get("/admin/ui", (req, res) => {
       const d = new Date(value);
       if (Number.isNaN(d.getTime())) return value;
       return d.toLocaleString();
+    }
+
+    function buildDateCell(value) {
+      const td = document.createElement('td');
+      if (!value) {
+        td.textContent = '—';
+        return td;
+      }
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) {
+        td.textContent = value;
+        return td;
+      }
+      const dateText = d.toLocaleDateString();
+      const timeText = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const stack = document.createElement('div');
+      stack.className = 'date-stack';
+      const dateLine = document.createElement('div');
+      dateLine.className = 'date-main';
+      dateLine.textContent = dateText;
+      const timeLine = document.createElement('div');
+      timeLine.className = 'date-sub';
+      timeLine.textContent = timeText;
+      stack.appendChild(dateLine);
+      stack.appendChild(timeLine);
+      td.appendChild(stack);
+      return td;
+    }
+
+    function formatAudioTime(seconds) {
+      const total = Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : 0;
+      const mins = Math.floor(total / 60);
+      const secs = Math.floor(total % 60);
+      return mins + ":" + String(secs).padStart(2, "0");
+    }
+
+    function buildAudioPlayer(url) {
+      const wrap = document.createElement('div');
+      wrap.className = 'audio-player';
+      const audio = document.createElement('audio');
+      audio.className = 'audio-hidden';
+      audio.src = url;
+      audio.preload = 'metadata';
+
+      const playBtn = document.createElement('button');
+      playBtn.type = 'button';
+      playBtn.className = 'audio-play';
+      playBtn.textContent = '▶';
+
+      const progress = document.createElement('input');
+      progress.type = 'range';
+      progress.className = 'audio-progress';
+      progress.min = '0';
+      progress.max = '100';
+      progress.step = '0.1';
+      progress.value = '0';
+
+      const time = document.createElement('span');
+      time.className = 'audio-time';
+      time.textContent = '0:00 / 0:00';
+
+      const menu = document.createElement('div');
+      menu.className = 'audio-menu';
+      const menuBtn = document.createElement('button');
+      menuBtn.type = 'button';
+      menuBtn.className = 'audio-menu-btn';
+      menuBtn.textContent = '⋯';
+      const menuList = document.createElement('div');
+      menuList.className = 'audio-speed-menu';
+      const speeds = [1, 1.25, 1.5, 1.75, 2];
+      speeds.forEach((speed) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = speed + 'x';
+        btn.onclick = (event) => {
+          event.stopPropagation();
+          audio.playbackRate = speed;
+          menu.classList.remove('open');
+        };
+        menuList.appendChild(btn);
+      });
+      menuBtn.onclick = (event) => {
+        event.stopPropagation();
+        menu.classList.toggle('open');
+      };
+      menu.appendChild(menuBtn);
+      menu.appendChild(menuList);
+
+      playBtn.onclick = (event) => {
+        event.stopPropagation();
+        if (audio.paused) {
+          audio.play().catch(() => {});
+        } else {
+          audio.pause();
+        }
+      };
+
+      audio.addEventListener('play', () => { playBtn.textContent = '❚❚'; });
+      audio.addEventListener('pause', () => { playBtn.textContent = '▶'; });
+      audio.addEventListener('ended', () => { playBtn.textContent = '▶'; });
+
+      const updateProgress = () => {
+        const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        const current = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+        const pct = duration ? (current / duration) * 100 : 0;
+        progress.value = String(pct);
+        time.textContent = formatAudioTime(current) + ' / ' + formatAudioTime(duration);
+      };
+      audio.addEventListener('timeupdate', updateProgress);
+      audio.addEventListener('loadedmetadata', updateProgress);
+
+      progress.addEventListener('input', (event) => {
+        event.stopPropagation();
+        const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+        if (!duration) return;
+        const pct = Number(progress.value) / 100;
+        audio.currentTime = duration * pct;
+      });
+
+      wrap.appendChild(playBtn);
+      wrap.appendChild(progress);
+      wrap.appendChild(time);
+      wrap.appendChild(menu);
+      wrap.appendChild(audio);
+      return wrap;
     }
 
     function outcomeText(outcome, detail) {
@@ -4348,24 +4575,46 @@ app.get("/admin/ui", (req, res) => {
       card.className = 'detail-card';
       const grid = document.createElement('div');
       grid.className = 'detail-grid';
-      card.appendChild(grid);
       const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
       const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
       const statusText = formatInterviewSummary(call);
       const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '';
       const englishLabel = call.english_detail ? (call.english + ' (' + call.english_detail + ')') : (call.english || '');
 
+      const head = document.createElement('div');
+      head.className = 'detail-head';
+      const headLeft = document.createElement('div');
+      headLeft.className = 'detail-head-left';
+      const nameEl = document.createElement('div');
+      nameEl.className = 'detail-name';
+      nameEl.textContent = call.applicant || '—';
+      const metaEl = document.createElement('div');
+      metaEl.className = 'detail-meta';
+      const metaParts = [brandLabel, roleLabel, formatDate(call.created_at)].filter(Boolean);
+      metaEl.textContent = metaParts.join(' • ');
+      headLeft.appendChild(nameEl);
+      headLeft.appendChild(metaEl);
+      const headRight = document.createElement('div');
+      headRight.className = 'detail-head-right';
+      const statusEl = document.createElement('div');
+      statusEl.className = 'detail-status';
+      statusEl.textContent = statusText || '—';
+      const scoreEl = scorePill(call.score);
+      scoreEl.classList.add('detail-score');
+      headRight.appendChild(statusEl);
+      headRight.appendChild(scoreEl);
+      head.appendChild(headLeft);
+      head.appendChild(headRight);
+      card.appendChild(head);
+      card.appendChild(grid);
+
       addDetailItem(grid, 'Local', brandLabel);
       addDetailItem(grid, 'Posición', roleLabel);
-      addDetailItem(grid, 'Candidato', call.applicant || '');
       addDetailItem(grid, 'Teléfono', call.phone || '');
-      addDetailItem(grid, 'Fecha', formatDate(call.created_at));
-      addDetailItem(grid, 'Estado', statusText);
       if (call.outcome === 'NO_ANSWER' && call.attempts > 1) {
         addDetailItem(grid, 'Intentos', String(call.attempts));
       }
       addDetailItem(grid, 'Recomendación', recommendationLabel(call.recommendation));
-      addDetailItem(grid, 'Score', call.score !== null && call.score !== undefined ? String(Math.round(call.score)) : '');
       addDetailItem(grid, 'Calidez', call.warmth !== null && call.warmth !== undefined ? String(call.warmth) : '');
       addDetailItem(grid, 'Fluidez', call.fluency !== null && call.fluency !== undefined ? String(call.fluency) : '');
       addDetailItem(grid, 'Inglés', englishLabel);
@@ -4390,14 +4639,7 @@ app.get("/admin/ui", (req, res) => {
         actions.appendChild(cvLink);
       }
       if (call.audio_url) {
-        const audioLink = document.createElement('a');
-        audioLink.href = call.audio_url;
-        audioLink.target = '_blank';
-        audioLink.rel = 'noopener';
-        audioLink.textContent = 'Audio';
-        audioLink.className = 'secondary btn-compact';
-        audioLink.style.textDecoration = 'none';
-        actions.appendChild(audioLink);
+        actions.appendChild(buildAudioPlayer(call.audio_url));
       }
       if (actions.children.length) {
         card.appendChild(actions);
@@ -4672,6 +4914,9 @@ app.get("/admin/ui", (req, res) => {
 
     window.addEventListener('scroll', hideSummaryTooltip, true);
     window.addEventListener('resize', hideSummaryTooltip);
+    window.addEventListener('click', () => {
+      document.querySelectorAll('.audio-menu.open').forEach((menu) => menu.classList.remove('open'));
+    });
 
     async function deleteInterview(callId) {
       if (!callId) return;
@@ -4764,7 +5009,7 @@ app.get("/admin/ui", (req, res) => {
         const tr = document.createElement('tr');
         tr.classList.add('row-clickable');
         tr.addEventListener('click', (event) => {
-          if (event.target.closest('button, a, audio')) return;
+          if (event.target.closest('button, a, audio, input, .audio-player')) return;
           toggleInterviewDetailsRow(tr, call);
         });
         const addCell = (value, className, title) => {
@@ -4774,7 +5019,10 @@ app.get("/admin/ui", (req, res) => {
           if (title) td.title = title;
           tr.appendChild(td);
         };
-        addCell(formatDate(call.created_at));
+        const scoreTd = document.createElement('td');
+        scoreTd.appendChild(scorePill(call.score));
+        tr.appendChild(scoreTd);
+        tr.appendChild(buildDateCell(call.created_at));
         const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
         addCell(brandLabel, 'cell-compact', brandLabel);
         const roleLabel = call.roleKey ? getRoleDisplayForBrand(call.brandKey || call.brand, call.roleKey) : (call.role || '');
@@ -4809,19 +5057,16 @@ app.get("/admin/ui", (req, res) => {
           cvTd.textContent = '—';
         }
         tr.appendChild(cvTd);
+        const audioTd = document.createElement('td');
+        if (call.audio_url) {
+          audioTd.appendChild(buildAudioPlayer(call.audio_url));
+        } else {
+          audioTd.textContent = '—';
+        }
+        tr.appendChild(audioTd);
         const actionTd = document.createElement('td');
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        if (call.audio_url) {
-          const audioLink = document.createElement('a');
-          audioLink.href = call.audio_url;
-          audioLink.target = '_blank';
-          audioLink.rel = 'noopener';
-          audioLink.textContent = 'Audio';
-          audioLink.className = 'secondary btn-compact';
-          audioLink.style.textDecoration = 'none';
-          actionWrap.appendChild(audioLink);
-        }
         if (authRole === 'admin' && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
@@ -4974,6 +5219,11 @@ app.get("/admin/ui", (req, res) => {
         callBtn.className = 'btn-compact';
         callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
         callBtn.onclick = () => {
+          if (info.hasCalls) {
+            const name = item.applicant ? item.applicant.trim() : '';
+            const label = name || 'este candidato';
+            if (!confirm('¿Seguro que querés volver a llamar a ' + label + '?')) return;
+          }
           currentCvId = item.id || '';
           callBrandEl.value = item.brandKey || item.brand || '';
           updateCallRoleOptions(callBrandEl.value);
@@ -5019,7 +5269,10 @@ app.get("/admin/ui", (req, res) => {
         clearTimeout(cvActiveTimer);
         cvActiveTimer = null;
       }
-      if (hasActiveCall && activeView === 'calls') {
+      if (hasActiveCall) {
+        cvPollUntil = Date.now() + 120000;
+      }
+      if (activeView === 'calls' && (hasActiveCall || Date.now() < cvPollUntil)) {
         cvActiveTimer = setTimeout(() => {
           cvActiveTimer = null;
           loadCvList();
@@ -6398,6 +6651,7 @@ function buildCallHistoryEntry(call) {
 function recordCallHistory(call) {
   const entry = buildCallHistoryEntry(call);
   if (!entry) return;
+  call.callStatus = "completed";
   const key = entry.callId || `${entry.phone || "na"}:${entry.created_at}`;
   const existing = callHistoryByKey.get(key);
   if (existing) {
