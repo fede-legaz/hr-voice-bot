@@ -2227,8 +2227,9 @@ app.post("/admin/face-detect", requireWrite, async (req, res) => {
         type: "text",
         text:
           "Detecta el rostro humano principal en la imagen. " +
-          "Respondé SOLO JSON con left, top, width, height normalizados (0-1). " +
-          "Si no hay rostro, devolvé {}."
+          "Si la imagen es un CV/documento sin foto clara, devolvé {}. " +
+          "No devuelvas logos, texto ni la página completa. " +
+          "Respondé SOLO JSON con left, top, width, height normalizados (0-1)."
       },
       { type: "image_url", image_url: { url: image } }
     ];
@@ -2707,11 +2708,10 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-cell {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 10px;
       min-width: 180px;
       max-width: 220px;
-      padding-top: 2px;
     }
     .candidate-avatar {
       width: 32px;
@@ -2729,6 +2729,7 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-name {
       font-weight: 600;
+      line-height: 1.2;
       max-width: 200px;
       white-space: nowrap;
       overflow: hidden;
@@ -2929,10 +2930,141 @@ app.get("/admin/ui", (req, res) => {
     .readonly button {
       pointer-events: none;
     }
+    .user-panel {
+      position: relative;
+      overflow: hidden;
+      border-color: rgba(27, 122, 140, 0.18);
+      background: linear-gradient(180deg, #ffffff 0%, #f8f5ee 100%);
+    }
+    .user-panel::before {
+      content: "";
+      position: absolute;
+      width: 260px;
+      height: 260px;
+      right: -120px;
+      top: -120px;
+      background: radial-gradient(circle at 30% 30%, rgba(27, 122, 140, 0.18), transparent 70%);
+      pointer-events: none;
+    }
+    .user-panel::after {
+      content: "";
+      position: absolute;
+      width: 220px;
+      height: 220px;
+      left: -80px;
+      bottom: -90px;
+      background: radial-gradient(circle at 70% 70%, rgba(244, 162, 97, 0.2), transparent 70%);
+      pointer-events: none;
+    }
+    .user-panel > * { position: relative; }
+    .user-hero {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .user-kicker {
+      text-transform: uppercase;
+      letter-spacing: 1.6px;
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--primary-dark);
+    }
+    .user-title {
+      font-size: 22px;
+      font-weight: 700;
+      font-family: "Space Grotesk", sans-serif;
+      margin-top: 4px;
+    }
+    .user-sub {
+      font-size: 13px;
+      color: var(--muted);
+      max-width: 460px;
+    }
+    .user-roles {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .role-pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid rgba(27, 122, 140, 0.2);
+      background: rgba(27, 122, 140, 0.12);
+      color: var(--primary-dark);
+    }
+    .role-pill.admin { background: rgba(15, 85, 99, 0.16); }
+    .role-pill.interviewer {
+      background: rgba(244, 162, 97, 0.2);
+      border-color: rgba(244, 162, 97, 0.35);
+      color: #8a4a14;
+    }
+    .role-pill.viewer {
+      background: rgba(26, 140, 127, 0.16);
+      border-color: rgba(26, 140, 127, 0.25);
+      color: #0d5a55;
+    }
+    .user-form-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.1fr) minmax(220px, 0.9fr);
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    .user-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      box-shadow: 0 10px 22px rgba(27, 122, 140, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .user-card-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--primary-dark);
+    }
+    .user-card-sub { font-size: 12px; color: var(--muted); }
+    .user-grid {
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    }
+    .user-tip {
+      background: rgba(27, 122, 140, 0.08);
+      border: 1px dashed rgba(27, 122, 140, 0.25);
+      padding: 8px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      color: var(--primary-dark);
+    }
+    .user-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .user-status {
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .user-list-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .user-list-title { font-size: 14px; font-weight: 700; }
     .user-brand-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
+      gap: 10px;
     }
     .brand-check {
       display: inline-flex;
@@ -2940,8 +3072,8 @@ app.get("/admin/ui", (req, res) => {
       gap: 6px;
       padding: 6px 10px;
       border-radius: 999px;
-      border: 1px solid var(--border);
-      background: #fff;
+      border: 1px solid rgba(27, 122, 140, 0.2);
+      background: #f7fbfa;
       font-size: 12px;
     }
     .brand-check input { margin: 0; }
@@ -2950,6 +3082,14 @@ app.get("/admin/ui", (req, res) => {
       gap: 8px;
       flex-wrap: wrap;
     }
+    .user-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+    .user-table th {
+      background: #f3efe6;
+      border-bottom: 1px solid var(--border);
+    }
+    .user-table tbody td { background: #fff; }
+    .user-table tbody tr:nth-child(even) td { background: #fbf7ef; }
+    .user-table tbody tr:hover td { background: #f4efe6; }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     .cv-table {
       table-layout: fixed;
@@ -3122,6 +3262,9 @@ app.get("/admin/ui", (req, res) => {
         -webkit-overflow-scrolling: touch;
       }
       .content { padding: 20px; }
+      .user-form-grid { grid-template-columns: 1fr; }
+      .user-hero { flex-direction: column; align-items: flex-start; }
+      .user-roles { justify-content: flex-start; }
     }
     @media (max-width: 820px) {
       .sidebar { padding: 18px; }
@@ -3283,51 +3426,74 @@ app.get("/admin/ui", (req, res) => {
             <span class="small" id="admin-status"></span>
           </div>
         </div>
-        <div class="panel" id="users-panel" style="--delay:.07s;">
-          <div class="panel-title">Usuarios</div>
-          <div class="panel-sub">Administrá accesos por rol y locales.</div>
-          <div class="grid">
+        <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
+          <div class="user-hero">
             <div>
-              <label>Email</label>
-              <input type="text" id="user-email" placeholder="usuario@empresa.com" />
+              <div class="user-kicker">Control de acceso</div>
+              <div class="user-title">Usuarios</div>
+              <div class="user-sub">Administrá accesos por rol y locales. Creá cuentas seguras para que cada persona vea solo lo que necesita.</div>
             </div>
-            <div>
-              <label>Password</label>
-              <input type="password" id="user-password" placeholder="********" />
-              <div class="small">En edición, dejalo vacío para mantener la clave actual.</div>
+            <div class="user-roles">
+              <span class="role-pill admin">Admin</span>
+              <span class="role-pill interviewer">Interviewer</span>
+              <span class="role-pill viewer">Viewer</span>
             </div>
-            <div>
-              <label>Rol</label>
-              <select id="user-role">
-                <option value="admin">Admin</option>
-                <option value="interviewer">Interviewer</option>
-                <option value="viewer">Viewer</option>
-              </select>
-            </div>
-            <div>
-              <label>Activo</label>
-              <div class="check-row">
-                <input type="checkbox" id="user-active" checked />
-                <span class="small">Puede iniciar sesión.</span>
+          </div>
+
+          <div class="user-form-grid">
+            <div class="user-card">
+              <div class="user-card-title">Datos de acceso</div>
+              <div class="user-card-sub">Email, clave y rol para la cuenta.</div>
+              <div class="grid user-grid">
+                <div>
+                  <label>Email</label>
+                  <input type="text" id="user-email" placeholder="usuario@empresa.com" />
+                </div>
+                <div>
+                  <label>Password</label>
+                  <input type="password" id="user-password" placeholder="********" />
+                  <div class="small">En edición, dejalo vacío para mantener la clave actual.</div>
+                </div>
+                <div>
+                  <label>Rol</label>
+                  <select id="user-role">
+                    <option value="admin">Admin</option>
+                    <option value="interviewer">Interviewer</option>
+                    <option value="viewer">Viewer</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Activo</label>
+                  <div class="check-row">
+                    <input type="checkbox" id="user-active" checked />
+                    <span class="small">Puede iniciar sesión.</span>
+                  </div>
+                </div>
               </div>
             </div>
+
+            <div class="user-card">
+              <div class="user-card-title">Permisos por local</div>
+              <div class="user-card-sub">Seleccioná los locales a los que tendrá acceso.</div>
+              <div id="user-brand-list" class="user-brand-list"></div>
+              <div class="user-tip">Si no seleccionás ninguno, accede a todos.</div>
+            </div>
           </div>
-          <div class="row">
-            <label>Locales permitidos</label>
-            <div id="user-brand-list" class="user-brand-list"></div>
-            <div class="small">Si no seleccionás ninguno, accede a todos.</div>
-          </div>
-          <div class="inline" style="justify-content: space-between;">
+
+          <div class="user-footer">
             <div class="user-actions">
               <button id="user-save" type="button">Guardar usuario</button>
               <button class="secondary" id="user-clear" type="button">Limpiar</button>
             </div>
-            <span class="status" id="user-status"></span>
+            <span class="user-status" id="user-status"></span>
           </div>
+
           <div class="divider"></div>
-          <div class="panel-title" style="font-size:14px;">Usuarios cargados</div>
+          <div class="user-list-head">
+            <div class="user-list-title">Usuarios cargados</div>
+          </div>
           <div class="table-wrapper">
-            <table>
+            <table class="user-table">
               <thead>
                 <tr>
                   <th>Email</th>
@@ -5234,6 +5400,11 @@ app.get("/admin/ui", (req, res) => {
         height: clampValue(face.height || 0, 0, 1)
       };
       if (!box.width || !box.height) return '';
+      const area = box.width * box.height;
+      const aspect = box.width / box.height;
+      if (box.width > 0.65 || box.height > 0.65 || area > 0.35) return '';
+      if (box.width < 0.05 || box.height < 0.05 || area < 0.003) return '';
+      if (!Number.isFinite(aspect) || aspect < 0.5 || aspect > 1.8) return '';
       const centerX = (box.left + box.width / 2) * w;
       const centerY = (box.top + box.height / 2) * h;
       const baseSize = Math.max(box.width * w, box.height * h) * 1.35;
@@ -6325,15 +6496,25 @@ app.get("/admin/ui", (req, res) => {
           avatar.alt = '';
           avatar.loading = 'lazy';
           avatar.className = 'candidate-avatar';
-          avatar.tabIndex = 0;
-          avatar.addEventListener('click', () => openPhotoModal(item.cv_photo_url));
-          avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, item.cv_photo_url));
-          avatar.addEventListener('mouseleave', hidePhotoTooltip);
-          avatar.addEventListener('focus', () => showPhotoTooltip(avatar, item.cv_photo_url));
-          avatar.addEventListener('blur', hidePhotoTooltip);
-          avatar.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') openPhotoModal(item.cv_photo_url);
-          });
+          avatar.onload = () => {
+            const ratio = avatar.naturalWidth && avatar.naturalHeight
+              ? avatar.naturalWidth / avatar.naturalHeight
+              : 0;
+            if (!ratio || ratio < 0.85 || ratio > 1.15) {
+              avatar.remove();
+              return;
+            }
+            avatar.tabIndex = 0;
+            avatar.addEventListener('click', () => openPhotoModal(item.cv_photo_url));
+            avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, item.cv_photo_url));
+            avatar.addEventListener('mouseleave', hidePhotoTooltip);
+            avatar.addEventListener('focus', () => showPhotoTooltip(avatar, item.cv_photo_url));
+            avatar.addEventListener('blur', hidePhotoTooltip);
+            avatar.addEventListener('keydown', (event) => {
+              if (event.key === 'Enter') openPhotoModal(item.cv_photo_url);
+            });
+          };
+          avatar.onerror = () => avatar.remove();
           candidateTd.appendChild(avatar);
         }
         const nameSpan = document.createElement('span');
