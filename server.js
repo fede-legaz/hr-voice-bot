@@ -2214,7 +2214,7 @@ app.post("/admin/ocr", requireWrite, async (req, res) => {
   }
 });
 
-app.post("/admin/face-detect", requireWrite, async (req, res) => {
+app.post("/admin/face-detect", requireConfigOrViewer, async (req, res) => {
   try {
     const image = (req.body?.image || "").toString();
     if (!image) return res.status(400).json({ error: "missing_image" });
@@ -2226,7 +2226,7 @@ app.post("/admin/face-detect", requireWrite, async (req, res) => {
       {
         type: "text",
         text:
-          "Detecta el rostro humano principal en la imagen. " +
+          "Detecta el recuadro completo de la foto del candidato (tipo carnet/retrato) en la imagen. " +
           "Si la imagen es un CV/documento sin foto clara, devolvé {}. " +
           "No devuelvas logos, texto ni la página completa. " +
           "Respondé SOLO JSON con left, top, width, height normalizados (0-1)."
@@ -2295,6 +2295,43 @@ app.post("/admin/face-detect", requireWrite, async (req, res) => {
   } catch (err) {
     console.error("[admin/face-detect] failed", err);
     return res.status(400).json({ error: "face_detect_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/cv-photo", requireConfigOrViewer, async (req, res) => {
+  try {
+    const raw = (req.body?.url || "").toString().trim();
+    if (!raw) return res.status(400).json({ error: "missing_url" });
+    if (raw.startsWith("data:")) {
+      return res.json({ ok: true, data_url: raw });
+    }
+    if (!s3Client || !SPACES_BUCKET) {
+      return res.status(400).json({ error: "spaces_not_configured" });
+    }
+    const key = extractSpacesKeyFromUrl(raw) || normalizeSpacesKey(raw);
+    if (!key || key.includes("..")) {
+      return res.status(400).json({ error: "invalid_url" });
+    }
+    const signedUrl = await resolveStoredUrl(key);
+    if (!signedUrl) return res.status(400).json({ error: "invalid_url" });
+    const resp = await fetch(signedUrl);
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      return res.status(400).json({ error: "download_failed", detail });
+    }
+    const mime = (resp.headers.get("content-type") || "image/jpeg").toLowerCase();
+    if (!mime.startsWith("image/")) {
+      return res.status(400).json({ error: "not_image" });
+    }
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.length > OCR_MAX_IMAGE_BYTES) {
+      return res.status(400).json({ error: "image_too_large" });
+    }
+    const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
+    return res.json({ ok: true, data_url: dataUrl });
+  } catch (err) {
+    console.error("[admin/cv-photo] failed", err);
+    return res.status(400).json({ error: "photo_failed", detail: err.message });
   }
 });
 
@@ -3968,7 +4005,7 @@ app.get("/admin/ui", (req, res) => {
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
-    const faceFocusCache = new Map();
+    const photoThumbCache = new Map();
     let usersList = [];
     let editingUserId = '';
     const CV_CHAR_LIMIT = 4000;
@@ -5411,8 +5448,31 @@ app.get("/admin/ui", (req, res) => {
       };
     }
 
-    async function cropFaceThumbnail(imageDataUrl, face) {
-      if (!imageDataUrl || !face) return '';
+    async function downscaleDataUrl(dataUrl, maxDim = OCR_MAX_DIM) {
+      if (!dataUrl) return '';
+      const img = new Image();
+      const loaded = new Promise((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('No se pudo cargar la imagen.'));
+      });
+      img.src = dataUrl;
+      await loaded;
+      const w = img.naturalWidth || img.width || 0;
+      const h = img.naturalHeight || img.height || 0;
+      if (!w || !h) return dataUrl;
+      const maxSide = Math.max(w, h);
+      if (maxSide <= maxDim) return dataUrl;
+      const scale = maxDim / maxSide;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(w * scale);
+      canvas.height = Math.round(h * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.86);
+    }
+
+    async function cropPhotoThumbnail(imageDataUrl, box, maxSide = 360) {
+      if (!imageDataUrl || !box) return '';
       const img = new Image();
       const loaded = new Promise((resolve, reject) => {
         img.onload = () => resolve();
@@ -5423,47 +5483,60 @@ app.get("/admin/ui", (req, res) => {
       const w = img.naturalWidth || img.width || 0;
       const h = img.naturalHeight || img.height || 0;
       if (!w || !h) return '';
-      const box = {
-        left: clampValue(face.left || 0, 0, 1),
-        top: clampValue(face.top || 0, 0, 1),
-        width: clampValue(face.width || 0, 0, 1),
-        height: clampValue(face.height || 0, 0, 1)
-      };
-      if (!box.width || !box.height) return '';
-      const area = box.width * box.height;
-      const aspect = box.width / box.height;
-      if (box.width > 0.65 || box.height > 0.65 || area > 0.35) return '';
-      if (box.width < 0.05 || box.height < 0.05 || area < 0.003) return '';
-      if (!Number.isFinite(aspect) || aspect < 0.5 || aspect > 1.8) return '';
-      const centerX = (box.left + box.width / 2) * w;
-      const centerY = (box.top + box.height / 2) * h;
-      const baseSize = Math.max(box.width * w, box.height * h) * 1.35;
-      const minSize = Math.min(w, h, 140);
-      const cropSize = clampValue(baseSize, minSize, Math.min(w, h));
-      const sx = clampValue(centerX - cropSize / 2, 0, w - cropSize);
-      const sy = clampValue(centerY - cropSize / 2, 0, h - cropSize);
+      const pad = 0.08;
+      const bw = box.width * w;
+      const bh = box.height * h;
+      const cx = (box.left + box.width / 2) * w;
+      const cy = (box.top + box.height / 2) * h;
+      const sw = bw * (1 + pad);
+      const sh = bh * (1 + pad);
+      const sx = clampValue(cx - sw / 2, 0, w - sw);
+      const sy = clampValue(cy - sh / 2, 0, h - sh);
+      const scale = Math.min(1, maxSide / Math.max(sw, sh));
+      const outW = Math.max(1, Math.round(sw * scale));
+      const outH = Math.max(1, Math.round(sh * scale));
       const canvas = document.createElement('canvas');
-      const outSize = 240;
-      canvas.width = outSize;
-      canvas.height = outSize;
+      canvas.width = outW;
+      canvas.height = outH;
       const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, outSize, outSize);
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
       return canvas.toDataURL('image/jpeg', 0.86);
     }
 
-    async function resolveFaceFocus(url) {
+    async function fetchPhotoDataUrl(url) {
+      if (!url) return '';
+      if (url.startsWith('data:')) return url;
+      if (!tokenEl.value) throw new Error('Necesitás autenticarte para cargar la foto.');
+      const resp = await fetch('/admin/cv-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ url })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'photo download failed');
+      return data.data_url || '';
+    }
+
+    async function resolvePhotoThumb(url) {
       if (!url) return null;
-      if (faceFocusCache.has(url)) return faceFocusCache.get(url);
+      if (photoThumbCache.has(url)) return photoThumbCache.get(url);
       const task = (async () => {
         try {
-          const face = await runFaceDetect(url);
-          return normalizeFaceBox(face);
+          const dataUrl = await fetchPhotoDataUrl(url);
+          if (!dataUrl) return null;
+          const scaled = await downscaleDataUrl(dataUrl, OCR_MAX_DIM);
+          const box = await runFaceDetect(scaled);
+          const focus = normalizeFaceBox(box);
+          if (!focus) return null;
+          const thumb = await cropPhotoThumbnail(scaled, focus);
+          if (!thumb) return null;
+          return { thumb, focus };
         } catch (err) {
           console.error('[cv-face] detect failed', err);
           return null;
         }
       })();
-      faceFocusCache.set(url, task);
+      photoThumbCache.set(url, task);
       return task;
     }
 
@@ -5523,21 +5596,13 @@ app.get("/admin/ui", (req, res) => {
       photoTooltipEl.style.display = 'none';
     }
 
-    function openPhotoModal(url, focus) {
+    function openPhotoModal(url) {
       if (!photoModalEl || !photoModalImgEl || !url) return;
       photoModalImgEl.src = url;
-      if (focus && Number.isFinite(focus.centerX) && Number.isFinite(focus.centerY)) {
-        const size = Math.min(window.innerWidth * 0.6, 420);
-        photoModalImgEl.style.width = size + 'px';
-        photoModalImgEl.style.height = size + 'px';
-        photoModalImgEl.style.objectFit = 'cover';
-        applyFaceFocusToImg(photoModalImgEl, focus);
-      } else {
-        photoModalImgEl.style.width = '';
-        photoModalImgEl.style.height = '';
-        photoModalImgEl.style.objectFit = 'contain';
-        photoModalImgEl.style.objectPosition = 'center';
-      }
+      photoModalImgEl.style.width = '';
+      photoModalImgEl.style.height = '';
+      photoModalImgEl.style.objectFit = 'contain';
+      photoModalImgEl.style.objectPosition = 'center';
       photoModalEl.style.display = 'flex';
     }
 
@@ -5554,13 +5619,13 @@ app.get("/admin/ui", (req, res) => {
     function attachAvatarHandlers(avatar, url, focus) {
       if (!avatar || !url) return;
       avatar.tabIndex = 0;
-      avatar.addEventListener('click', () => openPhotoModal(url, focus));
+      avatar.addEventListener('click', () => openPhotoModal(url));
       avatar.addEventListener('mouseenter', () => showPhotoTooltip(avatar, url));
       avatar.addEventListener('mouseleave', hidePhotoTooltip);
       avatar.addEventListener('focus', () => showPhotoTooltip(avatar, url));
       avatar.addEventListener('blur', hidePhotoTooltip);
       avatar.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') openPhotoModal(url, focus);
+        if (event.key === 'Enter') openPhotoModal(url);
       });
     }
 
@@ -5630,9 +5695,12 @@ app.get("/admin/ui", (req, res) => {
         if (faceCandidates.length) {
           for (const candidate of faceCandidates) {
             try {
-              const face = await runFaceDetect(candidate);
-              if (!face) continue;
-              const thumb = await cropFaceThumbnail(candidate, face);
+              const scaled = await downscaleDataUrl(candidate, OCR_MAX_DIM);
+              const box = await runFaceDetect(scaled);
+              if (!box) continue;
+              const focus = normalizeFaceBox(box);
+              if (!focus) continue;
+              const thumb = await cropPhotoThumbnail(scaled, focus);
               if (thumb) {
                 currentCvPhotoDataUrl = thumb;
                 break;
@@ -6596,18 +6664,18 @@ app.get("/admin/ui", (req, res) => {
           avatar.style.visibility = 'hidden';
           avatar.onerror = () => avatar.remove();
           const photoUrl = item.cv_photo_url;
-          resolveFaceFocus(photoUrl).then((focus) => {
+          resolvePhotoThumb(photoUrl).then((result) => {
             if (!avatar.isConnected) return;
-            if (!focus) {
+            if (!result || !result.thumb) {
               avatar.remove();
               return;
             }
-            avatar.dataset.faceX = String(focus.centerX || 0);
-            avatar.dataset.faceY = String(focus.centerY || 0);
-            avatar.src = photoUrl;
-            applyFaceFocusToImg(avatar, focus);
+            avatar.dataset.faceX = String(result.focus.centerX || 0);
+            avatar.dataset.faceY = String(result.focus.centerY || 0);
+            avatar.src = result.thumb;
+            applyFaceFocusToImg(avatar, result.focus);
             avatar.style.visibility = 'visible';
-            attachAvatarHandlers(avatar, photoUrl, focus);
+            attachAvatarHandlers(avatar, result.thumb, result.focus);
           });
           candidateTd.appendChild(avatar);
         }
