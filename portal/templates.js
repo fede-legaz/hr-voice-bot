@@ -191,24 +191,41 @@ function renderApplyPage(page, options = {}) {
       box-shadow: 0 0 0 4px var(--ring);
     }
     .row { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .row > .field-span { grid-column: 1 / -1; }
     .multi-options {
       display: grid;
-      gap: 10px;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     }
     .multi-option {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 10px;
       border: 1px solid rgba(36,27,19,0.12);
-      border-radius: 14px;
-      padding: 10px 12px;
+      border-radius: 16px;
+      padding: 12px 14px;
       background: #fff;
       cursor: pointer;
       font-weight: 600;
       color: var(--text);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
     }
-    .multi-option input { width: auto; }
+    .multi-option:hover {
+      border-color: var(--primary);
+      box-shadow: 0 10px 20px rgba(36,27,19,0.12);
+      transform: translateY(-1px);
+    }
+    .multi-option.is-checked {
+      border-color: var(--primary);
+      background: rgba(200,76,51,0.08);
+      box-shadow: 0 0 0 3px var(--ring);
+    }
+    .multi-option input {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--primary);
+    }
+    .multi-option-name { font-weight: 600; }
     .hint { color: var(--muted); font-size: 13px; }
     .submit-btn {
       background: var(--primary);
@@ -434,6 +451,7 @@ function renderApplyPage(page, options = {}) {
 
     function buildMultiOptionsField(id, label, required, options) {
       const wrapper = document.createElement('div');
+      wrapper.className = 'field-span';
       const labelEl = document.createElement('label');
       labelEl.textContent = label + (required ? ' *' : '');
       wrapper.appendChild(labelEl);
@@ -451,11 +469,23 @@ function renderApplyPage(page, options = {}) {
         input.name = id;
         input.value = value;
         input.id = id + '_' + idx;
+        const textSpan = document.createElement('span');
+        textSpan.className = 'multi-option-name';
+        textSpan.textContent = text;
         optLabel.appendChild(input);
-        optLabel.appendChild(document.createTextNode(text));
+        optLabel.appendChild(textSpan);
+        const syncChecked = () => {
+          optLabel.classList.toggle('is-checked', input.checked);
+        };
+        input.addEventListener('change', syncChecked);
+        syncChecked();
         list.appendChild(optLabel);
       });
       wrapper.appendChild(list);
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      hint.textContent = t({ es: 'Podés elegir más de una.', en: 'You can choose more than one.' }, 'You can choose more than one.');
+      wrapper.appendChild(hint);
       if (required) wrapper.dataset.required = '1';
       return wrapper;
     }
