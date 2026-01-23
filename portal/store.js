@@ -34,6 +34,28 @@ function readJsonSafe(filePath) {
   }
 }
 
+function appMatchesLocation(app, location) {
+  if (!location) return true;
+  const target = String(location || "").trim();
+  if (!target) return true;
+  const list = Array.isArray(app.locations) ? app.locations : [];
+  return list.some((loc) => {
+    if (!loc) return false;
+    if (typeof loc === "string") return loc === target;
+    if (loc.key && loc.key === target) return true;
+    if (loc.label) {
+      if (typeof loc.label === "string" && loc.label === target) return true;
+      if (loc.label.es === target || loc.label.en === target) return true;
+    }
+    return false;
+  });
+}
+
+function filterApplicationsByLocation(list, location) {
+  if (!location) return list;
+  return list.filter((app) => appMatchesLocation(app, location));
+}
+
 function createPortalStore(options = {}) {
   if (options.dbPool) {
     return createPortalStoreDb(options);
@@ -172,8 +194,11 @@ function createPortalStore(options = {}) {
 
   function listApplications(filters = {}) {
     const slug = filters.slug ? safeSlug(filters.slug) : "";
-    if (!slug) return state.apps.slice();
-    return state.apps.filter((app) => safeSlug(app.slug) === slug);
+    const location = filters.location ? String(filters.location) : "";
+    const list = !slug
+      ? state.apps.slice()
+      : state.apps.filter((app) => safeSlug(app.slug) === slug);
+    return filterApplicationsByLocation(list, location);
   }
 
   load();
@@ -401,6 +426,7 @@ function createPortalStoreDb(options = {}) {
 
   async function listApplications(filters = {}) {
     const slug = filters.slug ? safeSlug(filters.slug) : "";
+    const location = filters.location ? String(filters.location) : "";
     try {
       if (!slug) {
         const resp = await dbPool.query(
@@ -410,7 +436,8 @@ function createPortalStoreDb(options = {}) {
           ORDER BY created_at DESC
         `
         );
-        return (resp.rows || []).map(mapAppRow).filter(Boolean);
+        const list = (resp.rows || []).map(mapAppRow).filter(Boolean);
+        return filterApplicationsByLocation(list, location);
       }
       const resp = await dbPool.query(
         `
@@ -421,7 +448,8 @@ function createPortalStoreDb(options = {}) {
       `,
         [slug]
       );
-      return (resp.rows || []).map(mapAppRow).filter(Boolean);
+      const list = (resp.rows || []).map(mapAppRow).filter(Boolean);
+      return filterApplicationsByLocation(list, location);
     } catch (err) {
       logger.error("[portal] failed to list applications", err.message);
       return [];

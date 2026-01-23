@@ -461,7 +461,8 @@ function createPortalRouter(options = {}) {
 
   router.get("/admin/portal/applications", requireWrite, async (req, res) => {
     const slug = req.query?.slug || "";
-    const applications = await store.listApplications({ slug });
+    const location = req.query?.location || "";
+    const applications = await store.listApplications({ slug, location });
     return res.json({ ok: true, applications });
   });
 

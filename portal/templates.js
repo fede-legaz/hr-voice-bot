@@ -121,7 +121,7 @@ function renderApplyPage(page, options = {}) {
       position: relative;
       border-radius: 22px;
       overflow: hidden;
-      min-height: 220px;
+      height: clamp(220px, 30vw, 360px);
       background: linear-gradient(135deg, rgba(200,76,51,0.18), rgba(31,111,92,0.18));
       display: flex;
       align-items: center;
@@ -284,6 +284,7 @@ function renderApplyPage(page, options = {}) {
     const page = ${pageJson};
     const limits = page.limits || { resumeMaxBytes: 8 * 1024 * 1024, photoMaxBytes: 2 * 1024 * 1024 };
     let lang = page.localeDefault || 'es';
+    let roleSelectEl = null;
 
     const els = {
       brand: document.querySelector('[data-brand]'),
@@ -391,8 +392,8 @@ function renderApplyPage(page, options = {}) {
         input.appendChild(placeholder);
         (options || []).forEach((opt) => {
           const optionEl = document.createElement('option');
-          optionEl.value = typeof opt === 'string' ? opt : (opt.value || t(opt, ''));
-          optionEl.textContent = typeof opt === 'string' ? opt : t(opt, '');
+          optionEl.value = optionValue(opt) || '';
+          optionEl.textContent = optionLabel(opt) || optionEl.value;
           input.appendChild(optionEl);
         });
       } else if (type === 'yesno') {
@@ -459,15 +460,71 @@ function renderApplyPage(page, options = {}) {
       return wrapper;
     }
 
+    function readSelectedLocations() {
+      return Array.from(document.querySelectorAll('input[name="locations"]:checked'))
+        .map((input) => input.value)
+        .filter(Boolean);
+    }
+
+    function buildRoleOptionsForLocations(selected, roleByLocation) {
+      if (!roleByLocation || typeof roleByLocation !== 'object') return [];
+      const seen = new Set();
+      const out = [];
+      selected.forEach((key) => {
+        const options = roleByLocation[key];
+        if (!Array.isArray(options)) return;
+        options.forEach((opt) => {
+          const value = optionValue(opt);
+          if (!value || seen.has(value)) return;
+          seen.add(value);
+          out.push(opt);
+        });
+      });
+      return out;
+    }
+
+    function syncRoleOptions(roleSelectEl, fields) {
+      if (!roleSelectEl || !fields) return;
+      const roleByLocation = fields.roleByLocation || {};
+      const baseOptions = Array.isArray(fields.role?.options) ? fields.role.options : [];
+      const selectedLocations = readSelectedLocations();
+      const useByLocation = roleByLocation && Object.keys(roleByLocation).length > 0;
+      const options = useByLocation
+        ? buildRoleOptionsForLocations(selectedLocations, roleByLocation)
+        : baseOptions;
+      const prev = roleSelectEl.value || '';
+      roleSelectEl.innerHTML = '';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = t({ es: 'Seleccionar', en: 'Select' }, 'Select');
+      roleSelectEl.appendChild(placeholder);
+      options.forEach((opt) => {
+        const value = optionValue(opt);
+        if (!value) return;
+        const optionEl = document.createElement('option');
+        optionEl.value = value;
+        optionEl.textContent = optionLabel(opt) || value;
+        roleSelectEl.appendChild(optionEl);
+      });
+      if (prev && options.some((opt) => optionValue(opt) === prev)) {
+        roleSelectEl.value = prev;
+      } else {
+        roleSelectEl.value = '';
+      }
+    }
+
     function renderFields() {
       els.baseFields.innerHTML = '';
       els.customFields.innerHTML = '';
       els.fileFields.innerHTML = '';
+      roleSelectEl = null;
 
       const fields = page.fields || {};
       const nameField = fields.name || { required: true };
       const emailField = fields.email || { required: true };
       const phoneField = fields.phone || { required: true };
+      const roleField = fields.role || {};
+      const roleByLocation = fields.roleByLocation || {};
 
       els.baseFields.appendChild(buildInputField('name', t(nameField.label, 'Full name'), 'text', nameField.required !== false));
       els.baseFields.appendChild(buildInputField('email', t(emailField.label, 'Email'), 'email', emailField.required !== false));
@@ -479,8 +536,12 @@ function renderApplyPage(page, options = {}) {
         );
       }
 
-      if (fields.role && Array.isArray(fields.role.options) && fields.role.options.length) {
-        els.baseFields.appendChild(buildInputField('role', t(fields.role.label, 'Role'), 'select', fields.role.required === true, fields.role.options));
+      const hasRoleByLocation = roleByLocation && Object.keys(roleByLocation).length > 0;
+      const baseRoleOptions = Array.isArray(roleField.options) ? roleField.options : [];
+      if (hasRoleByLocation || baseRoleOptions.length || roleField.required) {
+        const roleWrap = buildInputField('role', t(roleField.label, 'Role'), 'select', roleField.required === true, baseRoleOptions);
+        roleSelectEl = roleWrap.querySelector('select');
+        els.baseFields.appendChild(roleWrap);
       }
 
       const questions = Array.isArray(page.questions) ? page.questions : [];
@@ -524,6 +585,13 @@ function renderApplyPage(page, options = {}) {
       photoHint.textContent = t({ es: 'Max 2MB', en: 'Max 2MB' }, 'Max 2MB');
       photoWrap.appendChild(photoHint);
       els.fileFields.appendChild(photoWrap);
+
+      if (hasRoleByLocation) {
+        document.querySelectorAll('input[name="locations"]').forEach((input) => {
+          input.addEventListener('change', () => syncRoleOptions(roleSelectEl, fields));
+        });
+        syncRoleOptions(roleSelectEl, fields);
+      }
     }
 
     function setStatus(text, isError) {
