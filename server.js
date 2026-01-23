@@ -3011,9 +3011,11 @@ app.get("/admin/ui", (req, res) => {
       display: flex;
       align-items: center;
       gap: 10px;
-      min-width: 180px;
-      max-width: 220px;
+      min-width: 0;
+      max-width: 100%;
+      width: 100%;
       min-height: 32px;
+      overflow: hidden;
     }
     .candidate-avatar {
       width: 32px;
@@ -3034,6 +3036,8 @@ app.get("/admin/ui", (req, res) => {
     .candidate-name {
       font-weight: 600;
       line-height: 1.1;
+      min-width: 0;
+      flex: 1;
       max-width: 200px;
       white-space: nowrap;
       overflow: hidden;
