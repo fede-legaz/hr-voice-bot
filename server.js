@@ -1499,9 +1499,11 @@ async function initDb() {
         answers JSONB,
         resume_url TEXT,
         photo_url TEXT,
+        locations JSONB,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS locations JSONB;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_slug ON portal_applications (slug);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_created ON portal_applications (created_at DESC);`);
 
@@ -2792,6 +2794,23 @@ app.get("/admin/ui", (req, res) => {
       display: grid;
       gap: 10px;
     }
+    .portal-location-options {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .portal-location-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 10px;
+      background: #fff;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .portal-location-option input { width: auto; }
     .portal-color-row { display: flex; gap: 10px; align-items: center; }
     .portal-color-row input[type="text"] { flex: 1; }
     .portal-color-row input[type="color"] {
@@ -2913,6 +2932,23 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 10px;
       border: 1px solid rgba(0, 0, 0, 0.12);
       background: #fff;
+    }
+    .portal-preview-field-list {
+      min-height: 30px;
+      height: auto;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      padding: 6px 8px;
+    }
+    .portal-preview-chip {
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      background: rgba(0, 0, 0, 0.04);
+      font-size: 10px;
+      color: var(--p-muted, #6c5f57);
     }
     .portal-preview-btn {
       border: none;
@@ -4225,6 +4261,10 @@ app.get("/admin/ui", (req, res) => {
                       <div class="portal-preview-field-label" id="portal-preview-role-label"></div>
                       <div class="portal-preview-field-input"></div>
                     </div>
+                    <div class="portal-preview-field" id="portal-preview-location-field">
+                      <div class="portal-preview-field-label" id="portal-preview-location-label"></div>
+                      <div class="portal-preview-field-input portal-preview-field-list" id="portal-preview-location-input"></div>
+                    </div>
                     <button class="portal-preview-btn" id="portal-preview-btn" type="button">Enviar postulacion</button>
                   </div>
                   <div class="portal-preview-card">
@@ -4318,6 +4358,24 @@ app.get("/admin/ui", (req, res) => {
                 </div>
               </div>
 
+              <div class="section-title">Locaciones</div>
+              <div class="grid">
+                <div>
+                  <label>Locaciones (ES)</label>
+                  <input id="portal-location-es" type="text" />
+                </div>
+                <div>
+                  <label>Locations (EN)</label>
+                  <input id="portal-location-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-location-required" type="checkbox" />
+                  <span class="small">Requerido</span>
+                </div>
+              </div>
+              <div class="portal-location-options" id="portal-location-options"></div>
+              <div class="small" style="margin-top:4px;">Elegí las locaciones que aparecen en el portal público.</div>
+
               <div class="section-title">CV y foto</div>
               <div class="grid">
                 <div>
@@ -4383,6 +4441,7 @@ app.get("/admin/ui", (req, res) => {
                 <tr>
                   <th>Fecha</th>
                   <th>Página</th>
+                  <th>Locaciones</th>
                   <th>Nombre</th>
                   <th>Email</th>
                   <th>Teléfono</th>
@@ -4567,6 +4626,10 @@ app.get("/admin/ui", (req, res) => {
     const portalRoleEnEl = document.getElementById('portal-role-en');
     const portalRoleReqEl = document.getElementById('portal-role-required');
     const portalRoleOptionsEl = document.getElementById('portal-role-options');
+    const portalLocationEsEl = document.getElementById('portal-location-es');
+    const portalLocationEnEl = document.getElementById('portal-location-en');
+    const portalLocationReqEl = document.getElementById('portal-location-required');
+    const portalLocationOptionsEl = document.getElementById('portal-location-options');
     const portalResumeEsEl = document.getElementById('portal-resume-es');
     const portalResumeEnEl = document.getElementById('portal-resume-en');
     const portalResumeReqEl = document.getElementById('portal-resume-required');
@@ -4593,6 +4656,9 @@ app.get("/admin/ui", (req, res) => {
     const portalPreviewBtnEl = document.getElementById('portal-preview-btn');
     const portalPreviewSideEl = document.getElementById('portal-preview-side');
     const portalPreviewGalleryEl = document.getElementById('portal-preview-gallery');
+    const portalPreviewLocationFieldEl = document.getElementById('portal-preview-location-field');
+    const portalPreviewLocationLabelEl = document.getElementById('portal-preview-location-label');
+    const portalPreviewLocationInputEl = document.getElementById('portal-preview-location-input');
     const portalFormEl = document.querySelector('#portal-view .portal-form');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
@@ -5670,7 +5736,8 @@ app.get("/admin/ui", (req, res) => {
           name: { label: { es: 'Nombre completo', en: 'Full name' }, required: true },
           email: { label: { es: 'Email', en: 'Email' }, required: true },
           phone: { label: { es: 'Telefono', en: 'Phone' }, required: true },
-          role: { label: { es: 'Puesto', en: 'Role' }, required: false, options: [] }
+          role: { label: { es: 'Puesto', en: 'Role' }, required: false, options: [] },
+          locations: { label: { es: 'Locaciones', en: 'Locations' }, required: false, options: [] }
         },
         resume: { label: { es: 'CV (PDF)', en: 'Resume (PDF)' }, required: true },
         photo: { label: { es: 'Foto (opcional)', en: 'Photo (optional)' }, required: false },
@@ -5689,6 +5756,7 @@ app.get("/admin/ui", (req, res) => {
       const emailField = fields.email || {};
       const phoneField = fields.phone || {};
       const roleField = fields.role || {};
+      const locationField = fields.locations || {};
       const resumeField = raw.resume || {};
       const photoField = raw.photo || {};
 
@@ -5710,13 +5778,15 @@ app.get("/admin/ui", (req, res) => {
           name: { ...base.fields.name, ...nameField, label: { ...base.fields.name.label, ...(nameField.label || {}) } },
           email: { ...base.fields.email, ...emailField, label: { ...base.fields.email.label, ...(emailField.label || {}) } },
           phone: { ...base.fields.phone, ...phoneField, label: { ...base.fields.phone.label, ...(phoneField.label || {}) } },
-          role: { ...base.fields.role, ...roleField, label: { ...base.fields.role.label, ...(roleField.label || {}) } }
+          role: { ...base.fields.role, ...roleField, label: { ...base.fields.role.label, ...(roleField.label || {}) } },
+          locations: { ...base.fields.locations, ...locationField, label: { ...base.fields.locations.label, ...(locationField.label || {}) } }
         },
         resume: { ...base.resume, ...resumeField, label: { ...base.resume.label, ...(resumeField.label || {}) } },
         photo: { ...base.photo, ...photoField, label: { ...base.photo.label, ...(photoField.label || {}) } },
         questions: Array.isArray(raw.questions) ? raw.questions : []
       };
       merged.fields.role.options = Array.isArray(merged.fields.role.options) ? merged.fields.role.options : [];
+      merged.fields.locations.options = Array.isArray(merged.fields.locations.options) ? merged.fields.locations.options : [];
       merged.assets.gallery = Array.isArray(merged.assets.gallery) ? merged.assets.gallery : [];
       return merged;
     }
@@ -5841,6 +5911,11 @@ app.get("/admin/ui", (req, res) => {
       }).filter(Boolean);
       portalSetVal(portalRoleOptionsEl, roleOptions.join('\\n'));
 
+      portalSetVal(portalLocationEsEl, page.fields.locations.label.es || '');
+      portalSetVal(portalLocationEnEl, page.fields.locations.label.en || '');
+      portalSetChecked(portalLocationReqEl, !!page.fields.locations.required);
+      portalRenderLocationOptions();
+
       portalSetVal(portalResumeEsEl, page.resume.label.es || '');
       portalSetVal(portalResumeEnEl, page.resume.label.en || '');
       portalSetChecked(portalResumeReqEl, !!page.resume.required);
@@ -5910,6 +5985,88 @@ app.get("/admin/ui", (req, res) => {
           }
         };
         portalQuestionListEl.appendChild(wrap);
+      });
+    }
+
+    function portalReadLocationOptions() {
+      if (!portalLocationOptionsEl) return [];
+      const selected = [];
+      portalLocationOptionsEl.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+        if (!input.checked) return;
+        const key = input.dataset.key || input.value || '';
+        if (!key) return;
+        const label = input.dataset.label || key;
+        selected.push({ key, label: { es: label, en: label } });
+      });
+      return selected;
+    }
+
+    function portalRenderLocationOptions() {
+      if (!portalLocationOptionsEl) return;
+      const brands = listBrandOptions();
+      const selectedKeys = new Set();
+      const optionLabels = new Map();
+      const currentOptions = portalCurrent && portalCurrent.fields && portalCurrent.fields.locations
+        ? portalCurrent.fields.locations.options
+        : null;
+      if (Array.isArray(currentOptions)) {
+        currentOptions.forEach((opt) => {
+          const key = typeof opt === 'string' ? opt : (opt.key || opt.value || '');
+          if (key) selectedKeys.add(key);
+          if (key) {
+            const label = typeof opt === 'string'
+              ? opt
+              : (opt.label && (opt.label.es || opt.label.en)) || opt.es || opt.en || key;
+            optionLabels.set(key, label || key);
+          }
+        });
+      }
+      portalLocationOptionsEl.innerHTML = '';
+      if (!brands.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'No hay locaciones disponibles.';
+        portalLocationOptionsEl.appendChild(empty);
+        return;
+      }
+      const knownKeys = new Set();
+      brands.forEach((brand) => {
+        knownKeys.add(brand.key);
+        const label = document.createElement('label');
+        label.className = 'portal-location-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.key = brand.key;
+        input.dataset.label = brand.display || brand.key;
+        if (selectedKeys.has(brand.key)) input.checked = true;
+        input.addEventListener('change', () => {
+          if (portalCurrent) {
+            portalCurrent.fields.locations.options = portalReadLocationOptions();
+          }
+          portalSyncPreview();
+        });
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(brand.display || brand.key));
+        portalLocationOptionsEl.appendChild(label);
+      });
+      optionLabels.forEach((labelText, key) => {
+        if (knownKeys.has(key)) return;
+        const label = document.createElement('label');
+        label.className = 'portal-location-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.dataset.key = key;
+        input.dataset.label = labelText || key;
+        input.checked = selectedKeys.has(key);
+        input.addEventListener('change', () => {
+          if (portalCurrent) {
+            portalCurrent.fields.locations.options = portalReadLocationOptions();
+          }
+          portalSyncPreview();
+        });
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(labelText || key));
+        portalLocationOptionsEl.appendChild(label);
       });
     }
 
@@ -5996,6 +6153,15 @@ app.get("/admin/ui", (req, res) => {
         options: roleOptions
       };
 
+      data.fields.locations = {
+        label: {
+          es: (portalLocationEsEl && portalLocationEsEl.value || '').trim(),
+          en: (portalLocationEnEl && portalLocationEnEl.value || '').trim()
+        },
+        required: portalLocationReqEl ? portalLocationReqEl.checked : false,
+        options: portalReadLocationOptions()
+      };
+
       data.resume = {
         label: {
           es: (portalResumeEsEl && portalResumeEsEl.value || '').trim(),
@@ -6056,6 +6222,9 @@ app.get("/admin/ui", (req, res) => {
       const emailLabel = (portalEmailEsEl && portalEmailEsEl.value || '').trim() || 'Email';
       const phoneLabel = (portalPhoneEsEl && portalPhoneEsEl.value || '').trim() || 'Telefono';
       const roleLabel = (portalRoleEsEl && portalRoleEsEl.value || '').trim() || 'Puesto';
+      const locationLabel = (portalLocationEsEl && portalLocationEsEl.value || '').trim()
+        || (portalLocationEnEl && portalLocationEnEl.value || '').trim()
+        || 'Locaciones';
 
       if (portalPreviewBrandEl) portalPreviewBrandEl.textContent = brand;
       if (portalPreviewTitleEl) portalPreviewTitleEl.textContent = title;
@@ -6064,6 +6233,7 @@ app.get("/admin/ui", (req, res) => {
       if (portalPreviewEmailLabelEl) portalPreviewEmailLabelEl.textContent = emailLabel;
       if (portalPreviewPhoneLabelEl) portalPreviewPhoneLabelEl.textContent = phoneLabel;
       if (portalPreviewRoleLabelEl) portalPreviewRoleLabelEl.textContent = roleLabel;
+      if (portalPreviewLocationLabelEl) portalPreviewLocationLabelEl.textContent = locationLabel;
       if (portalPreviewSideEl) {
         portalPreviewSideEl.textContent = desc || 'Cultura, entrenamiento y crecimiento.';
       }
@@ -6100,6 +6270,24 @@ app.get("/admin/ui", (req, res) => {
             img.alt = 'Gallery';
             portalPreviewGalleryEl.appendChild(img);
           });
+        }
+      }
+
+      if (portalPreviewLocationInputEl && portalPreviewLocationFieldEl) {
+        const locationOptions = portalReadLocationOptions();
+        portalPreviewLocationInputEl.innerHTML = '';
+        if (locationOptions.length) {
+          locationOptions.slice(0, 4).forEach((opt) => {
+            const label = (opt && opt.label && (opt.label.es || opt.label.en)) || opt.key || '';
+            if (!label) return;
+            const chip = document.createElement('div');
+            chip.className = 'portal-preview-chip';
+            chip.textContent = label;
+            portalPreviewLocationInputEl.appendChild(chip);
+          });
+          portalPreviewLocationFieldEl.style.display = '';
+        } else {
+          portalPreviewLocationFieldEl.style.display = 'none';
         }
       }
 
@@ -6149,6 +6337,20 @@ app.get("/admin/ui", (req, res) => {
       }).filter(Boolean).join('\\n');
     }
 
+    function portalFormatLocationLabels(app) {
+      const list = Array.isArray(app.locations) ? app.locations : [];
+      if (!list.length) return '';
+      return list.map((loc) => {
+        if (!loc) return '';
+        if (typeof loc === 'string') return loc;
+        if (loc.label) {
+          if (typeof loc.label === 'string') return loc.label;
+          return loc.label.es || loc.label.en || loc.key || '';
+        }
+        return loc.key || '';
+      }).filter(Boolean).join(', ');
+    }
+
     function portalAddTextCell(row, text, className) {
       const td = document.createElement('td');
       if (className) td.className = className;
@@ -6187,6 +6389,7 @@ app.get("/admin/ui", (req, res) => {
         const pageLabel = (page && page.brand) || app.brand || app.slug || '';
         portalAddTextCell(row, formatDate(app.created_at), 'cell-compact');
         portalAddTextCell(row, pageLabel);
+        portalAddTextCell(row, portalFormatLocationLabels(app));
         portalAddTextCell(row, app.name || '');
         portalAddTextCell(row, app.email || '');
         portalAddTextCell(row, app.phone || '');
@@ -6210,17 +6413,19 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function portalBuildCsv(apps) {
-      const headers = ['Date', 'Page', 'Brand', 'Name', 'Email', 'Phone', 'Role', 'Resume', 'Photo', 'Answers'];
+      const headers = ['Date', 'Page', 'Brand', 'Locations', 'Name', 'Email', 'Phone', 'Role', 'Resume', 'Photo', 'Answers'];
       const rows = [headers.map(portalCsvEscape).join(',')];
       (apps || []).forEach((app) => {
         const page = portalFindPageBySlug(app.slug);
         const pageLabel = app.slug || '';
         const brandLabel = (page && page.brand) || app.brand || '';
+        const locationLabel = portalFormatLocationLabels(app);
         const answers = portalBuildAnswerText(app);
         rows.push([
           formatDate(app.created_at),
           pageLabel,
           brandLabel,
+          locationLabel,
           app.name || '',
           app.email || '',
           app.phone || '',
@@ -6428,6 +6633,7 @@ app.get("/admin/ui", (req, res) => {
       updateNavActive();
       updateCallBrandOptions();
       updateRoleOptions();
+      portalRenderLocationOptions();
     }
 
     function updateNavActive() {

@@ -191,6 +191,24 @@ function renderApplyPage(page, options = {}) {
       box-shadow: 0 0 0 4px var(--ring);
     }
     .row { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+    .multi-options {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    }
+    .multi-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid rgba(36,27,19,0.12);
+      border-radius: 14px;
+      padding: 10px 12px;
+      background: #fff;
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .multi-option input { width: auto; }
     .hint { color: var(--muted); font-size: 13px; }
     .submit-btn {
       background: var(--primary);
@@ -342,6 +360,19 @@ function renderApplyPage(page, options = {}) {
       });
     }
 
+    function optionValue(opt) {
+      if (!opt) return '';
+      if (typeof opt === 'string') return opt;
+      return opt.key || opt.value || t(opt, '');
+    }
+
+    function optionLabel(opt) {
+      if (!opt) return '';
+      if (typeof opt === 'string') return opt;
+      if (opt.label) return t(opt.label, opt.key || opt.value || '');
+      return t(opt, opt.key || opt.value || '');
+    }
+
     function buildInputField(id, label, type, required, options) {
       const wrapper = document.createElement('div');
       const labelEl = document.createElement('label');
@@ -400,6 +431,34 @@ function renderApplyPage(page, options = {}) {
       return wrapper;
     }
 
+    function buildMultiOptionsField(id, label, required, options) {
+      const wrapper = document.createElement('div');
+      const labelEl = document.createElement('label');
+      labelEl.textContent = label + (required ? ' *' : '');
+      wrapper.appendChild(labelEl);
+
+      const list = document.createElement('div');
+      list.className = 'multi-options';
+      (options || []).forEach((opt, idx) => {
+        const value = optionValue(opt);
+        if (!value) return;
+        const text = optionLabel(opt) || value;
+        const optLabel = document.createElement('label');
+        optLabel.className = 'multi-option';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.name = id;
+        input.value = value;
+        input.id = id + '_' + idx;
+        optLabel.appendChild(input);
+        optLabel.appendChild(document.createTextNode(text));
+        list.appendChild(optLabel);
+      });
+      wrapper.appendChild(list);
+      if (required) wrapper.dataset.required = '1';
+      return wrapper;
+    }
+
     function renderFields() {
       els.baseFields.innerHTML = '';
       els.customFields.innerHTML = '';
@@ -413,6 +472,12 @@ function renderApplyPage(page, options = {}) {
       els.baseFields.appendChild(buildInputField('name', t(nameField.label, 'Full name'), 'text', nameField.required !== false));
       els.baseFields.appendChild(buildInputField('email', t(emailField.label, 'Email'), 'email', emailField.required !== false));
       els.baseFields.appendChild(buildInputField('phone', t(phoneField.label, 'Phone'), 'tel', phoneField.required !== false));
+
+      if (fields.locations && Array.isArray(fields.locations.options) && fields.locations.options.length) {
+        els.baseFields.appendChild(
+          buildMultiOptionsField('locations', t(fields.locations.label, 'Locations'), fields.locations.required === true, fields.locations.options)
+        );
+      }
 
       if (fields.role && Array.isArray(fields.role.options) && fields.role.options.length) {
         els.baseFields.appendChild(buildInputField('role', t(fields.role.label, 'Role'), 'select', fields.role.required === true, fields.role.options));
@@ -485,6 +550,8 @@ function renderApplyPage(page, options = {}) {
         const email = document.getElementById('email')?.value?.trim() || '';
         const phone = document.getElementById('phone')?.value?.trim() || '';
         const role = document.getElementById('role')?.value?.trim() || '';
+        const locationInputs = Array.from(document.querySelectorAll('input[name="locations"]:checked'));
+        const locations = locationInputs.map((input) => input.value).filter(Boolean);
 
         if (!name) throw new Error(t({ es: 'Nombre requerido', en: 'Name is required' }, 'Name is required'));
         const emailRe = /.+@.+\..+/;
@@ -493,6 +560,9 @@ function renderApplyPage(page, options = {}) {
         }
         if (page.fields?.phone?.required !== false && phone.length < 7) {
           throw new Error(t({ es: 'Telefono invalido', en: 'Invalid phone' }, 'Invalid phone'));
+        }
+        if (page.fields?.locations?.required && locations.length === 0) {
+          throw new Error(t({ es: 'Selecciona una locacion', en: 'Select a location' }, 'Select a location'));
         }
 
         const answers = {};
@@ -527,6 +597,7 @@ function renderApplyPage(page, options = {}) {
           email,
           phone,
           role,
+          locations,
           lang,
           answers,
           resume_data_url: resumeFile ? await readFileAsDataUrl(resumeFile) : '',

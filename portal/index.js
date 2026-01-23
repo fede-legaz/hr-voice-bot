@@ -105,6 +105,10 @@ function buildCvText(app, page) {
   if (app.email) lines.push(`Email: ${app.email}`);
   if (app.phone) lines.push(`Phone: ${app.phone}`);
   if (app.role) lines.push(`Role: ${app.role}`);
+  if (Array.isArray(app.locations) && app.locations.length) {
+    const labels = app.locations.map((loc) => loc.label || loc.key || "").filter(Boolean);
+    if (labels.length) lines.push(`Locations: ${labels.join(", ")}`);
+  }
   if (page && Array.isArray(page.questions)) {
     lines.push("Answers:");
     page.questions.forEach((q) => {
@@ -185,6 +189,35 @@ function createPortalRouter(options = {}) {
       const phoneRaw = String(body.phone || "").trim();
       const phone = normalizePhone(phoneRaw);
       const role = String(body.role || page.role || "").trim();
+      const locationField = page.fields?.locations || {};
+      const rawLocations = Array.isArray(body.locations)
+        ? body.locations
+        : (body.locations ? [body.locations] : []);
+      const locations = [];
+      const locationOptions = Array.isArray(locationField.options) ? locationField.options : [];
+      const locationMap = new Map();
+      locationOptions.forEach((opt) => {
+        if (!opt) return;
+        if (typeof opt === "string") {
+          locationMap.set(opt, opt);
+          return;
+        }
+        const key = opt.key || opt.value || "";
+        if (!key) return;
+        const labelObj = opt.label || opt;
+        const label = typeof labelObj === "string"
+          ? labelObj
+          : (labelObj.es || labelObj.en || "");
+        locationMap.set(String(key), label || String(key));
+      });
+      rawLocations.forEach((val) => {
+        const key = String(val || "").trim();
+        if (!key) return;
+        const label = locationMap.get(key) || key;
+        if (!locations.some((loc) => loc.key === key)) {
+          locations.push({ key, label });
+        }
+      });
       const rawAnswers = body.answers && typeof body.answers === "object" ? body.answers : {};
       const answers = {};
 
@@ -194,6 +227,9 @@ function createPortalRouter(options = {}) {
       }
       if (page.fields?.phone?.required !== false && phone.length < 7) {
         return res.status(400).json({ error: "invalid_phone" });
+      }
+      if (locationField.required && locations.length === 0) {
+        return res.status(400).json({ error: "missing_location" });
       }
 
       for (const q of page.questions || []) {
@@ -258,6 +294,7 @@ function createPortalRouter(options = {}) {
         email,
         phone,
         answers,
+        locations,
         resume_url: resumeUrl,
         photo_url: photoUrl,
         created_at: new Date().toISOString()
@@ -267,16 +304,31 @@ function createPortalRouter(options = {}) {
 
       if (saveCvEntry) {
         const cvText = buildCvText(application, page);
-        await saveCvEntry({
-          brand: page.brand || "",
-          role: role || "",
-          applicant: name,
-          phone,
-          cv_text: cvText,
-          cv_url: resumeUrl,
-          cv_photo_url: photoUrl,
-          source: `portal:${slug}`
-        });
+        if (locations.length) {
+          for (const loc of locations) {
+            await saveCvEntry({
+              brand: loc.key || loc.label || page.brand || "",
+              role: role || "",
+              applicant: name,
+              phone,
+              cv_text: cvText,
+              cv_url: resumeUrl,
+              cv_photo_url: photoUrl,
+              source: `portal:${slug}`
+            });
+          }
+        } else {
+          await saveCvEntry({
+            brand: page.brand || "",
+            role: role || "",
+            applicant: name,
+            phone,
+            cv_text: cvText,
+            cv_url: resumeUrl,
+            cv_photo_url: photoUrl,
+            source: `portal:${slug}`
+          });
+        }
       }
 
       return res.json({ ok: true, application_id: appId });
