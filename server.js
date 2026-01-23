@@ -2792,12 +2792,150 @@ app.get("/admin/ui", (req, res) => {
       display: grid;
       gap: 10px;
     }
+    .portal-color-row { display: flex; gap: 10px; align-items: center; }
+    .portal-color-row input[type="text"] { flex: 1; }
+    .portal-color-row input[type="color"] {
+      width: 44px;
+      height: 42px;
+      padding: 0;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fff;
+      cursor: pointer;
+    }
     .portal-url-row { display: flex; gap: 8px; align-items: center; }
     .portal-url-row input { flex: 1; }
     .portal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     .portal-table th, .portal-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     .portal-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
     .portal-answer { white-space: pre-wrap; min-width: 220px; }
+    .portal-preview {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--p-bg, #f6f2e9);
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+      font-family: var(--p-body, "Manrope", sans-serif);
+      color: var(--p-text, #241b13);
+    }
+    .portal-preview-hero {
+      background: var(--p-card, #fff);
+      border-radius: 16px;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+      gap: 14px;
+      align-items: center;
+      border: 1px solid rgba(0, 0, 0, 0.06);
+    }
+    .portal-preview-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.06);
+      color: var(--p-accent, #1f6f5c);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+    .portal-preview-brand-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 600;
+      color: var(--p-muted, #6c5f57);
+      margin-top: 8px;
+    }
+    .portal-preview-logo {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      object-fit: cover;
+      background: rgba(0, 0, 0, 0.06);
+    }
+    .portal-preview-title {
+      font-family: var(--p-heading, "Fraunces", serif);
+      font-size: 22px;
+      line-height: 1.1;
+      margin: 8px 0 6px;
+    }
+    .portal-preview-desc {
+      color: var(--p-muted, #6c5f57);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .portal-preview-hero-image {
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.06);
+      min-height: 120px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      color: var(--p-muted, #6c5f57);
+      overflow: hidden;
+      background-size: cover;
+      background-position: center;
+    }
+    .portal-preview-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+    .portal-preview-card {
+      background: var(--p-card, #fff);
+      border-radius: 16px;
+      padding: 14px;
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      display: grid;
+      gap: 10px;
+    }
+    .portal-preview-card-title {
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--p-text, #241b13);
+    }
+    .portal-preview-field {
+      display: grid;
+      gap: 6px;
+    }
+    .portal-preview-field-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--p-muted, #6c5f57);
+    }
+    .portal-preview-field-input {
+      height: 30px;
+      border-radius: 10px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      background: #fff;
+    }
+    .portal-preview-btn {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 14px;
+      background: var(--p-primary, #c84c33);
+      color: #fff;
+      font-weight: 700;
+      font-size: 12px;
+      cursor: default;
+    }
+    .portal-preview-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+      gap: 8px;
+    }
+    .portal-preview-gallery img {
+      width: 100%;
+      height: 64px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: rgba(0, 0, 0, 0.06);
+    }
     .action-stack {
       display: flex;
       align-items: center;
@@ -3972,12 +4110,24 @@ app.get("/admin/ui", (req, res) => {
               <div class="section-title">Diseño</div>
               <div class="grid">
                 <div>
+                  <label>Preset de fonts</label>
+                  <select id="portal-font-preset">
+                    <option value="">Personalizado</option>
+                    <option value="fraunces-manrope">Fraunces + Manrope</option>
+                    <option value="spacegrotesk-dmsans">Space Grotesk + DM Sans</option>
+                    <option value="playfair-sourcesans">Playfair Display + Source Sans 3</option>
+                    <option value="cormorant-worksans">Cormorant Garamond + Work Sans</option>
+                    <option value="abril-nunito">Abril Fatface + Nunito</option>
+                    <option value="bebas-assistant">Bebas Neue + Assistant</option>
+                  </select>
+                </div>
+                <div>
                   <label>Font Heading</label>
-                  <input id="portal-font-heading" type="text" />
+                  <input id="portal-font-heading" type="text" list="portal-font-list" />
                 </div>
                 <div>
                   <label>Font Body</label>
-                  <input id="portal-font-body" type="text" />
+                  <input id="portal-font-body" type="text" list="portal-font-list" />
                 </div>
                 <div>
                   <label>Font URL</label>
@@ -3985,27 +4135,103 @@ app.get("/admin/ui", (req, res) => {
                 </div>
                 <div>
                   <label>Primary Color</label>
-                  <input id="portal-color-primary" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-primary" type="text" />
+                    <input id="portal-color-primary-picker" type="color" />
+                  </div>
                 </div>
                 <div>
                   <label>Accent Color</label>
-                  <input id="portal-color-accent" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-accent" type="text" />
+                    <input id="portal-color-accent-picker" type="color" />
+                  </div>
                 </div>
                 <div>
                   <label>Background</label>
-                  <input id="portal-color-bg" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-bg" type="text" />
+                    <input id="portal-color-bg-picker" type="color" />
+                  </div>
                 </div>
                 <div>
                   <label>Card</label>
-                  <input id="portal-color-card" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-card" type="text" />
+                    <input id="portal-color-card-picker" type="color" />
+                  </div>
                 </div>
                 <div>
                   <label>Text</label>
-                  <input id="portal-color-text" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-text" type="text" />
+                    <input id="portal-color-text-picker" type="color" />
+                  </div>
                 </div>
                 <div>
                   <label>Muted</label>
-                  <input id="portal-color-muted" type="text" />
+                  <div class="portal-color-row">
+                    <input id="portal-color-muted" type="text" />
+                    <input id="portal-color-muted-picker" type="color" />
+                  </div>
+                </div>
+              </div>
+
+              <datalist id="portal-font-list">
+                <option value="Fraunces"></option>
+                <option value="Manrope"></option>
+                <option value="Space Grotesk"></option>
+                <option value="DM Sans"></option>
+                <option value="Playfair Display"></option>
+                <option value="Source Sans 3"></option>
+                <option value="Cormorant Garamond"></option>
+                <option value="Work Sans"></option>
+                <option value="Abril Fatface"></option>
+                <option value="Nunito"></option>
+                <option value="Bebas Neue"></option>
+                <option value="Assistant"></option>
+              </datalist>
+
+              <div class="section-title">Preview</div>
+              <div class="portal-preview" id="portal-preview">
+                <div class="portal-preview-hero">
+                  <div>
+                    <div class="portal-preview-pill">Now hiring</div>
+                    <div class="portal-preview-brand-row">
+                      <img class="portal-preview-logo" id="portal-preview-logo" alt="Logo" />
+                      <div id="portal-preview-brand"></div>
+                    </div>
+                    <div class="portal-preview-title" id="portal-preview-title"></div>
+                    <div class="portal-preview-desc" id="portal-preview-desc"></div>
+                  </div>
+                  <div class="portal-preview-hero-image" id="portal-preview-hero">Hero image</div>
+                </div>
+                <div class="portal-preview-grid">
+                  <div class="portal-preview-card">
+                    <div class="portal-preview-card-title">Apply now</div>
+                    <div class="portal-preview-field">
+                      <div class="portal-preview-field-label" id="portal-preview-name-label"></div>
+                      <div class="portal-preview-field-input"></div>
+                    </div>
+                    <div class="portal-preview-field">
+                      <div class="portal-preview-field-label" id="portal-preview-email-label"></div>
+                      <div class="portal-preview-field-input"></div>
+                    </div>
+                    <div class="portal-preview-field">
+                      <div class="portal-preview-field-label" id="portal-preview-phone-label"></div>
+                      <div class="portal-preview-field-input"></div>
+                    </div>
+                    <div class="portal-preview-field">
+                      <div class="portal-preview-field-label" id="portal-preview-role-label"></div>
+                      <div class="portal-preview-field-input"></div>
+                    </div>
+                    <button class="portal-preview-btn" id="portal-preview-btn" type="button">Enviar postulacion</button>
+                  </div>
+                  <div class="portal-preview-card">
+                    <div class="portal-preview-card-title">Inside the team</div>
+                    <div class="portal-preview-desc" id="portal-preview-side"></div>
+                    <div class="portal-preview-gallery" id="portal-preview-gallery"></div>
+                  </div>
                 </div>
               </div>
 
@@ -4309,12 +4535,19 @@ app.get("/admin/ui", (req, res) => {
     const portalFontHeadingEl = document.getElementById('portal-font-heading');
     const portalFontBodyEl = document.getElementById('portal-font-body');
     const portalFontUrlEl = document.getElementById('portal-font-url');
+    const portalFontPresetEl = document.getElementById('portal-font-preset');
     const portalColorPrimaryEl = document.getElementById('portal-color-primary');
+    const portalColorPrimaryPickerEl = document.getElementById('portal-color-primary-picker');
     const portalColorAccentEl = document.getElementById('portal-color-accent');
+    const portalColorAccentPickerEl = document.getElementById('portal-color-accent-picker');
     const portalColorBgEl = document.getElementById('portal-color-bg');
+    const portalColorBgPickerEl = document.getElementById('portal-color-bg-picker');
     const portalColorCardEl = document.getElementById('portal-color-card');
+    const portalColorCardPickerEl = document.getElementById('portal-color-card-picker');
     const portalColorTextEl = document.getElementById('portal-color-text');
+    const portalColorTextPickerEl = document.getElementById('portal-color-text-picker');
     const portalColorMutedEl = document.getElementById('portal-color-muted');
+    const portalColorMutedPickerEl = document.getElementById('portal-color-muted-picker');
     const portalLogoUrlEl = document.getElementById('portal-logo-url');
     const portalLogoFileEl = document.getElementById('portal-logo-file');
     const portalHeroUrlEl = document.getElementById('portal-hero-url');
@@ -4347,6 +4580,20 @@ app.get("/admin/ui", (req, res) => {
     const portalAppExportEl = document.getElementById('portal-app-export');
     const portalAppCountEl = document.getElementById('portal-app-count');
     const portalAppBodyEl = document.getElementById('portal-app-body');
+    const portalPreviewEl = document.getElementById('portal-preview');
+    const portalPreviewLogoEl = document.getElementById('portal-preview-logo');
+    const portalPreviewBrandEl = document.getElementById('portal-preview-brand');
+    const portalPreviewTitleEl = document.getElementById('portal-preview-title');
+    const portalPreviewDescEl = document.getElementById('portal-preview-desc');
+    const portalPreviewHeroEl = document.getElementById('portal-preview-hero');
+    const portalPreviewNameLabelEl = document.getElementById('portal-preview-name-label');
+    const portalPreviewEmailLabelEl = document.getElementById('portal-preview-email-label');
+    const portalPreviewPhoneLabelEl = document.getElementById('portal-preview-phone-label');
+    const portalPreviewRoleLabelEl = document.getElementById('portal-preview-role-label');
+    const portalPreviewBtnEl = document.getElementById('portal-preview-btn');
+    const portalPreviewSideEl = document.getElementById('portal-preview-side');
+    const portalPreviewGalleryEl = document.getElementById('portal-preview-gallery');
+    const portalFormEl = document.querySelector('#portal-view .portal-form');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -5285,6 +5532,116 @@ app.get("/admin/ui", (req, res) => {
       });
     }
 
+    const PORTAL_FONT_PRESETS = [
+      {
+        id: 'fraunces-manrope',
+        heading: 'Fraunces',
+        body: 'Manrope',
+        url: 'https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Manrope:wght@400;600;700&display=swap'
+      },
+      {
+        id: 'spacegrotesk-dmsans',
+        heading: 'Space Grotesk',
+        body: 'DM Sans',
+        url: 'https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap'
+      },
+      {
+        id: 'playfair-sourcesans',
+        heading: 'Playfair Display',
+        body: 'Source Sans 3',
+        url: 'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;700&family=Source+Sans+3:wght@400;600&display=swap'
+      },
+      {
+        id: 'cormorant-worksans',
+        heading: 'Cormorant Garamond',
+        body: 'Work Sans',
+        url: 'https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;700&family=Work+Sans:wght@400;600&display=swap'
+      },
+      {
+        id: 'abril-nunito',
+        heading: 'Abril Fatface',
+        body: 'Nunito',
+        url: 'https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Nunito:wght@400;600;700&display=swap'
+      },
+      {
+        id: 'bebas-assistant',
+        heading: 'Bebas Neue',
+        body: 'Assistant',
+        url: 'https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Assistant:wght@400;600&display=swap'
+      }
+    ];
+    let portalPreviewFontLink = null;
+
+    function portalSetFontLink(url) {
+      const value = (url || '').trim();
+      if (!value) {
+        if (portalPreviewFontLink) {
+          portalPreviewFontLink.remove();
+          portalPreviewFontLink = null;
+        }
+        return;
+      }
+      if (!portalPreviewFontLink) {
+        portalPreviewFontLink = document.createElement('link');
+        portalPreviewFontLink.id = 'portal-preview-font-link';
+        portalPreviewFontLink.rel = 'stylesheet';
+        document.head.appendChild(portalPreviewFontLink);
+      }
+      portalPreviewFontLink.href = value;
+    }
+
+    function portalNormalizeHex(value) {
+      const raw = (value || '').trim();
+      if (!raw) return '';
+      const short = raw.match(/^#([0-9a-f]{3})$/i);
+      if (short) {
+        return '#' + short[1].split('').map((c) => c + c).join('');
+      }
+      const long = raw.match(/^#([0-9a-f]{6})$/i);
+      if (long) return '#' + long[1].toLowerCase();
+      return '';
+    }
+
+    function portalSyncColorPicker(textEl, pickerEl) {
+      if (!textEl || !pickerEl) return;
+      const normalized = portalNormalizeHex(textEl.value);
+      if (normalized) pickerEl.value = normalized;
+    }
+
+    function portalBindColorPicker(textEl, pickerEl) {
+      if (!textEl || !pickerEl) return;
+      pickerEl.addEventListener('input', () => {
+        textEl.value = pickerEl.value;
+        portalSyncPreview();
+      });
+      textEl.addEventListener('input', () => {
+        const normalized = portalNormalizeHex(textEl.value);
+        if (normalized) pickerEl.value = normalized;
+        portalSyncPreview();
+      });
+    }
+
+    function portalMatchFontPreset() {
+      if (!portalFontPresetEl) return;
+      const heading = (portalFontHeadingEl && portalFontHeadingEl.value || '').trim();
+      const body = (portalFontBodyEl && portalFontBodyEl.value || '').trim();
+      const url = (portalFontUrlEl && portalFontUrlEl.value || '').trim();
+      const match = PORTAL_FONT_PRESETS.find((preset) => {
+        return preset.heading === heading && preset.body === body && preset.url === url;
+      });
+      portalFontPresetEl.value = match ? match.id : '';
+    }
+
+    function portalApplyFontPreset(id) {
+      const preset = PORTAL_FONT_PRESETS.find((item) => item.id === id);
+      if (!preset) return;
+      portalSetVal(portalFontHeadingEl, preset.heading);
+      portalSetVal(portalFontBodyEl, preset.body);
+      portalSetVal(portalFontUrlEl, preset.url);
+      portalSetFontLink(preset.url);
+      portalSyncPreview();
+    }
+
     function portalDefaultPage() {
       return {
         slug: '',
@@ -5494,6 +5851,8 @@ app.get("/admin/ui", (req, res) => {
 
       portalRenderQuestions();
       portalUpdateUrl();
+      portalMatchFontPreset();
+      portalSyncPreview();
     }
 
     function portalRenderQuestions() {
@@ -5654,6 +6013,127 @@ app.get("/admin/ui", (req, res) => {
 
       data.questions = portalReadQuestions();
       return data;
+    }
+
+    function portalPreviewImage(kind) {
+      if (kind === 'logo') {
+        if (portalPendingUploads.logo && portalPendingUploads.logo.dataUrl) return portalPendingUploads.logo.dataUrl;
+        return (portalLogoUrlEl && portalLogoUrlEl.value || '').trim();
+      }
+      if (kind === 'hero') {
+        if (portalPendingUploads.hero && portalPendingUploads.hero.dataUrl) return portalPendingUploads.hero.dataUrl;
+        return (portalHeroUrlEl && portalHeroUrlEl.value || '').trim();
+      }
+      return '';
+    }
+
+    function portalPreviewGalleryUrls() {
+      if (portalPendingUploads.gallery && portalPendingUploads.gallery.length) {
+        return portalPendingUploads.gallery.map((item) => item.dataUrl).filter(Boolean);
+      }
+      const raw = (portalGalleryUrlsEl && portalGalleryUrlsEl.value || '').trim();
+      if (!raw) return [];
+      return raw.split(/\\n+/).map((value) => value.trim()).filter(Boolean);
+    }
+
+    function portalSyncPreview() {
+      if (!portalPreviewEl) return;
+      portalSyncColorPicker(portalColorPrimaryEl, portalColorPrimaryPickerEl);
+      portalSyncColorPicker(portalColorAccentEl, portalColorAccentPickerEl);
+      portalSyncColorPicker(portalColorBgEl, portalColorBgPickerEl);
+      portalSyncColorPicker(portalColorCardEl, portalColorCardPickerEl);
+      portalSyncColorPicker(portalColorTextEl, portalColorTextPickerEl);
+      portalSyncColorPicker(portalColorMutedEl, portalColorMutedPickerEl);
+
+      const brand = (portalBrandEl && portalBrandEl.value || '').trim() || (portalSlugEl && portalSlugEl.value || 'Restaurante');
+      const title = (portalTitleEsEl && portalTitleEsEl.value || '').trim()
+        || (portalTitleEnEl && portalTitleEnEl.value || '').trim()
+        || ('Trabaja en ' + brand);
+      const desc = (portalDescEsEl && portalDescEsEl.value || '').trim()
+        || (portalDescEnEl && portalDescEnEl.value || '').trim()
+        || 'Sumate al equipo.';
+      const nameLabel = (portalNameEsEl && portalNameEsEl.value || '').trim() || 'Nombre completo';
+      const emailLabel = (portalEmailEsEl && portalEmailEsEl.value || '').trim() || 'Email';
+      const phoneLabel = (portalPhoneEsEl && portalPhoneEsEl.value || '').trim() || 'Telefono';
+      const roleLabel = (portalRoleEsEl && portalRoleEsEl.value || '').trim() || 'Puesto';
+
+      if (portalPreviewBrandEl) portalPreviewBrandEl.textContent = brand;
+      if (portalPreviewTitleEl) portalPreviewTitleEl.textContent = title;
+      if (portalPreviewDescEl) portalPreviewDescEl.textContent = desc;
+      if (portalPreviewNameLabelEl) portalPreviewNameLabelEl.textContent = nameLabel;
+      if (portalPreviewEmailLabelEl) portalPreviewEmailLabelEl.textContent = emailLabel;
+      if (portalPreviewPhoneLabelEl) portalPreviewPhoneLabelEl.textContent = phoneLabel;
+      if (portalPreviewRoleLabelEl) portalPreviewRoleLabelEl.textContent = roleLabel;
+      if (portalPreviewSideEl) {
+        portalPreviewSideEl.textContent = desc || 'Cultura, entrenamiento y crecimiento.';
+      }
+
+      const logoUrl = portalPreviewImage('logo');
+      if (portalPreviewLogoEl) {
+        if (logoUrl) {
+          portalPreviewLogoEl.src = logoUrl;
+          portalPreviewLogoEl.style.display = '';
+        } else {
+          portalPreviewLogoEl.removeAttribute('src');
+          portalPreviewLogoEl.style.display = 'none';
+        }
+      }
+
+      const heroUrl = portalPreviewImage('hero');
+      if (portalPreviewHeroEl) {
+        if (heroUrl) {
+          portalPreviewHeroEl.style.backgroundImage = 'url(' + heroUrl + ')';
+          portalPreviewHeroEl.textContent = '';
+        } else {
+          portalPreviewHeroEl.style.backgroundImage = 'none';
+          portalPreviewHeroEl.textContent = 'Hero image';
+        }
+      }
+
+      if (portalPreviewGalleryEl) {
+        portalPreviewGalleryEl.innerHTML = '';
+        const galleryUrls = portalPreviewGalleryUrls();
+        if (galleryUrls.length) {
+          galleryUrls.slice(0, 4).forEach((url) => {
+            const img = document.createElement('img');
+            img.src = url;
+            img.alt = 'Gallery';
+            portalPreviewGalleryEl.appendChild(img);
+          });
+        }
+      }
+
+      const heading = (portalFontHeadingEl && portalFontHeadingEl.value || 'Fraunces').trim() || 'Fraunces';
+      const body = (portalFontBodyEl && portalFontBodyEl.value || 'Manrope').trim() || 'Manrope';
+      portalPreviewEl.style.setProperty('--p-heading', '"' + heading + '", serif');
+      portalPreviewEl.style.setProperty('--p-body', '"' + body + '", sans-serif');
+
+      const primary = portalNormalizeHex((portalColorPrimaryEl && portalColorPrimaryEl.value) || '') || '#c84c33';
+      const accent = portalNormalizeHex((portalColorAccentEl && portalColorAccentEl.value) || '') || '#1f6f5c';
+      const bg = portalNormalizeHex((portalColorBgEl && portalColorBgEl.value) || '') || '#f6f2e9';
+      const card = portalNormalizeHex((portalColorCardEl && portalColorCardEl.value) || '') || '#ffffff';
+      const text = portalNormalizeHex((portalColorTextEl && portalColorTextEl.value) || '') || '#241b13';
+      const muted = portalNormalizeHex((portalColorMutedEl && portalColorMutedEl.value) || '') || '#6c5f57';
+
+      portalPreviewEl.style.setProperty('--p-primary', primary);
+      portalPreviewEl.style.setProperty('--p-accent', accent);
+      portalPreviewEl.style.setProperty('--p-bg', bg);
+      portalPreviewEl.style.setProperty('--p-card', card);
+      portalPreviewEl.style.setProperty('--p-text', text);
+      portalPreviewEl.style.setProperty('--p-muted', muted);
+
+      if (portalFontUrlEl) {
+        portalSetFontLink(portalFontUrlEl.value);
+      }
+    }
+
+    function portalHandlePreviewSync(event) {
+      if (event && event.target) {
+        if (event.target === portalFontHeadingEl || event.target === portalFontBodyEl || event.target === portalFontUrlEl) {
+          portalMatchFontPreset();
+        }
+      }
+      portalSyncPreview();
     }
 
     function portalBuildAnswerText(app) {
@@ -8214,6 +8694,26 @@ app.get("/admin/ui", (req, res) => {
         }
       };
     }
+    if (portalFontPresetEl) {
+      portalFontPresetEl.addEventListener('change', () => {
+        const presetId = portalFontPresetEl.value || '';
+        if (presetId) {
+          portalApplyFontPreset(presetId);
+        } else {
+          portalSyncPreview();
+        }
+      });
+    }
+    portalBindColorPicker(portalColorPrimaryEl, portalColorPrimaryPickerEl);
+    portalBindColorPicker(portalColorAccentEl, portalColorAccentPickerEl);
+    portalBindColorPicker(portalColorBgEl, portalColorBgPickerEl);
+    portalBindColorPicker(portalColorCardEl, portalColorCardPickerEl);
+    portalBindColorPicker(portalColorTextEl, portalColorTextPickerEl);
+    portalBindColorPicker(portalColorMutedEl, portalColorMutedPickerEl);
+    if (portalFormEl) {
+      portalFormEl.addEventListener('input', portalHandlePreviewSync);
+      portalFormEl.addEventListener('change', portalHandlePreviewSync);
+    }
     if (portalLogoFileEl) {
       portalLogoFileEl.addEventListener('change', async (event) => {
         const file = event.target.files && event.target.files[0];
@@ -8222,6 +8722,7 @@ app.get("/admin/ui", (req, res) => {
           const dataUrl = await portalFileToDataUrl(file);
           portalPendingUploads.logo = { dataUrl, fileName: file.name };
           portalSetStatus('Logo listo');
+          portalSyncPreview();
         } catch (err) {
           portalSetStatus('Error cargando logo', true);
         }
@@ -8235,6 +8736,7 @@ app.get("/admin/ui", (req, res) => {
           const dataUrl = await portalFileToDataUrl(file);
           portalPendingUploads.hero = { dataUrl, fileName: file.name };
           portalSetStatus('Hero listo');
+          portalSyncPreview();
         } catch (err) {
           portalSetStatus('Error cargando hero', true);
         }
@@ -8252,6 +8754,7 @@ app.get("/admin/ui", (req, res) => {
           }
           portalPendingUploads.gallery = out;
           portalSetStatus('Galeria lista');
+          portalSyncPreview();
         } catch (err) {
           portalSetStatus('Error cargando galeria', true);
         }
