@@ -4778,10 +4778,13 @@ app.get("/admin/ui", (req, res) => {
         .filter(Boolean);
       const roleOptions = roles.map((role) => ({ es: role, en: role }));
       const content = {
-        title: { es: `Trabaja en ${brandDisplay || 'el equipo'}`, en: `Work at ${brandDisplay || 'our team'}` },
+        title: {
+          es: 'Trabaja en ' + (brandDisplay || 'el equipo'),
+          en: 'Work at ' + (brandDisplay || 'our team')
+        },
         description: {
-          es: address ? `Estamos en ${address}.` : 'Sumate al equipo.',
-          en: address ? `We are located at ${address}.` : 'Join the team.'
+          es: address ? ('Estamos en ' + address + '.') : 'Sumate al equipo.',
+          en: address ? ('We are located at ' + address + '.') : 'Join the team.'
         },
         thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' }
       };
@@ -4804,7 +4807,7 @@ app.get("/admin/ui", (req, res) => {
       };
       if (logoDataUrl && logoDataUrl.startsWith('data:')) {
         payload.logo_data_url = logoDataUrl;
-        payload.logo_file_name = `${slug || 'brand'}_logo.png`;
+        payload.logo_file_name = (slug || 'brand') + '_logo.png';
       }
       return payload;
     }
