@@ -2942,6 +2942,31 @@ app.get("/admin/ui", (req, res) => {
       flex-wrap: wrap;
       padding: 6px 8px;
     }
+    .portal-preview-field-list.layout-chips .portal-preview-chip {
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    .portal-preview-field-list.layout-compact {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+    .portal-preview-field-list.layout-compact .portal-preview-chip {
+      border-radius: 10px;
+      padding: 4px 8px;
+      width: 100%;
+    }
+    .portal-preview-field-list.layout-maps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 6px;
+      align-items: stretch;
+    }
+    .portal-preview-field-list.layout-maps .portal-preview-chip {
+      border-radius: 12px;
+      padding: 6px;
+      text-align: center;
+    }
     .portal-preview-chip {
       padding: 3px 8px;
       border-radius: 999px;
@@ -3400,18 +3425,8 @@ app.get("/admin/ui", (req, res) => {
     .user-table tbody tr:nth-child(even) td { background: #fbf7ef; }
     .user-table tbody tr:hover td { background: #f4efe6; }
     table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-    .cv-table {
-      table-layout: fixed;
-    }
-    .cv-table td { vertical-align: middle; white-space: nowrap; line-height: 1.2; }
-    .cv-table th:nth-child(1), .cv-table td:nth-child(1) { width: 140px; }
-    .cv-table th:nth-child(2), .cv-table td:nth-child(2) { width: 190px; }
-    .cv-table th:nth-child(3), .cv-table td:nth-child(3) { width: 130px; }
-    .cv-table th:nth-child(4), .cv-table td:nth-child(4) { width: 220px; }
-    .cv-table th:nth-child(5), .cv-table td:nth-child(5) { width: 130px; }
-    .cv-table th:nth-child(6), .cv-table td:nth-child(6) { width: 170px; }
-    .cv-table th:nth-child(7), .cv-table td:nth-child(7) { width: 90px; }
-    .cv-table th:nth-child(8), .cv-table td:nth-child(8) { width: 220px; }
+    .cv-table { table-layout: auto; }
+    .cv-table td { white-space: normal; line-height: 1.2; }
     .cv-status {
       max-width: 170px;
       overflow: hidden;
@@ -3419,7 +3434,6 @@ app.get("/admin/ui", (req, res) => {
     }
     .action-cell { white-space: nowrap; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .cv-table th, .cv-table td { vertical-align: middle; }
     th {
       position: sticky;
       top: 0;
@@ -4376,6 +4390,15 @@ app.get("/admin/ui", (req, res) => {
                   <input id="portal-location-required" type="checkbox" />
                   <span class="small">Requerido</span>
                 </div>
+                <div>
+                  <label>Estilo</label>
+                  <select id="portal-location-layout">
+                    <option value="cards">Tarjetas</option>
+                    <option value="chips">Chips</option>
+                    <option value="compact">Compacto</option>
+                    <option value="maps">Mini mapas</option>
+                  </select>
+                </div>
               </div>
               <div class="portal-location-options" id="portal-location-options"></div>
               <div class="small" style="margin-top:4px;">Elegí las locaciones que aparecen en el portal público.</div>
@@ -4641,6 +4664,7 @@ app.get("/admin/ui", (req, res) => {
     const portalLocationEnEl = document.getElementById('portal-location-en');
     const portalLocationReqEl = document.getElementById('portal-location-required');
     const portalLocationOptionsEl = document.getElementById('portal-location-options');
+    const portalLocationLayoutEl = document.getElementById('portal-location-layout');
     const portalRoleLocationListEl = document.getElementById('portal-role-location-list');
     const portalResumeEsEl = document.getElementById('portal-resume-es');
     const portalResumeEnEl = document.getElementById('portal-resume-en');
@@ -5498,7 +5522,8 @@ app.get("/admin/ui", (req, res) => {
           const display = (card.querySelector('.brand-display')?.value || '').trim() || key;
           const logo = (card.querySelector('.brand-logo')?.value || '').trim();
           const group = (card.querySelector('.brand-group')?.value || '').trim();
-          return { key, display, logo, group };
+          const address = (card.querySelector('.brand-address')?.value || '').trim();
+          return { key, display, logo, group, address };
         })
         .filter(Boolean);
     }
@@ -5590,10 +5615,14 @@ app.get("/admin/ui", (req, res) => {
       const brands = listBrandOptions().filter((brand) => normalizeKeyUi(brand.group || '') === norm);
       if (!brands.length) return null;
       const slug = toSlug(group);
-      const locationOptions = brands.map((brand) => ({
-        key: brand.key,
-        label: { es: brand.display || brand.key, en: brand.display || brand.key }
-      }));
+      const locationOptions = brands.map((brand) => {
+        const entry = {
+          key: brand.key,
+          label: { es: brand.display || brand.key, en: brand.display || brand.key }
+        };
+        if (brand.address) entry.address = brand.address;
+        return entry;
+      });
       const roleByLocation = {};
       const roleUnion = [];
       const roleSet = new Set();
@@ -5865,7 +5894,7 @@ app.get("/admin/ui", (req, res) => {
           email: { label: { es: 'Email', en: 'Email' }, required: true },
           phone: { label: { es: 'Telefono', en: 'Phone' }, required: true },
           role: { label: { es: 'Puesto', en: 'Role' }, required: false, options: [] },
-          locations: { label: { es: 'Locaciones', en: 'Locations' }, required: false, options: [] },
+          locations: { label: { es: 'Locaciones', en: 'Locations' }, required: false, options: [], layout: 'cards' },
           roleByLocation: {}
         },
         resume: { label: { es: 'CV (PDF)', en: 'Resume (PDF)' }, required: true },
@@ -6088,6 +6117,9 @@ app.get("/admin/ui", (req, res) => {
       portalSetVal(portalLocationEsEl, page.fields.locations.label.es || '');
       portalSetVal(portalLocationEnEl, page.fields.locations.label.en || '');
       portalSetChecked(portalLocationReqEl, !!page.fields.locations.required);
+      if (portalLocationLayoutEl) {
+        portalLocationLayoutEl.value = page.fields.locations.layout || 'cards';
+      }
       portalRenderLocationOptions();
       portalRenderRoleByLocation();
 
@@ -6171,7 +6203,10 @@ app.get("/admin/ui", (req, res) => {
         const key = input.dataset.key || input.value || '';
         if (!key) return;
         const label = input.dataset.label || key;
-        selected.push({ key, label: { es: label, en: label } });
+        const address = input.dataset.address || '';
+        const entry = { key, label: { es: label, en: label } };
+        if (address) entry.address = address;
+        selected.push(entry);
       });
       return selected;
     }
@@ -6181,6 +6216,7 @@ app.get("/admin/ui", (req, res) => {
       const brands = listBrandOptions();
       const selectedKeys = new Set();
       const optionLabels = new Map();
+      const optionAddresses = new Map();
       const currentOptions = portalCurrent && portalCurrent.fields && portalCurrent.fields.locations
         ? portalCurrent.fields.locations.options
         : null;
@@ -6193,6 +6229,12 @@ app.get("/admin/ui", (req, res) => {
               ? opt
               : (opt.label && (opt.label.es || opt.label.en)) || opt.es || opt.en || key;
             optionLabels.set(key, label || key);
+            if (opt && opt.address) {
+              const addr = typeof opt.address === 'string'
+                ? opt.address
+                : (opt.address.es || opt.address.en || '');
+              if (addr) optionAddresses.set(key, addr);
+            }
           }
         });
       }
@@ -6213,6 +6255,7 @@ app.get("/admin/ui", (req, res) => {
         input.type = 'checkbox';
         input.dataset.key = brand.key;
         input.dataset.label = brand.display || brand.key;
+        if (brand.address) input.dataset.address = brand.address;
         if (selectedKeys.has(brand.key)) input.checked = true;
         input.addEventListener('change', () => {
           if (portalCurrent) {
@@ -6232,6 +6275,7 @@ app.get("/admin/ui", (req, res) => {
         input.type = 'checkbox';
         input.dataset.key = key;
         input.dataset.label = labelText || key;
+        if (optionAddresses.has(key)) input.dataset.address = optionAddresses.get(key);
         input.checked = selectedKeys.has(key);
         input.addEventListener('change', () => {
           if (portalCurrent) {
@@ -6389,7 +6433,8 @@ app.get("/admin/ui", (req, res) => {
           en: (portalLocationEnEl && portalLocationEnEl.value || '').trim()
         },
         required: portalLocationReqEl ? portalLocationReqEl.checked : false,
-        options: portalReadLocationOptions()
+        options: portalReadLocationOptions(),
+        layout: portalLocationLayoutEl ? (portalLocationLayoutEl.value || 'cards') : 'cards'
       };
       data.fields.roleByLocation = portalReadRoleByLocation();
 
@@ -6456,6 +6501,7 @@ app.get("/admin/ui", (req, res) => {
       const locationLabel = (portalLocationEsEl && portalLocationEsEl.value || '').trim()
         || (portalLocationEnEl && portalLocationEnEl.value || '').trim()
         || 'Locaciones';
+      const locationLayout = (portalLocationLayoutEl && portalLocationLayoutEl.value || 'cards').trim() || 'cards';
 
       if (portalPreviewBrandEl) portalPreviewBrandEl.textContent = brand;
       if (portalPreviewTitleEl) portalPreviewTitleEl.textContent = title;
@@ -6507,6 +6553,7 @@ app.get("/admin/ui", (req, res) => {
       if (portalPreviewLocationInputEl && portalPreviewLocationFieldEl) {
         const locationOptions = portalReadLocationOptions();
         portalPreviewLocationInputEl.innerHTML = '';
+        portalPreviewLocationInputEl.className = 'portal-preview-field-input portal-preview-field-list layout-' + locationLayout;
         if (locationOptions.length) {
           locationOptions.slice(0, 4).forEach((opt) => {
             let label = '';
