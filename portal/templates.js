@@ -932,6 +932,10 @@ function renderAdminPage(options = {}) {
     let current = null;
     let pendingUploads = { logo: null, hero: null, gallery: [] };
     let lastApplications = [];
+    let pendingSlug = '';
+    try {
+      pendingSlug = new URLSearchParams(window.location.search).get('slug') || '';
+    } catch (err) {}
 
     function authHeaders() {
       const token = tokenInput.value.trim();
@@ -995,7 +999,12 @@ function renderAdminPage(options = {}) {
       pages = data.pages || [];
       renderList();
       renderAppFilter();
-      if (!current && pages.length) selectPage(pages[0].slug);
+      if (pendingSlug && pages.some((p) => p.slug === pendingSlug)) {
+        selectPage(pendingSlug);
+        pendingSlug = '';
+      } else if (!current && pages.length) {
+        selectPage(pages[0].slug);
+      }
       await loadApplications();
       setStatus('');
     }

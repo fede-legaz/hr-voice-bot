@@ -1587,7 +1587,7 @@ const portalRouter = createPortalRouter({
   uploadsDir: path.join(__dirname, "data", "uploads"),
   uploadsBaseUrl: "/uploads",
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
-  photoMaxBytes: CV_PHOTO_MAX_BYTES,
+  photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 600 * 1024),
   requireAdmin: requireAdminUser,
   requireWrite,
   saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
@@ -4491,6 +4491,7 @@ app.get("/admin/ui", (req, res) => {
             <div class="muted small">Clave: <span class="brand-key-label"></span></div>
           </div>
           <div class="inline">
+            <button class="secondary portal-site" type="button">Portal</button>
             <button class="secondary add-role" type="button">+ Rol</button>
             <button class="secondary delete-brand" type="button">Eliminar</button>
           </div>
@@ -4539,10 +4540,17 @@ app.get("/admin/ui", (req, res) => {
         <div class="roles"></div>
       \`;
       const rolesBox = wrapper.querySelector('.roles');
+      const portalBtn = wrapper.querySelector('.portal-site');
       wrapper.querySelector('.add-role').onclick = () => {
         rolesBox.appendChild(roleTemplate());
         updateRoleOptions();
       };
+      if (portalBtn) {
+        portalBtn.onclick = (event) => {
+          event.stopPropagation();
+          openPortalForBrand(wrapper);
+        };
+      }
       wrapper.querySelector('.delete-brand').onclick = () => {
         if (confirm('Eliminar este local?')) {
           const wasActive = wrapper.dataset.brandKey === activeBrandKey;
@@ -4748,6 +4756,87 @@ app.get("/admin/ui", (req, res) => {
           return { key: roleKey, display, aliases };
         })
         .filter(Boolean);
+    }
+
+    function toSlug(value) {
+      return (value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'portal';
+    }
+
+    function buildPortalPayloadFromBrand(wrapper) {
+      const brandKey = (wrapper.querySelector('.brand-name')?.value || '').trim();
+      const brandDisplay = (wrapper.querySelector('.brand-display')?.value || '').trim() || brandKey;
+      const address = (wrapper.querySelector('.brand-address')?.value || '').trim();
+      const logoDataUrl = (wrapper.querySelector('.brand-logo')?.value || '').trim();
+      const slug = toSlug(brandKey || brandDisplay);
+      const roles = listRolesForBrand(brandKey)
+        .map((role) => role.display || role.key)
+        .filter(Boolean);
+      const roleOptions = roles.map((role) => ({ es: role, en: role }));
+      const content = {
+        title: { es: `Trabaja en ${brandDisplay || 'el equipo'}`, en: `Work at ${brandDisplay || 'our team'}` },
+        description: {
+          es: address ? `Estamos en ${address}.` : 'Sumate al equipo.',
+          en: address ? `We are located at ${address}.` : 'Join the team.'
+        },
+        thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' }
+      };
+      const fields = {
+        name: { label: { es: 'Nombre completo', en: 'Full name' }, required: true },
+        email: { label: { es: 'Email', en: 'Email' }, required: true },
+        phone: { label: { es: 'Telefono', en: 'Phone' }, required: true },
+        role: { label: { es: 'Puesto', en: 'Role' }, required: roleOptions.length > 0, options: roleOptions }
+      };
+      const payload = {
+        slug,
+        brand: brandDisplay || brandKey,
+        active: true,
+        localeDefault: 'es',
+        content,
+        fields,
+        resume: { label: { es: 'CV (PDF)', en: 'Resume (PDF)' }, required: true },
+        photo: { label: { es: 'Foto (opcional)', en: 'Photo (optional)' }, required: false },
+        questions: []
+      };
+      if (logoDataUrl && logoDataUrl.startsWith('data:')) {
+        payload.logo_data_url = logoDataUrl;
+        payload.logo_file_name = `${slug || 'brand'}_logo.png`;
+      }
+      return payload;
+    }
+
+    async function openPortalForBrand(wrapper) {
+      try {
+        if (!tokenEl || !tokenEl.value) {
+          setStatus('Necesitás autenticarte para crear el portal.');
+          return;
+        }
+        const payload = buildPortalPayloadFromBrand(wrapper);
+        if (!payload.slug) {
+          setStatus('Falta la clave del local.');
+          return;
+        }
+        setStatus('Creando portal...');
+        const resp = await fetch('/admin/portal/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'portal_failed');
+        syncPortalToken();
+        setStatus('Portal listo.');
+        const slug = (data.page && data.page.slug) || payload.slug;
+        const url = '/admin/portal?slug=' + encodeURIComponent(slug);
+        const win = window.open(url, '_blank');
+        if (!win) window.location.href = url;
+      } catch (err) {
+        setStatus('Error: ' + err.message);
+      }
     }
 
     function normalizeKeyUi(value) {
