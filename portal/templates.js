@@ -197,6 +197,19 @@ function renderApplyPage(page, options = {}) {
       gap: 12px;
       grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
     }
+    .multi-options.layout-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .multi-options.layout-compact {
+      grid-template-columns: 1fr;
+      gap: 6px;
+    }
+    .multi-options.layout-maps {
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
     .multi-option {
       display: flex;
       align-items: center;
@@ -209,6 +222,21 @@ function renderApplyPage(page, options = {}) {
       font-weight: 600;
       color: var(--text);
       transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
+    }
+    .multi-options.layout-chips .multi-option {
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 13px;
+    }
+    .multi-options.layout-compact .multi-option {
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    .multi-options.layout-maps .multi-option {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
     }
     .multi-option:hover {
       border-color: var(--primary);
@@ -225,7 +253,40 @@ function renderApplyPage(page, options = {}) {
       height: 18px;
       accent-color: var(--primary);
     }
+    .multi-option-content {
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+    }
     .multi-option-name { font-weight: 600; }
+    .multi-option-address {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .multi-option-map {
+      display: none;
+      width: 100%;
+      height: 68px;
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(200,76,51,0.18), rgba(31,111,92,0.14));
+      position: relative;
+      overflow: hidden;
+    }
+    .multi-option-map::after {
+      content: "";
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--primary);
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 0 6px rgba(200,76,51,0.18);
+    }
+    .multi-options.layout-maps .multi-option-map { display: block; }
+    .multi-options.layout-chips .multi-option-address,
+    .multi-options.layout-compact .multi-option-address { display: none; }
     .hint { color: var(--muted); font-size: 13px; }
     .submit-btn {
       background: var(--primary);
@@ -391,6 +452,12 @@ function renderApplyPage(page, options = {}) {
       return t(opt, opt.key || opt.value || '');
     }
 
+    function optionAddress(opt) {
+      if (!opt || !opt.address) return '';
+      if (typeof opt.address === 'string') return opt.address;
+      return t(opt.address, '');
+    }
+
     function buildInputField(id, label, type, required, options) {
       const wrapper = document.createElement('div');
       const labelEl = document.createElement('label');
@@ -449,7 +516,7 @@ function renderApplyPage(page, options = {}) {
       return wrapper;
     }
 
-    function buildMultiOptionsField(id, label, required, options) {
+    function buildMultiOptionsField(id, label, required, options, layout) {
       const wrapper = document.createElement('div');
       wrapper.className = 'field-span';
       const labelEl = document.createElement('label');
@@ -457,11 +524,12 @@ function renderApplyPage(page, options = {}) {
       wrapper.appendChild(labelEl);
 
       const list = document.createElement('div');
-      list.className = 'multi-options';
+      list.className = 'multi-options layout-' + (layout || 'cards');
       (options || []).forEach((opt, idx) => {
         const value = optionValue(opt);
         if (!value) return;
         const text = optionLabel(opt) || value;
+        const address = optionAddress(opt);
         const optLabel = document.createElement('label');
         optLabel.className = 'multi-option';
         const input = document.createElement('input');
@@ -469,11 +537,22 @@ function renderApplyPage(page, options = {}) {
         input.name = id;
         input.value = value;
         input.id = id + '_' + idx;
+        const mapEl = document.createElement('div');
+        mapEl.className = 'multi-option-map';
+        const content = document.createElement('div');
+        content.className = 'multi-option-content';
         const textSpan = document.createElement('span');
         textSpan.className = 'multi-option-name';
         textSpan.textContent = text;
+        const addressSpan = document.createElement('span');
+        addressSpan.className = 'multi-option-address';
+        addressSpan.textContent = address || '';
+        if (!address) addressSpan.style.display = 'none';
         optLabel.appendChild(input);
-        optLabel.appendChild(textSpan);
+        optLabel.appendChild(mapEl);
+        content.appendChild(textSpan);
+        content.appendChild(addressSpan);
+        optLabel.appendChild(content);
         const syncChecked = () => {
           optLabel.classList.toggle('is-checked', input.checked);
         };
@@ -555,6 +634,7 @@ function renderApplyPage(page, options = {}) {
       const phoneField = fields.phone || { required: true };
       const roleField = fields.role || {};
       const roleByLocation = fields.roleByLocation || {};
+      const locationLayout = fields.locations?.layout || 'cards';
 
       els.baseFields.appendChild(buildInputField('name', t(nameField.label, 'Full name'), 'text', nameField.required !== false));
       els.baseFields.appendChild(buildInputField('email', t(emailField.label, 'Email'), 'email', emailField.required !== false));
@@ -562,7 +642,13 @@ function renderApplyPage(page, options = {}) {
 
       if (fields.locations && Array.isArray(fields.locations.options) && fields.locations.options.length) {
         els.baseFields.appendChild(
-          buildMultiOptionsField('locations', t(fields.locations.label, 'Locations'), fields.locations.required === true, fields.locations.options)
+          buildMultiOptionsField(
+            'locations',
+            t(fields.locations.label, 'Locations'),
+            fields.locations.required === true,
+            fields.locations.options,
+            locationLayout
+          )
         );
       }
 
