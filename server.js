@@ -5359,7 +5359,7 @@ app.get("/admin/ui", (req, res) => {
         portalUrlEl.value = '';
         return;
       }
-      const base = window.location.origin.replace(/\/$/, '');
+      const base = window.location.origin.replace(/\\/$/, '');
       portalUrlEl.value = base + '/apply/' + slug;
     }
 
@@ -5413,7 +5413,7 @@ app.get("/admin/ui", (req, res) => {
 
       portalSetVal(portalLogoUrlEl, page.assets.logoUrl || '');
       portalSetVal(portalHeroUrlEl, page.assets.heroUrl || '');
-      portalSetVal(portalGalleryUrlsEl, (page.assets.gallery || []).join('\n'));
+      portalSetVal(portalGalleryUrlsEl, (page.assets.gallery || []).join('\\n'));
 
       portalSetVal(portalNameEsEl, page.fields.name.label.es || '');
       portalSetVal(portalNameEnEl, page.fields.name.label.en || '');
@@ -5434,7 +5434,7 @@ app.get("/admin/ui", (req, res) => {
         if (typeof opt === 'string') return opt;
         return opt.es || opt.en || opt.value || '';
       }).filter(Boolean);
-      portalSetVal(portalRoleOptionsEl, roleOptions.join('\n'));
+      portalSetVal(portalRoleOptionsEl, roleOptions.join('\\n'));
 
       portalSetVal(portalResumeEsEl, page.resume.label.es || '');
       portalSetVal(portalResumeEnEl, page.resume.label.en || '');
@@ -5495,7 +5495,7 @@ app.get("/admin/ui", (req, res) => {
         wrap.querySelector('[data-q="options"]').value = (q.options || []).map((opt) => {
           if (typeof opt === 'string') return opt;
           return opt.es || opt.en || '';
-        }).join('\n');
+        }).join('\\n');
         wrap.querySelector('[data-q="remove"]').onclick = () => {
           wrap.remove();
           if (portalCurrent) {
@@ -5515,7 +5515,7 @@ app.get("/admin/ui", (req, res) => {
         const type = wrap.querySelector('[data-q="type"]').value;
         const required = wrap.querySelector('[data-q="required"]').checked;
         const optionsRaw = wrap.querySelector('[data-q="options"]').value;
-        const options = optionsRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
+        const options = optionsRaw.split(/\\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
         const id = wrap.dataset.qid || ('q_' + Date.now() + '_' + idx);
         items.push({
           id,
@@ -5555,7 +5555,7 @@ app.get("/admin/ui", (req, res) => {
       data.assets.logoUrl = (portalLogoUrlEl && portalLogoUrlEl.value || '').trim();
       data.assets.heroUrl = (portalHeroUrlEl && portalHeroUrlEl.value || '').trim();
       const galleryRaw = (portalGalleryUrlsEl && portalGalleryUrlsEl.value || '');
-      data.assets.gallery = galleryRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean);
+      data.assets.gallery = galleryRaw.split(/\\n+/).map((v) => v.trim()).filter(Boolean);
 
       data.fields.name = {
         label: {
@@ -5579,7 +5579,7 @@ app.get("/admin/ui", (req, res) => {
         required: portalPhoneReqEl ? portalPhoneReqEl.checked : true
       };
       const roleOptionsRaw = (portalRoleOptionsEl && portalRoleOptionsEl.value || '');
-      const roleOptions = roleOptionsRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
+      const roleOptions = roleOptionsRaw.split(/\\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
       data.fields.role = {
         label: {
           es: (portalRoleEsEl && portalRoleEsEl.value || '').trim(),
@@ -5618,7 +5618,7 @@ app.get("/admin/ui", (req, res) => {
         if (!val) return '';
         const label = (q.label && (q.label.es || q.label.en)) || key;
         return label + ': ' + val;
-      }).filter(Boolean).join('\n');
+      }).filter(Boolean).join('\\n');
     }
 
     function portalAddTextCell(row, text, className) {
@@ -5702,7 +5702,7 @@ app.get("/admin/ui", (req, res) => {
           answers || ''
         ].map(portalCsvEscape).join(','));
       });
-      return rows.join('\r\n');
+      return rows.join('\\r\\n');
     }
 
     function portalExportCsv() {
