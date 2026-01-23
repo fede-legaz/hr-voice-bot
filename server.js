@@ -1587,7 +1587,7 @@ const portalRouter = createPortalRouter({
   uploadsDir: path.join(__dirname, "data", "uploads"),
   uploadsBaseUrl: "/uploads",
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
-  photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 600 * 1024),
+  photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
   requireAdmin: requireAdminUser,
   requireWrite,
   saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
