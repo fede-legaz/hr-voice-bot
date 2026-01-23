@@ -2721,6 +2721,35 @@ app.get("/admin/ui", (req, res) => {
       max-height: 540px;
       background: #fff;
     }
+    .portal-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+    .portal-sidebar { display: flex; flex-direction: column; gap: 12px; }
+    .portal-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+    .portal-item {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 10px;
+      background: #fff;
+      text-align: left;
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--ink);
+    }
+    .portal-item.active { border-color: var(--primary); box-shadow: var(--glow); }
+    .section-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); margin: 12px 0 6px; }
+    .portal-question {
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff;
+      display: grid;
+      gap: 10px;
+    }
+    .portal-url-row { display: flex; gap: 8px; align-items: center; }
+    .portal-url-row input { flex: 1; }
+    .portal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .portal-table th, .portal-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    .portal-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+    .portal-answer { white-space: pre-wrap; min-width: 220px; }
     .action-stack {
       display: flex;
       align-items: center;
@@ -3317,6 +3346,7 @@ app.get("/admin/ui", (req, res) => {
         -webkit-overflow-scrolling: touch;
       }
       .content { padding: 20px; }
+      .portal-layout { grid-template-columns: 1fr; }
       .user-form-grid { grid-template-columns: 1fr; }
       .user-hero { flex-direction: column; align-items: flex-start; }
       .user-roles { justify-content: flex-start; }
@@ -3821,11 +3851,277 @@ app.get("/admin/ui", (req, res) => {
       <section id="portal-view" class="view" style="display:none;">
         <div class="panel" style="--delay:.06s;">
           <div class="panel-title">Portal de aplicaciones</div>
-          <div class="panel-sub">Creá páginas públicas por restaurante, con CV y preguntas personalizadas.</div>
-          <div class="inline" style="margin-top:12px;">
-            <button id="portal-open" type="button">Abrir portal</button>
+          <div class="panel-sub">Creá páginas públicas por restaurante, editá diseño y preguntas.</div>
+          <div class="portal-layout">
+            <div class="portal-sidebar">
+              <div class="inline" style="justify-content: space-between;">
+                <strong>Páginas</strong>
+                <button class="secondary" id="portal-new" type="button">Nuevo</button>
+              </div>
+              <div class="portal-list" id="portal-list"></div>
+            </div>
+            <div class="portal-form">
+              <div class="grid">
+                <div>
+                  <label>Slug</label>
+                  <input type="text" id="portal-slug" placeholder="ej. mexi-cafe" />
+                </div>
+                <div>
+                  <label>Brand</label>
+                  <input type="text" id="portal-brand" placeholder="Ej. Mexi Cafe" />
+                </div>
+                <div>
+                  <label>Idioma default</label>
+                  <select id="portal-lang">
+                    <option value="es">ES</option>
+                    <option value="en">EN</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Activo</label>
+                  <select id="portal-active">
+                    <option value="true">Sí</option>
+                    <option value="false">No</option>
+                  </select>
+                </div>
+                <div>
+                  <label>URL público</label>
+                  <div class="portal-url-row">
+                    <input type="text" id="portal-url" readonly />
+                    <button class="secondary" id="portal-copy-url" type="button">Copiar</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-title">Contenido</div>
+              <div class="grid">
+                <div>
+                  <label>Título (ES)</label>
+                  <input id="portal-title-es" type="text" />
+                </div>
+                <div>
+                  <label>Título (EN)</label>
+                  <input id="portal-title-en" type="text" />
+                </div>
+                <div>
+                  <label>Descripción (ES)</label>
+                  <textarea id="portal-desc-es"></textarea>
+                </div>
+                <div>
+                  <label>Descripción (EN)</label>
+                  <textarea id="portal-desc-en"></textarea>
+                </div>
+                <div>
+                  <label>Gracias (ES)</label>
+                  <input id="portal-thanks-es" type="text" />
+                </div>
+                <div>
+                  <label>Gracias (EN)</label>
+                  <input id="portal-thanks-en" type="text" />
+                </div>
+              </div>
+
+              <div class="section-title">Diseño</div>
+              <div class="grid">
+                <div>
+                  <label>Font Heading</label>
+                  <input id="portal-font-heading" type="text" />
+                </div>
+                <div>
+                  <label>Font Body</label>
+                  <input id="portal-font-body" type="text" />
+                </div>
+                <div>
+                  <label>Font URL</label>
+                  <input id="portal-font-url" type="text" />
+                </div>
+                <div>
+                  <label>Primary Color</label>
+                  <input id="portal-color-primary" type="text" />
+                </div>
+                <div>
+                  <label>Accent Color</label>
+                  <input id="portal-color-accent" type="text" />
+                </div>
+                <div>
+                  <label>Background</label>
+                  <input id="portal-color-bg" type="text" />
+                </div>
+                <div>
+                  <label>Card</label>
+                  <input id="portal-color-card" type="text" />
+                </div>
+                <div>
+                  <label>Text</label>
+                  <input id="portal-color-text" type="text" />
+                </div>
+                <div>
+                  <label>Muted</label>
+                  <input id="portal-color-muted" type="text" />
+                </div>
+              </div>
+
+              <div class="section-title">Assets</div>
+              <div class="grid">
+                <div>
+                  <label>Logo URL</label>
+                  <input id="portal-logo-url" type="text" />
+                  <input id="portal-logo-file" type="file" accept="image/*" />
+                </div>
+                <div>
+                  <label>Hero URL</label>
+                  <input id="portal-hero-url" type="text" />
+                  <input id="portal-hero-file" type="file" accept="image/*" />
+                </div>
+                <div>
+                  <label>Gallery URLs (una por línea)</label>
+                  <textarea id="portal-gallery-urls"></textarea>
+                  <input id="portal-gallery-files" type="file" accept="image/*" multiple />
+                </div>
+              </div>
+
+              <div class="section-title">Campos base</div>
+              <div class="grid">
+                <div>
+                  <label>Nombre (ES)</label>
+                  <input id="portal-name-es" type="text" />
+                </div>
+                <div>
+                  <label>Nombre (EN)</label>
+                  <input id="portal-name-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-name-required" type="checkbox" />
+                  <span class="small">Requerido</span>
+                </div>
+              </div>
+              <div class="grid">
+                <div>
+                  <label>Email (ES)</label>
+                  <input id="portal-email-es" type="text" />
+                </div>
+                <div>
+                  <label>Email (EN)</label>
+                  <input id="portal-email-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-email-required" type="checkbox" />
+                  <span class="small">Requerido</span>
+                </div>
+              </div>
+              <div class="grid">
+                <div>
+                  <label>Teléfono (ES)</label>
+                  <input id="portal-phone-es" type="text" />
+                </div>
+                <div>
+                  <label>Teléfono (EN)</label>
+                  <input id="portal-phone-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-phone-required" type="checkbox" />
+                  <span class="small">Requerido</span>
+                </div>
+              </div>
+              <div class="grid">
+                <div>
+                  <label>Rol (ES)</label>
+                  <input id="portal-role-es" type="text" />
+                </div>
+                <div>
+                  <label>Rol (EN)</label>
+                  <input id="portal-role-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-role-required" type="checkbox" />
+                  <span class="small">Requerido</span>
+                </div>
+              </div>
+              <div class="grid">
+                <div>
+                  <label>Opciones de rol (una por línea)</label>
+                  <textarea id="portal-role-options"></textarea>
+                </div>
+              </div>
+
+              <div class="section-title">CV y foto</div>
+              <div class="grid">
+                <div>
+                  <label>CV (ES)</label>
+                  <input id="portal-resume-es" type="text" />
+                </div>
+                <div>
+                  <label>CV (EN)</label>
+                  <input id="portal-resume-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-resume-required" type="checkbox" />
+                  <span class="small">CV requerido</span>
+                </div>
+              </div>
+              <div class="grid">
+                <div>
+                  <label>Foto (ES)</label>
+                  <input id="portal-photo-es" type="text" />
+                </div>
+                <div>
+                  <label>Foto (EN)</label>
+                  <input id="portal-photo-en" type="text" />
+                </div>
+                <div class="check-row">
+                  <input id="portal-photo-required" type="checkbox" />
+                  <span class="small">Foto requerida</span>
+                </div>
+              </div>
+
+              <div class="section-title">Preguntas</div>
+              <div id="portal-question-list" class="grid"></div>
+              <button class="secondary" id="portal-add-question" type="button">+ Pregunta</button>
+
+              <div class="row inline" style="margin-top:12px;">
+                <button id="portal-save" type="button">Guardar portal</button>
+                <button class="secondary" id="portal-delete" type="button">Eliminar</button>
+                <span class="status" id="portal-status"></span>
+              </div>
+            </div>
           </div>
-          <div class="small" style="margin-top:8px;">Usa la misma clave/token que este admin.</div>
+        </div>
+
+        <div class="panel" style="--delay:.08s;">
+          <div class="panel-title">Postulaciones</div>
+          <div class="panel-sub">Listado de candidatos que aplicaron desde el portal.</div>
+          <div class="grid">
+            <div>
+              <label>Página</label>
+              <select id="portal-app-filter"></select>
+            </div>
+            <div>
+              <label>Acciones</label>
+              <div class="inline">
+                <button class="secondary" id="portal-app-refresh" type="button">Refresh</button>
+                <button class="secondary" id="portal-app-export" type="button">Export CSV</button>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:10px;">
+            <table class="portal-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Página</th>
+                  <th>Nombre</th>
+                  <th>Email</th>
+                  <th>Teléfono</th>
+                  <th>Rol</th>
+                  <th>CV</th>
+                  <th>Foto</th>
+                  <th>Respuestas</th>
+                </tr>
+              </thead>
+              <tbody id="portal-app-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="portal-app-count" style="margin-top:8px;"></div>
         </div>
       </section>
 
@@ -3945,7 +4241,64 @@ app.get("/admin/ui", (req, res) => {
     const loadBtnEl = document.getElementById('load');
     const saveBtnEl = document.getElementById('save');
     const logoutBtnEl = document.getElementById('logout');
-    const portalOpenEl = document.getElementById('portal-open');
+    const portalListEl = document.getElementById('portal-list');
+    const portalNewEl = document.getElementById('portal-new');
+    const portalSaveEl = document.getElementById('portal-save');
+    const portalDeleteEl = document.getElementById('portal-delete');
+    const portalStatusEl = document.getElementById('portal-status');
+    const portalSlugEl = document.getElementById('portal-slug');
+    const portalBrandEl = document.getElementById('portal-brand');
+    const portalLangEl = document.getElementById('portal-lang');
+    const portalActiveEl = document.getElementById('portal-active');
+    const portalUrlEl = document.getElementById('portal-url');
+    const portalCopyUrlEl = document.getElementById('portal-copy-url');
+    const portalTitleEsEl = document.getElementById('portal-title-es');
+    const portalTitleEnEl = document.getElementById('portal-title-en');
+    const portalDescEsEl = document.getElementById('portal-desc-es');
+    const portalDescEnEl = document.getElementById('portal-desc-en');
+    const portalThanksEsEl = document.getElementById('portal-thanks-es');
+    const portalThanksEnEl = document.getElementById('portal-thanks-en');
+    const portalFontHeadingEl = document.getElementById('portal-font-heading');
+    const portalFontBodyEl = document.getElementById('portal-font-body');
+    const portalFontUrlEl = document.getElementById('portal-font-url');
+    const portalColorPrimaryEl = document.getElementById('portal-color-primary');
+    const portalColorAccentEl = document.getElementById('portal-color-accent');
+    const portalColorBgEl = document.getElementById('portal-color-bg');
+    const portalColorCardEl = document.getElementById('portal-color-card');
+    const portalColorTextEl = document.getElementById('portal-color-text');
+    const portalColorMutedEl = document.getElementById('portal-color-muted');
+    const portalLogoUrlEl = document.getElementById('portal-logo-url');
+    const portalLogoFileEl = document.getElementById('portal-logo-file');
+    const portalHeroUrlEl = document.getElementById('portal-hero-url');
+    const portalHeroFileEl = document.getElementById('portal-hero-file');
+    const portalGalleryUrlsEl = document.getElementById('portal-gallery-urls');
+    const portalGalleryFilesEl = document.getElementById('portal-gallery-files');
+    const portalNameEsEl = document.getElementById('portal-name-es');
+    const portalNameEnEl = document.getElementById('portal-name-en');
+    const portalNameReqEl = document.getElementById('portal-name-required');
+    const portalEmailEsEl = document.getElementById('portal-email-es');
+    const portalEmailEnEl = document.getElementById('portal-email-en');
+    const portalEmailReqEl = document.getElementById('portal-email-required');
+    const portalPhoneEsEl = document.getElementById('portal-phone-es');
+    const portalPhoneEnEl = document.getElementById('portal-phone-en');
+    const portalPhoneReqEl = document.getElementById('portal-phone-required');
+    const portalRoleEsEl = document.getElementById('portal-role-es');
+    const portalRoleEnEl = document.getElementById('portal-role-en');
+    const portalRoleReqEl = document.getElementById('portal-role-required');
+    const portalRoleOptionsEl = document.getElementById('portal-role-options');
+    const portalResumeEsEl = document.getElementById('portal-resume-es');
+    const portalResumeEnEl = document.getElementById('portal-resume-en');
+    const portalResumeReqEl = document.getElementById('portal-resume-required');
+    const portalPhotoEsEl = document.getElementById('portal-photo-es');
+    const portalPhotoEnEl = document.getElementById('portal-photo-en');
+    const portalPhotoReqEl = document.getElementById('portal-photo-required');
+    const portalQuestionListEl = document.getElementById('portal-question-list');
+    const portalAddQuestionEl = document.getElementById('portal-add-question');
+    const portalAppFilterEl = document.getElementById('portal-app-filter');
+    const portalAppRefreshEl = document.getElementById('portal-app-refresh');
+    const portalAppExportEl = document.getElementById('portal-app-export');
+    const portalAppCountEl = document.getElementById('portal-app-count');
+    const portalAppBodyEl = document.getElementById('portal-app-body');
     const brandsEl = document.getElementById('brands');
     const openerEsEl = document.getElementById('opener-es');
     const openerEnEl = document.getElementById('opener-en');
@@ -4039,6 +4392,13 @@ app.get("/admin/ui", (req, res) => {
     const photoThumbCache = new Map();
     let usersList = [];
     let editingUserId = '';
+    let portalPages = [];
+    let portalCurrent = null;
+    let portalPendingUploads = { logo: null, hero: null, gallery: [] };
+    let portalLastApps = [];
+    let portalPendingSlug = '';
+    let portalLoaded = false;
+    let pendingPortalView = '';
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -4114,6 +4474,16 @@ app.get("/admin/ui", (req, res) => {
       setAdminStatus('Bloqueado');
       setStatus('');
       setLoginStatus('');
+      portalLoaded = false;
+      portalPages = [];
+      portalCurrent = null;
+      portalPendingUploads = { logo: null, hero: null, gallery: [] };
+      portalLastApps = [];
+      portalPendingSlug = '';
+      if (portalListEl) portalListEl.innerHTML = '';
+      if (portalAppBodyEl) portalAppBodyEl.innerHTML = '';
+      if (portalAppCountEl) portalAppCountEl.textContent = '';
+      if (portalStatusEl) portalStatusEl.textContent = '';
     }
 
     function logout() {
@@ -4491,7 +4861,7 @@ app.get("/admin/ui", (req, res) => {
             <div class="muted small">Clave: <span class="brand-key-label"></span></div>
           </div>
           <div class="inline">
-            <button class="secondary portal-site" type="button">Portal</button>
+            <button class="secondary portal-site" type="button">Crear sitio</button>
             <button class="secondary add-role" type="button">+ Rol</button>
             <button class="secondary delete-brand" type="button">Eliminar</button>
           </div>
@@ -4805,6 +5175,9 @@ app.get("/admin/ui", (req, res) => {
         photo: { label: { es: 'Foto (opcional)', en: 'Photo (optional)' }, required: false },
         questions: []
       };
+      if (logoDataUrl && !logoDataUrl.startsWith('data:')) {
+        payload.assets = { logoUrl: logoDataUrl };
+      }
       if (logoDataUrl && logoDataUrl.startsWith('data:')) {
         payload.logo_data_url = logoDataUrl;
         payload.logo_file_name = (slug || 'brand') + '_logo.png';
@@ -4832,13 +5205,633 @@ app.get("/admin/ui", (req, res) => {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'portal_failed');
         syncPortalToken();
-        setStatus('Portal listo.');
         const slug = (data.page && data.page.slug) || payload.slug;
-        const url = '/admin/portal?slug=' + encodeURIComponent(slug);
-        const win = window.open(url, '_blank');
-        if (!win) window.location.href = url;
+        portalPendingSlug = slug;
+        setStatus('Portal listo.');
+        setActiveView(VIEW_PORTAL);
+        ensurePortalLoaded(true);
       } catch (err) {
         setStatus('Error: ' + err.message);
+      }
+    }
+
+    function portalAuthHeaders() {
+      const token = tokenEl && tokenEl.value ? tokenEl.value.trim() : '';
+      if (!token) return {};
+      if (token.startsWith('Bearer ')) return { Authorization: token };
+      return { Authorization: 'Bearer ' + token };
+    }
+
+    function portalSetStatus(msg, isError) {
+      if (!portalStatusEl) return;
+      portalStatusEl.textContent = msg || '';
+      portalStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
+
+    function portalFileToDataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(new Error('file_read_failed'));
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function portalDefaultPage() {
+      return {
+        slug: '',
+        brand: '',
+        role: '',
+        active: true,
+        localeDefault: 'es',
+        content: {
+          title: { es: 'Trabaja con nosotros', en: 'Work with us' },
+          description: { es: 'Sumate al equipo.', en: 'Join the team.' },
+          thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' }
+        },
+        theme: {
+          fontHeading: 'Fraunces',
+          fontBody: 'Manrope',
+          fontUrl: 'https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Manrope:wght@400;600;700&display=swap',
+          colorPrimary: '#c84c33',
+          colorAccent: '#1f6f5c',
+          colorBg: '#f6f2e9',
+          colorCard: '#ffffff',
+          colorText: '#241b13',
+          colorMuted: '#6c5f57'
+        },
+        assets: { logoUrl: '', heroUrl: '', gallery: [] },
+        fields: {
+          name: { label: { es: 'Nombre completo', en: 'Full name' }, required: true },
+          email: { label: { es: 'Email', en: 'Email' }, required: true },
+          phone: { label: { es: 'Telefono', en: 'Phone' }, required: true },
+          role: { label: { es: 'Puesto', en: 'Role' }, required: false, options: [] }
+        },
+        resume: { label: { es: 'CV (PDF)', en: 'Resume (PDF)' }, required: true },
+        photo: { label: { es: 'Foto (opcional)', en: 'Photo (optional)' }, required: false },
+        questions: []
+      };
+    }
+
+    function portalApplyDefaults(page) {
+      const base = portalDefaultPage();
+      const raw = page || {};
+      const content = raw.content || {};
+      const theme = raw.theme || {};
+      const assets = raw.assets || {};
+      const fields = raw.fields || {};
+      const nameField = fields.name || {};
+      const emailField = fields.email || {};
+      const phoneField = fields.phone || {};
+      const roleField = fields.role || {};
+      const resumeField = raw.resume || {};
+      const photoField = raw.photo || {};
+
+      const merged = {
+        ...base,
+        ...raw,
+        content: {
+          ...base.content,
+          ...content,
+          title: { ...base.content.title, ...(content.title || {}) },
+          description: { ...base.content.description, ...(content.description || {}) },
+          thankYou: { ...base.content.thankYou, ...(content.thankYou || {}) }
+        },
+        theme: { ...base.theme, ...theme },
+        assets: { ...base.assets, ...assets },
+        fields: {
+          ...base.fields,
+          ...fields,
+          name: { ...base.fields.name, ...nameField, label: { ...base.fields.name.label, ...(nameField.label || {}) } },
+          email: { ...base.fields.email, ...emailField, label: { ...base.fields.email.label, ...(emailField.label || {}) } },
+          phone: { ...base.fields.phone, ...phoneField, label: { ...base.fields.phone.label, ...(phoneField.label || {}) } },
+          role: { ...base.fields.role, ...roleField, label: { ...base.fields.role.label, ...(roleField.label || {}) } }
+        },
+        resume: { ...base.resume, ...resumeField, label: { ...base.resume.label, ...(resumeField.label || {}) } },
+        photo: { ...base.photo, ...photoField, label: { ...base.photo.label, ...(photoField.label || {}) } },
+        questions: Array.isArray(raw.questions) ? raw.questions : []
+      };
+      merged.fields.role.options = Array.isArray(merged.fields.role.options) ? merged.fields.role.options : [];
+      merged.assets.gallery = Array.isArray(merged.assets.gallery) ? merged.assets.gallery : [];
+      return merged;
+    }
+
+    function portalFindPageBySlug(slug) {
+      return portalPages.find((page) => page.slug === slug) || null;
+    }
+
+    function portalRenderList() {
+      if (!portalListEl) return;
+      portalListEl.innerHTML = '';
+      portalPages.forEach((page) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'portal-item' + ((portalCurrent && portalCurrent.slug === page.slug) ? ' active' : '');
+        btn.textContent = page.brand || page.slug || 'Sin titulo';
+        btn.onclick = () => portalSelectPage(page.slug);
+        portalListEl.appendChild(btn);
+      });
+    }
+
+    function portalRenderAppFilter() {
+      if (!portalAppFilterEl) return;
+      const prev = portalAppFilterEl.value;
+      portalAppFilterEl.innerHTML = '';
+      const allOpt = document.createElement('option');
+      allOpt.value = '';
+      allOpt.textContent = 'Todas';
+      portalAppFilterEl.appendChild(allOpt);
+      portalPages.forEach((page) => {
+        const opt = document.createElement('option');
+        opt.value = page.slug;
+        opt.textContent = page.brand || page.slug || 'Sin titulo';
+        portalAppFilterEl.appendChild(opt);
+      });
+      if (prev && portalPages.some((page) => page.slug === prev)) {
+        portalAppFilterEl.value = prev;
+      }
+    }
+
+    function portalUpdateUrl() {
+      if (!portalUrlEl || !portalSlugEl) return;
+      const slug = (portalSlugEl.value || '').trim();
+      if (!slug) {
+        portalUrlEl.value = '';
+        return;
+      }
+      const base = window.location.origin.replace(/\/$/, '');
+      portalUrlEl.value = base + '/apply/' + slug;
+    }
+
+    function portalSelectPage(slug) {
+      const page = portalFindPageBySlug(slug);
+      if (!page) return;
+      portalCurrent = portalApplyDefaults(JSON.parse(JSON.stringify(page)));
+      portalPendingUploads = { logo: null, hero: null, gallery: [] };
+      portalFillForm();
+      portalRenderList();
+      portalUpdateUrl();
+      if (portalAppFilterEl) {
+        portalAppFilterEl.value = slug;
+      }
+      portalLoadApplications().catch(() => {});
+    }
+
+    function portalSetVal(el, value) {
+      if (el) el.value = value || '';
+    }
+
+    function portalSetChecked(el, on) {
+      if (el) el.checked = !!on;
+    }
+
+    function portalFillForm() {
+      if (!portalCurrent) portalCurrent = portalApplyDefaults({});
+      const page = portalApplyDefaults(portalCurrent);
+      portalCurrent = page;
+      portalSetVal(portalSlugEl, page.slug || '');
+      portalSetVal(portalBrandEl, page.brand || '');
+      if (portalLangEl) portalLangEl.value = page.localeDefault === 'en' ? 'en' : 'es';
+      if (portalActiveEl) portalActiveEl.value = page.active === false ? 'false' : 'true';
+
+      portalSetVal(portalTitleEsEl, page.content.title.es || '');
+      portalSetVal(portalTitleEnEl, page.content.title.en || '');
+      portalSetVal(portalDescEsEl, page.content.description.es || '');
+      portalSetVal(portalDescEnEl, page.content.description.en || '');
+      portalSetVal(portalThanksEsEl, page.content.thankYou.es || '');
+      portalSetVal(portalThanksEnEl, page.content.thankYou.en || '');
+
+      portalSetVal(portalFontHeadingEl, page.theme.fontHeading || '');
+      portalSetVal(portalFontBodyEl, page.theme.fontBody || '');
+      portalSetVal(portalFontUrlEl, page.theme.fontUrl || '');
+      portalSetVal(portalColorPrimaryEl, page.theme.colorPrimary || '');
+      portalSetVal(portalColorAccentEl, page.theme.colorAccent || '');
+      portalSetVal(portalColorBgEl, page.theme.colorBg || '');
+      portalSetVal(portalColorCardEl, page.theme.colorCard || '');
+      portalSetVal(portalColorTextEl, page.theme.colorText || '');
+      portalSetVal(portalColorMutedEl, page.theme.colorMuted || '');
+
+      portalSetVal(portalLogoUrlEl, page.assets.logoUrl || '');
+      portalSetVal(portalHeroUrlEl, page.assets.heroUrl || '');
+      portalSetVal(portalGalleryUrlsEl, (page.assets.gallery || []).join('\n'));
+
+      portalSetVal(portalNameEsEl, page.fields.name.label.es || '');
+      portalSetVal(portalNameEnEl, page.fields.name.label.en || '');
+      portalSetChecked(portalNameReqEl, page.fields.name.required !== false);
+
+      portalSetVal(portalEmailEsEl, page.fields.email.label.es || '');
+      portalSetVal(portalEmailEnEl, page.fields.email.label.en || '');
+      portalSetChecked(portalEmailReqEl, page.fields.email.required !== false);
+
+      portalSetVal(portalPhoneEsEl, page.fields.phone.label.es || '');
+      portalSetVal(portalPhoneEnEl, page.fields.phone.label.en || '');
+      portalSetChecked(portalPhoneReqEl, page.fields.phone.required !== false);
+
+      portalSetVal(portalRoleEsEl, page.fields.role.label.es || '');
+      portalSetVal(portalRoleEnEl, page.fields.role.label.en || '');
+      portalSetChecked(portalRoleReqEl, !!page.fields.role.required);
+      const roleOptions = (page.fields.role.options || []).map((opt) => {
+        if (typeof opt === 'string') return opt;
+        return opt.es || opt.en || opt.value || '';
+      }).filter(Boolean);
+      portalSetVal(portalRoleOptionsEl, roleOptions.join('\n'));
+
+      portalSetVal(portalResumeEsEl, page.resume.label.es || '');
+      portalSetVal(portalResumeEnEl, page.resume.label.en || '');
+      portalSetChecked(portalResumeReqEl, !!page.resume.required);
+
+      portalSetVal(portalPhotoEsEl, page.photo.label.es || '');
+      portalSetVal(portalPhotoEnEl, page.photo.label.en || '');
+      portalSetChecked(portalPhotoReqEl, !!page.photo.required);
+
+      portalRenderQuestions();
+      portalUpdateUrl();
+    }
+
+    function portalRenderQuestions() {
+      if (!portalQuestionListEl) return;
+      portalQuestionListEl.innerHTML = '';
+      const questions = portalCurrent && Array.isArray(portalCurrent.questions) ? portalCurrent.questions : [];
+      questions.forEach((q, idx) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'portal-question';
+        wrap.dataset.qid = q.id || ('q_' + Date.now() + '_' + idx);
+        wrap.innerHTML = [
+          '<div class="grid">',
+          '  <div>',
+          '    <label>Label (ES)</label>',
+          '    <input data-q="label-es" />',
+          '  </div>',
+          '  <div>',
+          '    <label>Label (EN)</label>',
+          '    <input data-q="label-en" />',
+          '  </div>',
+          '  <div>',
+          '    <label>Tipo</label>',
+          '    <select data-q="type">',
+          '      <option value="short">Texto corto</option>',
+          '      <option value="long">Texto largo</option>',
+          '      <option value="select">Opciones</option>',
+          '      <option value="yesno">Si/No</option>',
+          '    </select>',
+          '  </div>',
+          '  <div class="check-row">',
+          '    <input type="checkbox" data-q="required" />',
+          '    <span class="small">Requerida</span>',
+          '  </div>',
+          '</div>',
+          '<div>',
+          '  <label>Opciones (una por linea)</label>',
+          '  <textarea data-q="options"></textarea>',
+          '</div>',
+          '<div class="inline">',
+          '  <button class="secondary" data-q="remove" type="button">Eliminar</button>',
+          '</div>'
+        ].join('');
+        wrap.querySelector('[data-q="label-es"]').value = (q.label && q.label.es) || '';
+        wrap.querySelector('[data-q="label-en"]').value = (q.label && q.label.en) || '';
+        wrap.querySelector('[data-q="type"]').value = q.type || 'short';
+        wrap.querySelector('[data-q="required"]').checked = !!q.required;
+        wrap.querySelector('[data-q="options"]').value = (q.options || []).map((opt) => {
+          if (typeof opt === 'string') return opt;
+          return opt.es || opt.en || '';
+        }).join('\n');
+        wrap.querySelector('[data-q="remove"]').onclick = () => {
+          wrap.remove();
+          if (portalCurrent) {
+            portalCurrent.questions = portalReadQuestions();
+          }
+        };
+        portalQuestionListEl.appendChild(wrap);
+      });
+    }
+
+    function portalReadQuestions() {
+      if (!portalQuestionListEl) return [];
+      const items = [];
+      Array.from(portalQuestionListEl.children).forEach((wrap, idx) => {
+        const labelEs = wrap.querySelector('[data-q="label-es"]').value.trim();
+        const labelEn = wrap.querySelector('[data-q="label-en"]').value.trim();
+        const type = wrap.querySelector('[data-q="type"]').value;
+        const required = wrap.querySelector('[data-q="required"]').checked;
+        const optionsRaw = wrap.querySelector('[data-q="options"]').value;
+        const options = optionsRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
+        const id = wrap.dataset.qid || ('q_' + Date.now() + '_' + idx);
+        items.push({
+          id,
+          label: { es: labelEs, en: labelEn },
+          type,
+          required,
+          options: type === 'select' ? options : []
+        });
+      });
+      return items;
+    }
+
+    function portalReadForm() {
+      const data = portalDefaultPage();
+      data.slug = (portalSlugEl && portalSlugEl.value || '').trim();
+      data.brand = (portalBrandEl && portalBrandEl.value || '').trim();
+      data.localeDefault = portalLangEl && portalLangEl.value === 'en' ? 'en' : 'es';
+      data.active = portalActiveEl && portalActiveEl.value === 'false' ? false : true;
+
+      data.content.title.es = (portalTitleEsEl && portalTitleEsEl.value || '').trim();
+      data.content.title.en = (portalTitleEnEl && portalTitleEnEl.value || '').trim();
+      data.content.description.es = (portalDescEsEl && portalDescEsEl.value || '').trim();
+      data.content.description.en = (portalDescEnEl && portalDescEnEl.value || '').trim();
+      data.content.thankYou.es = (portalThanksEsEl && portalThanksEsEl.value || '').trim();
+      data.content.thankYou.en = (portalThanksEnEl && portalThanksEnEl.value || '').trim();
+
+      data.theme.fontHeading = (portalFontHeadingEl && portalFontHeadingEl.value || '').trim();
+      data.theme.fontBody = (portalFontBodyEl && portalFontBodyEl.value || '').trim();
+      data.theme.fontUrl = (portalFontUrlEl && portalFontUrlEl.value || '').trim();
+      data.theme.colorPrimary = (portalColorPrimaryEl && portalColorPrimaryEl.value || '').trim();
+      data.theme.colorAccent = (portalColorAccentEl && portalColorAccentEl.value || '').trim();
+      data.theme.colorBg = (portalColorBgEl && portalColorBgEl.value || '').trim();
+      data.theme.colorCard = (portalColorCardEl && portalColorCardEl.value || '').trim();
+      data.theme.colorText = (portalColorTextEl && portalColorTextEl.value || '').trim();
+      data.theme.colorMuted = (portalColorMutedEl && portalColorMutedEl.value || '').trim();
+
+      data.assets.logoUrl = (portalLogoUrlEl && portalLogoUrlEl.value || '').trim();
+      data.assets.heroUrl = (portalHeroUrlEl && portalHeroUrlEl.value || '').trim();
+      const galleryRaw = (portalGalleryUrlsEl && portalGalleryUrlsEl.value || '');
+      data.assets.gallery = galleryRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean);
+
+      data.fields.name = {
+        label: {
+          es: (portalNameEsEl && portalNameEsEl.value || '').trim(),
+          en: (portalNameEnEl && portalNameEnEl.value || '').trim()
+        },
+        required: portalNameReqEl ? portalNameReqEl.checked : true
+      };
+      data.fields.email = {
+        label: {
+          es: (portalEmailEsEl && portalEmailEsEl.value || '').trim(),
+          en: (portalEmailEnEl && portalEmailEnEl.value || '').trim()
+        },
+        required: portalEmailReqEl ? portalEmailReqEl.checked : true
+      };
+      data.fields.phone = {
+        label: {
+          es: (portalPhoneEsEl && portalPhoneEsEl.value || '').trim(),
+          en: (portalPhoneEnEl && portalPhoneEnEl.value || '').trim()
+        },
+        required: portalPhoneReqEl ? portalPhoneReqEl.checked : true
+      };
+      const roleOptionsRaw = (portalRoleOptionsEl && portalRoleOptionsEl.value || '');
+      const roleOptions = roleOptionsRaw.split(/\n+/).map((v) => v.trim()).filter(Boolean).map((v) => ({ es: v, en: v }));
+      data.fields.role = {
+        label: {
+          es: (portalRoleEsEl && portalRoleEsEl.value || '').trim(),
+          en: (portalRoleEnEl && portalRoleEnEl.value || '').trim()
+        },
+        required: portalRoleReqEl ? portalRoleReqEl.checked : false,
+        options: roleOptions
+      };
+
+      data.resume = {
+        label: {
+          es: (portalResumeEsEl && portalResumeEsEl.value || '').trim(),
+          en: (portalResumeEnEl && portalResumeEnEl.value || '').trim()
+        },
+        required: portalResumeReqEl ? portalResumeReqEl.checked : false
+      };
+      data.photo = {
+        label: {
+          es: (portalPhotoEsEl && portalPhotoEsEl.value || '').trim(),
+          en: (portalPhotoEnEl && portalPhotoEnEl.value || '').trim()
+        },
+        required: portalPhotoReqEl ? portalPhotoReqEl.checked : false
+      };
+
+      data.questions = portalReadQuestions();
+      return data;
+    }
+
+    function portalBuildAnswerText(app) {
+      const page = portalFindPageBySlug(app.slug);
+      if (!page || !Array.isArray(page.questions) || !app.answers) return '';
+      return page.questions.map((q) => {
+        const key = q && q.id ? q.id : '';
+        if (!key) return '';
+        const val = app.answers[key];
+        if (!val) return '';
+        const label = (q.label && (q.label.es || q.label.en)) || key;
+        return label + ': ' + val;
+      }).filter(Boolean).join('\n');
+    }
+
+    function portalAddTextCell(row, text, className) {
+      const td = document.createElement('td');
+      if (className) td.className = className;
+      td.textContent = text || '—';
+      row.appendChild(td);
+      return td;
+    }
+
+    function portalAddLinkCell(row, url, label) {
+      const td = document.createElement('td');
+      if (url) {
+        const link = document.createElement('a');
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = label;
+        td.appendChild(link);
+      } else {
+        td.textContent = '—';
+      }
+      row.appendChild(td);
+      return td;
+    }
+
+    function portalRenderApplications(apps) {
+      if (!portalAppBodyEl) return;
+      const list = Array.isArray(apps) ? apps : [];
+      portalLastApps = list.slice();
+      portalAppBodyEl.innerHTML = '';
+      if (portalAppCountEl) {
+        portalAppCountEl.textContent = list.length ? (list.length + ' postulaciones') : 'Sin postulaciones';
+      }
+      list.forEach((app) => {
+        const row = document.createElement('tr');
+        const page = portalFindPageBySlug(app.slug);
+        const pageLabel = (page && page.brand) || app.brand || app.slug || '';
+        portalAddTextCell(row, formatDate(app.created_at), 'cell-compact');
+        portalAddTextCell(row, pageLabel);
+        portalAddTextCell(row, app.name || '');
+        portalAddTextCell(row, app.email || '');
+        portalAddTextCell(row, app.phone || '');
+        portalAddTextCell(row, app.role || '');
+        portalAddLinkCell(row, app.resume_url || '', 'CV');
+        portalAddLinkCell(row, app.photo_url || '', 'Foto');
+        const answers = portalBuildAnswerText(app);
+        portalAddTextCell(row, answers || '—', 'portal-answer');
+        portalAppBodyEl.appendChild(row);
+      });
+    }
+
+    function portalCsvEscape(value) {
+      if (value === null || value === undefined) return '""';
+      const str = String(value);
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+
+    function portalSafeFileName(value) {
+      return String(value || 'applications').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'applications';
+    }
+
+    function portalBuildCsv(apps) {
+      const headers = ['Date', 'Page', 'Brand', 'Name', 'Email', 'Phone', 'Role', 'Resume', 'Photo', 'Answers'];
+      const rows = [headers.map(portalCsvEscape).join(',')];
+      (apps || []).forEach((app) => {
+        const page = portalFindPageBySlug(app.slug);
+        const pageLabel = app.slug || '';
+        const brandLabel = (page && page.brand) || app.brand || '';
+        const answers = portalBuildAnswerText(app);
+        rows.push([
+          formatDate(app.created_at),
+          pageLabel,
+          brandLabel,
+          app.name || '',
+          app.email || '',
+          app.phone || '',
+          app.role || '',
+          app.resume_url || '',
+          app.photo_url || '',
+          answers || ''
+        ].map(portalCsvEscape).join(','));
+      });
+      return rows.join('\r\n');
+    }
+
+    function portalExportCsv() {
+      const apps = Array.isArray(portalLastApps) ? portalLastApps : [];
+      const csv = portalBuildCsv(apps);
+      const slug = portalAppFilterEl ? portalAppFilterEl.value : '';
+      const stamp = new Date().toISOString().slice(0, 10);
+      const name = portalSafeFileName(slug || 'all') + '_' + stamp + '.csv';
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(link.href);
+        link.remove();
+      }, 0);
+    }
+
+    async function portalLoadApplications() {
+      if (!portalAppBodyEl) return;
+      const params = new URLSearchParams();
+      const slug = portalAppFilterEl ? portalAppFilterEl.value : '';
+      if (slug) params.set('slug', slug);
+      const query = params.toString();
+      const resp = await fetch('/admin/portal/applications' + (query ? ('?' + query) : ''), {
+        headers: portalAuthHeaders()
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'load_failed');
+      portalRenderApplications(data.applications || []);
+    }
+
+    async function portalLoadPages() {
+      portalSetStatus('Cargando...');
+      const resp = await fetch('/admin/portal/pages', { headers: portalAuthHeaders() });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'load_failed');
+      portalPages = data.pages || [];
+      portalRenderList();
+      portalRenderAppFilter();
+      if (!portalPages.length) {
+        portalCurrent = portalDefaultPage();
+        portalFillForm();
+        portalRenderApplications([]);
+        portalSetStatus('');
+        return;
+      }
+      const target = portalPendingSlug || (portalCurrent && portalCurrent.slug) || (portalPages[0] && portalPages[0].slug);
+      portalPendingSlug = '';
+      if (target && portalPages.some((page) => page.slug === target)) {
+        portalSelectPage(target);
+      } else if (portalPages[0]) {
+        portalSelectPage(portalPages[0].slug);
+      }
+      portalSetStatus('');
+    }
+
+    function ensurePortalLoaded(force) {
+      if (!portalViewEl) return;
+      if (portalLoaded && !force) return;
+      portalLoaded = true;
+      portalLoadPages().catch((err) => {
+        portalLoaded = false;
+        portalSetStatus('Error: ' + err.message, true);
+      });
+    }
+
+    async function portalSavePage() {
+      try {
+        if (authRole === 'viewer') {
+          portalSetStatus('Solo lectura.', true);
+          return;
+        }
+        if (portalSlugEl) {
+          portalSlugEl.value = toSlug(portalSlugEl.value || '');
+          portalUpdateUrl();
+        }
+        const payload = portalReadForm();
+        if (!payload.slug) {
+          portalSetStatus('Falta el slug.', true);
+          return;
+        }
+        if (portalPendingUploads.logo) {
+          payload.logo_data_url = portalPendingUploads.logo.dataUrl;
+          payload.logo_file_name = portalPendingUploads.logo.fileName;
+        }
+        if (portalPendingUploads.hero) {
+          payload.hero_data_url = portalPendingUploads.hero.dataUrl;
+          payload.hero_file_name = portalPendingUploads.hero.fileName;
+        }
+        if (portalPendingUploads.gallery.length) {
+          payload.gallery_data_urls = portalPendingUploads.gallery.map((g) => g.dataUrl);
+          payload.gallery_file_names = portalPendingUploads.gallery.map((g) => g.fileName);
+        }
+        portalSetStatus('Guardando...');
+        const resp = await fetch('/admin/portal/pages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'save_failed');
+        portalPendingUploads = { logo: null, hero: null, gallery: [] };
+        portalPendingSlug = data.page && data.page.slug ? data.page.slug : payload.slug;
+        await portalLoadPages();
+        portalSetStatus('Guardado');
+      } catch (err) {
+        portalSetStatus('Error: ' + err.message, true);
+      }
+    }
+
+    async function portalDeletePage() {
+      if (!portalCurrent || !portalCurrent.slug) return;
+      if (!confirm('Eliminar este portal?')) return;
+      try {
+        const resp = await fetch('/admin/portal/pages/' + encodeURIComponent(portalCurrent.slug), {
+          method: 'DELETE',
+          headers: portalAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'delete_failed');
+        portalCurrent = null;
+        portalPendingSlug = '';
+        await portalLoadPages();
+        portalSetStatus('Eliminado');
+      } catch (err) {
+        portalSetStatus('Error: ' + err.message, true);
       }
     }
 
@@ -4973,6 +5966,9 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'calls') {
         scheduleCvLoad();
+      }
+      if (activeView === 'portal') {
+        ensurePortalLoaded();
       }
     }
 
@@ -7078,6 +8074,11 @@ app.get("/admin/ui", (req, res) => {
         syncPortalToken();
         applyRoleAccess();
         loadUsers();
+        if (pendingPortalView === VIEW_PORTAL) {
+          pendingPortalView = '';
+          setActiveView(VIEW_PORTAL);
+          ensurePortalLoaded(true);
+        }
       } else {
         setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
       }
@@ -7115,6 +8116,118 @@ app.get("/admin/ui", (req, res) => {
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
+    if (portalNewEl) {
+      portalNewEl.onclick = () => {
+        portalCurrent = portalDefaultPage();
+        portalPendingUploads = { logo: null, hero: null, gallery: [] };
+        portalFillForm();
+        portalRenderList();
+        portalSetStatus('');
+      };
+    }
+    if (portalSaveEl) portalSaveEl.onclick = portalSavePage;
+    if (portalDeleteEl) portalDeleteEl.onclick = portalDeletePage;
+    if (portalAddQuestionEl) {
+      portalAddQuestionEl.onclick = () => {
+        if (!portalCurrent) portalCurrent = portalDefaultPage();
+        portalCurrent.questions = portalReadQuestions();
+        portalCurrent.questions.push({
+          id: 'q_' + Date.now(),
+          label: { es: '', en: '' },
+          type: 'short',
+          required: false,
+          options: []
+        });
+        portalRenderQuestions();
+      };
+    }
+    if (portalSlugEl) {
+      portalSlugEl.addEventListener('input', portalUpdateUrl);
+      portalSlugEl.addEventListener('blur', () => {
+        portalSlugEl.value = toSlug(portalSlugEl.value || '');
+        portalUpdateUrl();
+      });
+    }
+    if (portalCopyUrlEl) {
+      portalCopyUrlEl.onclick = async () => {
+        const url = portalUrlEl ? portalUrlEl.value : '';
+        if (!url) return;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(url);
+          } else {
+            portalUrlEl.select();
+            document.execCommand('copy');
+            portalUrlEl.setSelectionRange(0, 0);
+          }
+          portalSetStatus('URL copiada');
+        } catch (err) {
+          portalSetStatus('No se pudo copiar', true);
+        }
+      };
+    }
+    if (portalLogoFileEl) {
+      portalLogoFileEl.addEventListener('change', async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          const dataUrl = await portalFileToDataUrl(file);
+          portalPendingUploads.logo = { dataUrl, fileName: file.name };
+          portalSetStatus('Logo listo');
+        } catch (err) {
+          portalSetStatus('Error cargando logo', true);
+        }
+      });
+    }
+    if (portalHeroFileEl) {
+      portalHeroFileEl.addEventListener('change', async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          const dataUrl = await portalFileToDataUrl(file);
+          portalPendingUploads.hero = { dataUrl, fileName: file.name };
+          portalSetStatus('Hero listo');
+        } catch (err) {
+          portalSetStatus('Error cargando hero', true);
+        }
+      });
+    }
+    if (portalGalleryFilesEl) {
+      portalGalleryFilesEl.addEventListener('change', async (event) => {
+        const files = Array.from(event.target.files || []);
+        if (!files.length) return;
+        try {
+          const out = [];
+          for (const file of files) {
+            const dataUrl = await portalFileToDataUrl(file);
+            out.push({ dataUrl, fileName: file.name });
+          }
+          portalPendingUploads.gallery = out;
+          portalSetStatus('Galeria lista');
+        } catch (err) {
+          portalSetStatus('Error cargando galeria', true);
+        }
+      });
+    }
+    if (portalAppFilterEl) {
+      portalAppFilterEl.addEventListener('change', () => {
+        portalLoadApplications().catch(() => {});
+      });
+    }
+    if (portalAppRefreshEl) {
+      portalAppRefreshEl.onclick = () => {
+        portalLoadApplications().catch(() => {});
+      };
+    }
+    if (portalAppExportEl) {
+      portalAppExportEl.onclick = () => {
+        try {
+          portalExportCsv();
+        } catch (err) {
+          portalSetStatus('Error: ' + err.message, true);
+        }
+      };
+    }
     callBrandEl.addEventListener('change', () => updateCallRoleOptions(callBrandEl.value));
     callBrandEl.addEventListener('change', () => { currentCvId = ''; });
     callRoleEl.addEventListener('change', () => { currentCvId = ''; });
@@ -7194,17 +8307,17 @@ app.get("/admin/ui", (req, res) => {
         if (event.target === photoModalEl) closePhotoModal();
       });
     }
-    if (portalOpenEl) {
-      portalOpenEl.onclick = () => {
-        syncPortalToken();
-        const url = '/admin/portal';
-        const win = window.open(url, '_blank');
-        if (!win) {
-          window.location.href = url;
-        }
-      };
+    let urlParams = null;
+    try {
+      urlParams = new URLSearchParams(window.location.search);
+    } catch (err) {}
+    if (urlParams) {
+      const viewParam = urlParams.get('view');
+      if (viewParam === 'portal') pendingPortalView = VIEW_PORTAL;
+      const slugParam = urlParams.get('slug');
+      if (slugParam) portalPendingSlug = toSlug(slugParam);
     }
-    const urlToken = new URLSearchParams(window.location.search).get('token');
+    const urlToken = urlParams ? urlParams.get('token') : '';
     if (urlToken) {
       setLoginMode('admin');
       loginTokenEl.value = urlToken;

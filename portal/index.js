@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const { createPortalStore } = require("./store");
-const { renderApplyPage, renderAdminPage } = require("./templates");
+const { renderApplyPage } = require("./templates");
 const {
   randomToken,
   safeSlug,
@@ -265,12 +265,16 @@ function createPortalRouter(options = {}) {
   });
 
   router.get("/admin/portal", (req, res, next) => {
+    const redirectToUi = () => {
+      const params = new URLSearchParams(req.query || {});
+      params.set("view", "portal");
+      const query = params.toString();
+      res.redirect(query ? `/admin/ui?${query}` : "/admin/ui?view=portal");
+    };
     if (requireAdminPage) {
-      return requireAdminPage(req, res, () => {
-        res.type("text/html").send(renderAdminPage({ title: "Portal Admin" }));
-      });
+      return requireAdminPage(req, res, redirectToUi);
     }
-    res.type("text/html").send(renderAdminPage({ title: "Portal Admin" }));
+    redirectToUi();
   });
 
   router.get("/admin/portal/pages", requireWrite, (req, res) => {
