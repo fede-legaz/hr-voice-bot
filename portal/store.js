@@ -35,6 +35,9 @@ function readJsonSafe(filePath) {
 }
 
 function createPortalStore(options = {}) {
+  if (options.dbPool) {
+    return createPortalStoreDb(options);
+  }
   const dataDir = options.dataDir || path.join(process.cwd(), "data");
   const pagesPath = options.pagesPath || path.join(dataDir, "portal-pages.json");
   const appsPath = options.appsPath || path.join(dataDir, "portal-applications.json");
@@ -174,6 +177,253 @@ function createPortalStore(options = {}) {
   }
 
   load();
+
+  return {
+    listPages,
+    getPage,
+    upsertPage,
+    deletePage,
+    recordApplication,
+    listApplications
+  };
+}
+
+function createPortalStoreDb(options = {}) {
+  const dbPool = options.dbPool;
+  const logger = options.logger || console;
+
+  function toIso(value) {
+    if (!value) return null;
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+  }
+
+  function mapPageRow(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      slug: row.slug,
+      brand: row.brand || "",
+      role: row.role || "",
+      active: row.active !== false,
+      localeDefault: row.locale_default || "es",
+      theme: row.theme || {},
+      content: row.content || {},
+      fields: row.fields || {},
+      resume: row.resume || {},
+      photo: row.photo || {},
+      questions: Array.isArray(row.questions) ? row.questions : [],
+      assets: row.assets || {},
+      created_at: toIso(row.created_at) || toIso(new Date()),
+      updated_at: toIso(row.updated_at) || toIso(new Date())
+    };
+  }
+
+  function mapAppRow(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      slug: row.slug,
+      brand: row.brand || "",
+      role: row.role || "",
+      name: row.name || "",
+      email: row.email || "",
+      phone: row.phone || "",
+      answers: row.answers || {},
+      resume_url: row.resume_url || "",
+      photo_url: row.photo_url || "",
+      created_at: toIso(row.created_at) || toIso(new Date())
+    };
+  }
+
+  async function listPages() {
+    try {
+      const resp = await dbPool.query(
+        `
+        SELECT id, slug, brand, role, active, locale_default, content, theme, fields, resume, photo, questions, assets, created_at, updated_at
+        FROM portal_pages
+        ORDER BY updated_at DESC
+      `
+      );
+      return (resp.rows || []).map(mapPageRow).filter(Boolean);
+    } catch (err) {
+      logger.error("[portal] failed to list pages", err.message);
+      return [];
+    }
+  }
+
+  async function getPage(slug) {
+    const key = safeSlug(slug);
+    if (!key) return null;
+    try {
+      const resp = await dbPool.query(
+        `
+        SELECT id, slug, brand, role, active, locale_default, content, theme, fields, resume, photo, questions, assets, created_at, updated_at
+        FROM portal_pages
+        WHERE slug = $1
+        LIMIT 1
+      `,
+        [key]
+      );
+      return mapPageRow(resp.rows?.[0]) || null;
+    } catch (err) {
+      logger.error("[portal] failed to get page", err.message);
+      return null;
+    }
+  }
+
+  async function upsertPage(page) {
+    const slug = safeSlug(page.slug || page.brand || "page");
+    const id = page.id || randomToken(8);
+    const payload = {
+      slug,
+      id,
+      brand: page.brand || "",
+      role: page.role || "",
+      active: page.active !== false,
+      localeDefault: page.localeDefault === "en" ? "en" : "es",
+      content: page.content || {},
+      theme: page.theme || {},
+      fields: page.fields || {},
+      resume: page.resume || {},
+      photo: page.photo || {},
+      questions: Array.isArray(page.questions) ? page.questions : [],
+      assets: page.assets || {}
+    };
+    try {
+      const resp = await dbPool.query(
+        `
+        INSERT INTO portal_pages (
+          id, slug, brand, role, active, locale_default,
+          content, theme, fields, resume, photo, questions, assets,
+          created_at, updated_at
+        )
+        VALUES (
+          $1, $2, $3, $4, $5, $6,
+          $7, $8, $9, $10, $11, $12, $13,
+          NOW(), NOW()
+        )
+        ON CONFLICT (slug) DO UPDATE
+        SET brand = EXCLUDED.brand,
+            role = EXCLUDED.role,
+            active = EXCLUDED.active,
+            locale_default = EXCLUDED.locale_default,
+            content = EXCLUDED.content,
+            theme = EXCLUDED.theme,
+            fields = EXCLUDED.fields,
+            resume = EXCLUDED.resume,
+            photo = EXCLUDED.photo,
+            questions = EXCLUDED.questions,
+            assets = EXCLUDED.assets,
+            updated_at = NOW()
+        RETURNING id, slug, brand, role, active, locale_default, content, theme, fields, resume, photo, questions, assets, created_at, updated_at
+      `,
+        [
+          payload.id,
+          payload.slug,
+          payload.brand,
+          payload.role,
+          payload.active,
+          payload.localeDefault,
+          payload.content,
+          payload.theme,
+          payload.fields,
+          payload.resume,
+          payload.photo,
+          payload.questions,
+          payload.assets
+        ]
+      );
+      return mapPageRow(resp.rows?.[0]) || null;
+    } catch (err) {
+      logger.error("[portal] failed to upsert page", err.message);
+      throw err;
+    }
+  }
+
+  async function deletePage(slug) {
+    const key = safeSlug(slug);
+    if (!key) return false;
+    try {
+      const resp = await dbPool.query("DELETE FROM portal_pages WHERE slug = $1", [key]);
+      return (resp.rowCount || 0) > 0;
+    } catch (err) {
+      logger.error("[portal] failed to delete page", err.message);
+      return false;
+    }
+  }
+
+  async function recordApplication(app) {
+    const entry = {
+      id: app.id || randomToken(10),
+      slug: safeSlug(app.slug || ""),
+      brand: app.brand || "",
+      role: app.role || "",
+      name: app.name || "",
+      email: app.email || "",
+      phone: app.phone || "",
+      answers: app.answers || {},
+      resume_url: app.resume_url || "",
+      photo_url: app.photo_url || ""
+    };
+    try {
+      const resp = await dbPool.query(
+        `
+        INSERT INTO portal_applications (
+          id, slug, brand, role, name, email, phone, answers, resume_url, photo_url
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, created_at
+      `,
+        [
+          entry.id,
+          entry.slug,
+          entry.brand,
+          entry.role,
+          entry.name,
+          entry.email,
+          entry.phone,
+          entry.answers,
+          entry.resume_url,
+          entry.photo_url
+        ]
+      );
+      return mapAppRow(resp.rows?.[0]) || entry;
+    } catch (err) {
+      logger.error("[portal] failed to record application", err.message);
+      throw err;
+    }
+  }
+
+  async function listApplications(filters = {}) {
+    const slug = filters.slug ? safeSlug(filters.slug) : "";
+    try {
+      if (!slug) {
+        const resp = await dbPool.query(
+          `
+          SELECT id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, created_at
+          FROM portal_applications
+          ORDER BY created_at DESC
+        `
+        );
+        return (resp.rows || []).map(mapAppRow).filter(Boolean);
+      }
+      const resp = await dbPool.query(
+        `
+        SELECT id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, created_at
+        FROM portal_applications
+        WHERE slug = $1
+        ORDER BY created_at DESC
+      `,
+        [slug]
+      );
+      return (resp.rows || []).map(mapAppRow).filter(Boolean);
+    } catch (err) {
+      logger.error("[portal] failed to list applications", err.message);
+      return [];
+    }
+  }
 
   return {
     listPages,

@@ -1465,6 +1465,46 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);`);
 
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS portal_pages (
+        id TEXT PRIMARY KEY,
+        slug TEXT UNIQUE NOT NULL,
+        brand TEXT,
+        role TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        locale_default TEXT NOT NULL DEFAULT 'es',
+        content JSONB,
+        theme JSONB,
+        fields JSONB,
+        resume JSONB,
+        photo JSONB,
+        questions JSONB,
+        assets JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_pages_slug ON portal_pages (slug);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_pages_updated ON portal_pages (updated_at DESC);`);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS portal_applications (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL,
+        brand TEXT,
+        role TEXT,
+        name TEXT,
+        email TEXT,
+        phone TEXT,
+        answers JSONB,
+        resume_url TEXT,
+        photo_url TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_slug ON portal_applications (slug);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_created ON portal_applications (created_at DESC);`);
+
     const loaded = await loadRoleConfigFromDb();
     if (!loaded && roleConfig) {
       const seeded = await saveRoleConfigToDb(roleConfig);
@@ -1582,10 +1622,18 @@ const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
 
+const portalSpacesBaseUrl = getSpacesPublicBaseUrl();
+const portalUseSpaces = !!(portalSpacesBaseUrl && s3Client);
+const portalPublicUploadsBaseUrl = portalUseSpaces ? portalSpacesBaseUrl : "/uploads";
+const portalUploadToSpaces = portalUseSpaces ? uploadToSpaces : null;
+
 const portalRouter = createPortalRouter({
   dataDir: path.join(__dirname, "data"),
   uploadsDir: path.join(__dirname, "data", "uploads"),
   uploadsBaseUrl: "/uploads",
+  publicUploadsBaseUrl: portalPublicUploadsBaseUrl,
+  uploadToSpaces: portalUploadToSpaces,
+  dbPool,
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
   photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
   requireAdmin: requireAdminUser,

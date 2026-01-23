@@ -14,6 +14,9 @@ Add after app initialization and middleware:
     dataDir: path.join(__dirname, "data"),
     uploadsDir: path.join(__dirname, "data", "uploads"),
     uploadsBaseUrl: "/uploads",
+    publicUploadsBaseUrl: getSpacesPublicBaseUrl() || "/uploads",
+    uploadToSpaces: portalUploadToSpaces,
+    dbPool,
     requireAdmin: requireAdminUser,
     requireWrite: requireWrite,
     saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
@@ -22,9 +25,10 @@ Add after app initialization and middleware:
 
 Notes:
 - If you mount at a different base path, update uploadsBaseUrl to match.
-- The portal uses local storage in data/portal-pages.json and data/portal-applications.json.
-- Resume and photo files are saved under data/uploads/portal-apps/... and served from /uploads.
+- If dbPool is provided, pages and applications are stored in Postgres tables.
+- If uploadToSpaces + publicUploadsBaseUrl are provided, files are stored in Spaces.
+- When Spaces is public, set SPACES_PUBLIC=1 or SPACES_PUBLIC_URL for public URLs.
 
 3) Optional env overrides
-- PORTAL_PAGES_PATH, PORTAL_APPS_PATH, PORTAL_UPLOADS_DIR
+- PORTAL_PAGES_PATH, PORTAL_APPS_PATH, PORTAL_UPLOADS_DIR (local fallback)
 - You can pass them via createPortalRouter options or wire them from process.env.

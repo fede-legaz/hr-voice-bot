@@ -59,17 +59,23 @@ function extForMime(mime, fallbackName) {
   return ".bin";
 }
 
-async function saveBufferFile({ uploadsDir, relDir, fileName, buffer }) {
+async function saveBufferFile({ uploadsDir, relDir, fileName, buffer, contentType, uploadToSpaces, publicUploadsBaseUrl }) {
   const safeName = sanitizeFilename(fileName || "file");
+  const relPath = path.posix.join(relDir, safeName);
+  if (uploadToSpaces) {
+    await uploadToSpaces({ key: relPath, body: buffer, contentType });
+    const url = publicUploadsBaseUrl ? `${publicUploadsBaseUrl}/${relPath}` : relPath;
+    return { fullPath: "", relPath, url };
+  }
   const fullDir = path.join(uploadsDir, relDir);
   ensureDir(fullDir);
   const fullPath = path.join(fullDir, safeName);
   await fs.promises.writeFile(fullPath, buffer);
-  const relPath = path.posix.join(relDir, safeName);
-  return { fullPath, relPath };
+  const url = publicUploadsBaseUrl ? `${publicUploadsBaseUrl}/${relPath}` : relPath;
+  return { fullPath, relPath, url };
 }
 
-async function saveDataUrlFile({ dataUrl, uploadsDir, relDir, fileName, maxBytes, allowedMime }) {
+async function saveDataUrlFile({ dataUrl, uploadsDir, relDir, fileName, maxBytes, allowedMime, uploadToSpaces, publicUploadsBaseUrl }) {
   if (!dataUrl) return null;
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) throw new Error("invalid_data_url");
@@ -82,7 +88,15 @@ async function saveDataUrlFile({ dataUrl, uploadsDir, relDir, fileName, maxBytes
   const ext = extForMime(parsed.mime, fileName);
   const safeName = sanitizeFilename(path.basename(fileName || "file")) || "file";
   const finalName = safeName.endsWith(ext) ? safeName : safeName + ext;
-  return saveBufferFile({ uploadsDir, relDir, fileName: finalName, buffer: parsed.buffer });
+  return saveBufferFile({
+    uploadsDir,
+    relDir,
+    fileName: finalName,
+    buffer: parsed.buffer,
+    contentType: parsed.mime,
+    uploadToSpaces,
+    publicUploadsBaseUrl
+  });
 }
 
 function buildCvText(app, page) {
@@ -110,11 +124,13 @@ function createPortalRouter(options = {}) {
     dataDir: options.dataDir,
     pagesPath: options.pagesPath,
     appsPath: options.appsPath,
-    logger: options.logger
+    logger: options.logger,
+    dbPool: options.dbPool
   });
 
   const uploadsDir = options.uploadsDir || path.join(process.cwd(), "data", "uploads");
   const uploadsBaseUrl = resolveUploadsBaseUrl(options.uploadsBaseUrl || "/uploads");
+  const publicUploadsBaseUrl = resolveUploadsBaseUrl(options.publicUploadsBaseUrl || uploadsBaseUrl);
   const resumeMaxBytes = options.resumeMaxBytes || 8 * 1024 * 1024;
   const photoMaxBytes = options.photoMaxBytes || 2 * 1024 * 1024;
   const logger = options.logger || console;
@@ -122,12 +138,14 @@ function createPortalRouter(options = {}) {
   const requireWrite = options.requireWrite || requireAdmin;
   const requireAdminPage = options.requireAdminPage || null;
   const saveCvEntry = typeof options.saveCvEntry === "function" ? options.saveCvEntry : null;
+  const uploadToSpaces = typeof options.uploadToSpaces === "function" ? options.uploadToSpaces : null;
+  const useSpacesUploads = !!(uploadToSpaces && /^https?:\/\//i.test(publicUploadsBaseUrl));
 
   router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
 
-  router.get("/apply/:slug", (req, res) => {
+  router.get("/apply/:slug", async (req, res) => {
     const slug = safeSlug(req.params.slug);
-    const page = store.getPage(slug);
+    const page = await store.getPage(slug);
     if (!page || page.active === false) {
       return res.status(404).send("not_found");
     }
@@ -139,9 +157,9 @@ function createPortalRouter(options = {}) {
     res.type("text/html").send(renderApplyPage(payload));
   });
 
-  router.get("/apply/:slug/config", (req, res) => {
+  router.get("/apply/:slug/config", async (req, res) => {
     const slug = safeSlug(req.params.slug);
-    const page = store.getPage(slug);
+    const page = await store.getPage(slug);
     if (!page || page.active === false) {
       return res.status(404).json({ error: "not_found" });
     }
@@ -156,7 +174,7 @@ function createPortalRouter(options = {}) {
   router.post("/apply/:slug/submit", async (req, res) => {
     try {
       const slug = safeSlug(req.params.slug);
-      const page = store.getPage(slug);
+      const page = await store.getPage(slug);
       if (!page || page.active === false) {
         return res.status(404).json({ error: "not_found" });
       }
@@ -210,9 +228,11 @@ function createPortalRouter(options = {}) {
           relDir: appDir,
           fileName: resumeFileName || `resume_${appId}.pdf`,
           maxBytes: resumeMaxBytes,
-          allowedMime: RESUME_MIME
+          allowedMime: RESUME_MIME,
+          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+          publicUploadsBaseUrl
         });
-        if (saved) resumeUrl = `${uploadsBaseUrl}/${saved.relPath}`;
+        if (saved) resumeUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
 
       if (photoDataUrl) {
@@ -222,9 +242,11 @@ function createPortalRouter(options = {}) {
           relDir: appDir,
           fileName: photoFileName || `photo_${appId}.jpg`,
           maxBytes: photoMaxBytes,
-          allowedMime: IMAGE_MIME
+          allowedMime: IMAGE_MIME,
+          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+          publicUploadsBaseUrl
         });
-        if (saved) photoUrl = `${uploadsBaseUrl}/${saved.relPath}`;
+        if (saved) photoUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
 
       const application = {
@@ -277,8 +299,9 @@ function createPortalRouter(options = {}) {
     redirectToUi();
   });
 
-  router.get("/admin/portal/pages", requireWrite, (req, res) => {
-    return res.json({ ok: true, pages: store.listPages() });
+  router.get("/admin/portal/pages", requireWrite, async (req, res) => {
+    const pages = await store.listPages();
+    return res.json({ ok: true, pages });
   });
 
   router.post("/admin/portal/pages", requireWrite, async (req, res) => {
@@ -330,9 +353,11 @@ function createPortalRouter(options = {}) {
           relDir: assetsDir,
           fileName: uploads.logo.fileName,
           maxBytes: photoMaxBytes,
-          allowedMime: IMAGE_MIME
+          allowedMime: IMAGE_MIME,
+          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+          publicUploadsBaseUrl
         });
-        if (saved) page.assets.logoUrl = `${uploadsBaseUrl}/${saved.relPath}`;
+        if (saved) page.assets.logoUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
       if (uploads.hero.dataUrl) {
         const saved = await saveDataUrlFile({
@@ -341,9 +366,11 @@ function createPortalRouter(options = {}) {
           relDir: assetsDir,
           fileName: uploads.hero.fileName,
           maxBytes: photoMaxBytes,
-          allowedMime: IMAGE_MIME
+          allowedMime: IMAGE_MIME,
+          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+          publicUploadsBaseUrl
         });
-        if (saved) page.assets.heroUrl = `${uploadsBaseUrl}/${saved.relPath}`;
+        if (saved) page.assets.heroUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
       if (uploads.gallery.dataUrls.length) {
         const galleryUrls = Array.isArray(page.assets.gallery) ? page.assets.gallery.slice() : [];
@@ -356,9 +383,11 @@ function createPortalRouter(options = {}) {
             relDir: assetsDir,
             fileName: name,
             maxBytes: photoMaxBytes,
-            allowedMime: IMAGE_MIME
+            allowedMime: IMAGE_MIME,
+            uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+            publicUploadsBaseUrl
           });
-          if (saved) galleryUrls.push(`${uploadsBaseUrl}/${saved.relPath}`);
+          if (saved) galleryUrls.push(saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`);
         }
         page.assets.gallery = galleryUrls;
       }
@@ -378,9 +407,10 @@ function createPortalRouter(options = {}) {
     return res.json({ ok: true });
   });
 
-  router.get("/admin/portal/applications", requireWrite, (req, res) => {
+  router.get("/admin/portal/applications", requireWrite, async (req, res) => {
     const slug = req.query?.slug || "";
-    return res.json({ ok: true, applications: store.listApplications({ slug }) });
+    const applications = await store.listApplications({ slug });
+    return res.json({ ok: true, applications });
   });
 
   return router;
