@@ -2848,7 +2848,7 @@ app.get("/admin/ui", (req, res) => {
       cursor: pointer;
     }
     .portal-url-row { display: flex; gap: 8px; align-items: center; }
-    .portal-url-row input { flex: 1; }
+    .portal-url-row input { flex: 1; cursor: pointer; }
     .portal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
     .portal-table th, .portal-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
     .portal-table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
@@ -9312,6 +9312,13 @@ app.get("/admin/ui", (req, res) => {
           portalSetStatus('No se pudo copiar', true);
         }
       };
+    }
+    if (portalUrlEl) {
+      portalUrlEl.addEventListener('click', () => {
+        const url = (portalUrlEl.value || '').trim();
+        if (!url) return;
+        window.open(url, '_blank', 'noopener');
+      });
     }
     if (portalFontPresetEl) {
       portalFontPresetEl.addEventListener('change', () => {
