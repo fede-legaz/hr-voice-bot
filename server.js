@@ -4215,12 +4215,13 @@ app.get("/admin/ui", (req, res) => {
                     </select>
                   </div>
                   <div>
-                    <label>URL público</label>
-                    <div class="portal-url-row">
-                      <input type="text" id="portal-url" readonly />
-                      <button class="secondary" id="portal-copy-url" type="button">Copiar</button>
-                    </div>
+                  <label>URL público</label>
+                  <div class="portal-url-row">
+                    <input type="text" id="portal-url" readonly />
+                    <button class="secondary" id="portal-copy-url" type="button">Copiar</button>
+                    <button class="secondary" id="portal-open-url" type="button">Abrir</button>
                   </div>
+                </div>
                 </div>
               </div>
 
@@ -4825,6 +4826,7 @@ app.get("/admin/ui", (req, res) => {
     const portalActiveEl = document.getElementById('portal-active');
     const portalUrlEl = document.getElementById('portal-url');
     const portalCopyUrlEl = document.getElementById('portal-copy-url');
+    const portalOpenUrlEl = document.getElementById('portal-open-url');
     const portalTitleEsEl = document.getElementById('portal-title-es');
     const portalTitleEnEl = document.getElementById('portal-title-en');
     const portalDescEsEl = document.getElementById('portal-desc-es');
@@ -9464,6 +9466,13 @@ app.get("/admin/ui", (req, res) => {
         } catch (err) {
           portalSetStatus('No se pudo copiar', true);
         }
+      };
+    }
+    if (portalOpenUrlEl) {
+      portalOpenUrlEl.onclick = () => {
+        const url = (portalUrlEl && portalUrlEl.value || '').trim();
+        if (!url) return;
+        window.open(url, '_blank', 'noopener');
       };
     }
     if (portalUrlEl) {
