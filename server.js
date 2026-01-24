@@ -35,6 +35,7 @@ const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 
 const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
 const CV_PHOTO_MAX_BYTES = Number(process.env.CV_PHOTO_MAX_BYTES) || 350 * 1024;
 const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.AUDIO_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
+const DB_AUDIO_MAX_BYTES = Number(process.env.DB_AUDIO_MAX_BYTES) || AUDIO_UPLOAD_MAX_BYTES;
 const VOICE = process.env.VOICE || "marin";
 const AUTO_RECORD = process.env.AUTO_RECORD !== "0";
 
@@ -794,7 +795,7 @@ const callsByCallSid = new Map(); // callSid -> call
 const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
 const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
-const tokens = new Map(); // token -> { path, expiresAt }
+const tokens = new Map(); // token -> { path?, callSid?, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const userSessions = new Map(); // token -> { email, role, allowedBrands, expiresAt }
 const MAX_CALL_HISTORY = 500;
@@ -1450,6 +1451,17 @@ async function initDb() {
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_score ON calls (score);`);
 
     await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS call_recordings (
+        call_sid TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        content_type TEXT,
+        byte_size INTEGER,
+        audio_data BYTEA
+      );
+    `);
+
+    await dbPool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         email TEXT UNIQUE NOT NULL,
@@ -1572,6 +1584,13 @@ function extractSpacesKeyFromUrl(value = "") {
 
 async function resolveStoredUrl(value, ttlSeconds = 3600) {
   if (!value) return "";
+  if (typeof value === "string" && value.startsWith("db:")) {
+    const callSid = value.slice(3);
+    if (!callSid || !dbPool) return "";
+    const token = randomToken();
+    tokens.set(token, { callSid, expiresAt: Date.now() + TOKEN_TTL_MS });
+    return PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/r/${token}` : `/r/${token}`;
+  }
   const isUrl = /^https?:\/\//i.test(value);
   if (isUrl) {
     if (SPACES_PUBLIC || SPACES_PUBLIC_URL) return value;
@@ -1998,6 +2017,17 @@ app.get("/admin/calls/:callId/audio", requireConfigOrViewer, async (req, res) =>
     const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
     if (allowedBrands.length && !isBrandAllowed(allowedBrands, call.brand || call.brandKey || "")) {
       return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    if (dbPool) {
+      const recording = await fetchCallRecording(callId);
+      if (recording && recording.audio_data) {
+        const contentType = recording.content_type || "audio/mpeg";
+        const ext = contentType.includes("wav") ? "wav" : "mp3";
+        const safeName = sanitizeFilename(call.applicant || callId || "interview");
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Content-Disposition", `attachment; filename="${safeName}.${ext}"`);
+        return res.send(recording.audio_data);
+      }
     }
     const mediaUrl = await getCallAudioMediaUrl(call);
     if (!mediaUrl) return res.status(404).json({ error: "no_audio" });
@@ -9633,9 +9663,25 @@ app.get("/r/:token", (req, res) => {
   if (!entry || entry.expiresAt < Date.now()) {
     return res.status(404).send("not found");
   }
-  fs.createReadStream(entry.path)
-    .on("error", () => res.status(404).send("not found"))
-    .pipe(res.type("audio/mpeg"));
+  if (entry.path) {
+    return fs.createReadStream(entry.path)
+      .on("error", () => res.status(404).send("not found"))
+      .pipe(res.type("audio/mpeg"));
+  }
+  if (entry.callSid) {
+    fetchCallRecording(entry.callSid)
+      .then((recording) => {
+        if (!recording || !recording.audio_data) {
+          res.status(404).send("not found");
+          return;
+        }
+        res.type(recording.content_type || "audio/mpeg");
+        res.send(recording.audio_data);
+      })
+      .catch(() => res.status(404).send("not found"));
+    return;
+  }
+  return res.status(404).send("not found");
 });
 
 // Hard-stop path for no-answer/voicemail before opening streams
@@ -10540,19 +10586,43 @@ async function handleRecordingStatus(call, { recordingUrl, recordingSid }) {
   }
   const dest = path.join(recordingsDir, `${recordingSid}.mp3`);
   await downloadRecordingWithRetry(`${recordingUrl}.mp3`, dest);
+  let storedInDb = false;
   try {
     const stats = await fs.promises.stat(dest);
+    const sid = call.callSid || recordingSid;
+    let body = null;
+    const loadBody = async () => {
+      if (!body) body = await fs.promises.readFile(dest);
+      return body;
+    };
     if (spacesEnabled && stats.size <= AUDIO_UPLOAD_MAX_BYTES) {
-      const key = `audio/${call.callSid || recordingSid}.mp3`;
-      const body = await fs.promises.readFile(dest);
-      await uploadToSpaces({ key, body, contentType: "audio/mpeg" });
-      call.audioUrl = key;
+      try {
+        const key = `audio/${sid || recordingSid}.mp3`;
+        const buf = await loadBody();
+        await uploadToSpaces({ key, body: buf, contentType: "audio/mpeg" });
+        call.audioUrl = key;
+      } catch (err) {
+        console.error("[recording] spaces upload failed", err);
+      }
+    }
+    if (dbPool && stats.size <= DB_AUDIO_MAX_BYTES && sid) {
+      try {
+        const buf = await loadBody();
+        await upsertCallRecording(sid, buf, "audio/mpeg");
+        storedInDb = true;
+      } catch (err) {
+        console.error("[recording] db save failed", err);
+      }
     }
   } catch (err) {
-    console.error("[recording] spaces upload failed", err);
+    console.error("[recording] post-download handling failed", err);
+  }
+  if (!call.audioUrl && storedInDb) {
+    const sid = call.callSid || recordingSid;
+    if (sid) call.audioUrl = `db:${sid}`;
   }
   const token = randomToken();
-  tokens.set(token, { path: dest, expiresAt: Date.now() + TOKEN_TTL_MS });
+  tokens.set(token, { path: dest, callSid: call.callSid || recordingSid, expiresAt: Date.now() + TOKEN_TTL_MS });
   call.recordingPath = dest;
   call.recordingToken = token;
   call.expiresAt = Date.now() + CALL_TTL_MS;
@@ -10967,6 +11037,34 @@ async function upsertCallDb(entry) {
     entry.cv_url || ""
   ];
   await dbQuery(sql, values);
+}
+
+async function upsertCallRecording(callSid, buffer, contentType = "audio/mpeg") {
+  if (!dbPool || !callSid || !buffer) return false;
+  const sql = `
+    INSERT INTO call_recordings (
+      call_sid, created_at, updated_at, content_type, byte_size, audio_data
+    ) VALUES (
+      $1, NOW(), NOW(), $2, $3, $4
+    )
+    ON CONFLICT (call_sid) DO UPDATE SET
+      updated_at = NOW(),
+      content_type = EXCLUDED.content_type,
+      byte_size = EXCLUDED.byte_size,
+      audio_data = EXCLUDED.audio_data
+  `;
+  const values = [callSid, contentType || "audio/mpeg", buffer.length, buffer];
+  await dbQuery(sql, values);
+  return true;
+}
+
+async function fetchCallRecording(callSid) {
+  if (!dbPool || !callSid) return null;
+  const result = await dbQuery(
+    "SELECT content_type, audio_data, byte_size FROM call_recordings WHERE call_sid = $1",
+    [callSid]
+  );
+  return result?.rows?.[0] || null;
 }
 
 async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minScore, maxScore, limit, allowedBrands }) {
