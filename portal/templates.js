@@ -310,7 +310,27 @@ function renderApplyPage(page, options = {}) {
     .status.error { color: #b42318; }
     .status.ok { color: #1f6f5c; }
     .req { color: var(--primary); font-weight: 700; }
-    .note { background: rgba(31,111,92,0.08); padding: 12px 16px; border-radius: 16px; font-size: 14px; }
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px;
+      border-radius: 16px;
+      background: rgba(31,111,92,0.08);
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(31,111,92,0.22);
+      background: #fff;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      box-shadow: 0 10px 18px rgba(31,111,92,0.08);
+    }
     @media (max-width: 900px) {
       .hero { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
@@ -354,7 +374,7 @@ function renderApplyPage(page, options = {}) {
       <div class="card" id="side-card">
         <h3 data-side-title>Why this team?</h3>
         <p class="hint" data-side-text>We are growing, we move fast, and we care about service.</p>
-        <div class="note" data-side-note>Shift options and training available.</div>
+        <div class="chip-list" data-side-note>Shift options and training available.</div>
         <div class="gallery" id="gallery"></div>
       </div>
     </section>
@@ -392,6 +412,35 @@ function renderApplyPage(page, options = {}) {
       return val[lang] || val.es || val.en || fallback;
     }
 
+    function splitChips(value) {
+      if (!value) return [];
+      const normalized = String(value || '')
+        .replace(/\r/g, '\n')
+        .replace(/[•·]/g, '\n');
+      return normalized
+        .split(/\n+/)
+        .map((part) => part.replace(/^[-–—\s]+/, '').trim())
+        .filter(Boolean);
+    }
+
+    function renderSideNote(value) {
+      if (!els.sideNote) return;
+      const items = splitChips(value);
+      if (!items.length) {
+        els.sideNote.textContent = '';
+        els.sideNote.style.display = 'none';
+        return;
+      }
+      els.sideNote.innerHTML = '';
+      items.forEach((item) => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = item;
+        els.sideNote.appendChild(chip);
+      });
+      els.sideNote.style.display = '';
+    }
+
     function applyTheme() {
       const theme = page.theme || {};
       if (theme.colorBg) document.documentElement.style.setProperty('--bg', theme.colorBg);
@@ -413,7 +462,8 @@ function renderApplyPage(page, options = {}) {
       els.formSubtitle.textContent = t(page.content?.formSubtitle, 'Tell us a bit about you.');
       els.sideTitle.textContent = t(page.content?.sideTitle, 'Inside the team');
       els.sideText.textContent = t(page.content?.sideText, 'Fast pace, real growth, strong culture.');
-      els.sideNote.textContent = t(page.content?.sideNote, 'Flexible shifts and training.');
+      const sideNote = t(page.content?.sideNote, 'Flexible shifts and training.');
+      renderSideNote(sideNote);
 
       if (page.assets?.logoUrl) {
         els.logo.src = page.assets.logoUrl;
@@ -1222,7 +1272,10 @@ function renderAdminPage(options = {}) {
         content: {
           title: { es: 'Trabaja con nosotros', en: 'Work with us' },
           description: { es: 'Sumate al equipo.', en: 'Join the team.' },
-          thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' }
+          thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' },
+          sideTitle: { es: 'Dentro del equipo', en: 'Inside the team' },
+          sideText: { es: 'Ritmo rapido, crecimiento real, buena cultura.', en: 'Fast pace, real growth, strong culture.' },
+          sideNote: { es: 'Turnos flexibles y entrenamiento.', en: 'Flexible shifts and training.' }
         },
         theme: {
           fontHeading: 'Fraunces',

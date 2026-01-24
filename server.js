@@ -2943,15 +2943,24 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1.4;
     }
     .portal-preview-note {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.06);
+      font-size: 11px;
+    }
+    .portal-preview-chip {
       display: inline-flex;
       align-items: center;
-      padding: 6px 10px;
+      padding: 4px 8px;
       border-radius: 999px;
-      background: rgba(0, 0, 0, 0.06);
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      background: #fff;
       color: var(--p-text, #241b13);
-      font-size: 11px;
       font-weight: 600;
-      width: fit-content;
+      font-size: 11px;
     }
     .portal-preview-hero-image {
       border-radius: 14px;
@@ -6705,6 +6714,17 @@ app.get("/admin/ui", (req, res) => {
       return raw.split(/\\n+/).map((value) => value.trim()).filter(Boolean);
     }
 
+    function portalSplitChips(value) {
+      if (!value) return [];
+      const normalized = String(value || '')
+        .replace(/\\r/g, '\\n')
+        .replace(/[•·]/g, '\\n');
+      return normalized
+        .split(/\\n+/)
+        .map((part) => part.replace(/^[-–—\\s]+/, '').trim())
+        .filter(Boolean);
+    }
+
     function portalSyncPreview() {
       if (!portalPreviewEl) return;
       portalSyncColorPicker(portalColorPrimaryEl, portalColorPrimaryPickerEl);
@@ -6750,8 +6770,19 @@ app.get("/admin/ui", (req, res) => {
       if (portalPreviewSideTitleEl) portalPreviewSideTitleEl.textContent = sideTitle;
       if (portalPreviewSideEl) portalPreviewSideEl.textContent = sideText;
       if (portalPreviewSideNoteEl) {
-        portalPreviewSideNoteEl.textContent = sideNote;
-        portalPreviewSideNoteEl.style.display = sideNote ? '' : 'none';
+        portalPreviewSideNoteEl.innerHTML = '';
+        const chips = portalSplitChips(sideNote);
+        if (chips.length) {
+          chips.forEach((item) => {
+            const chip = document.createElement('span');
+            chip.className = 'portal-preview-chip';
+            chip.textContent = item;
+            portalPreviewSideNoteEl.appendChild(chip);
+          });
+          portalPreviewSideNoteEl.style.display = '';
+        } else {
+          portalPreviewSideNoteEl.style.display = 'none';
+        }
       }
 
       const logoUrl = portalPreviewImage('logo');
