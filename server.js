@@ -1034,6 +1034,7 @@ function hydrateCvStore(entries) {
     if (!entry.id) entry.id = randomToken();
     if (!entry.brandKey && entry.brand) entry.brandKey = brandKey(entry.brand);
     if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
+    if (!entry.decision) entry.decision = "";
     cvStore.push(entry);
     cvStoreById.set(entry.id, entry);
   });
@@ -1403,10 +1404,12 @@ async function initDb() {
         cv_text TEXT,
         cv_url TEXT,
         cv_photo_url TEXT,
+        decision TEXT,
         source TEXT
       );
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
 
@@ -2237,6 +2240,28 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
     console.error("[admin/cv] failed", err);
     return res.status(400).json({ error: "cv_failed", detail: err.message });
   }
+});
+
+app.post("/admin/cv/status", requireWrite, async (req, res) => {
+  const body = req.body || {};
+  const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : (body.id ? [body.id] : []);
+  if (!ids.length) return res.status(400).json({ error: "missing_cv_id" });
+  const raw = String(body.decision || body.status || "").toLowerCase().trim();
+  const decision = raw === "approved" || raw === "declined" || raw === "maybe" ? raw : "";
+  ids.forEach((id) => {
+    const entry = cvStoreById.get(id);
+    if (entry) entry.decision = decision;
+  });
+  scheduleCvStoreSave();
+  if (dbPool) {
+    try {
+      await dbQuery("UPDATE cvs SET decision = $1 WHERE id = ANY($2)", [decision, ids]);
+    } catch (err) {
+      console.error("[admin/cv] status update failed", err);
+      return res.status(400).json({ error: "status_update_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, decision });
 });
 
 app.delete("/admin/cv/:id", requireAdminUser, async (req, res) => {
@@ -3515,6 +3540,38 @@ app.get("/admin/ui", (req, res) => {
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .decision-cell { white-space: nowrap; }
+    .decision-buttons { display: inline-flex; gap: 6px; align-items: center; }
+    .decision-buttons.is-loading { opacity: 0.6; pointer-events: none; }
+    .decision-btn {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 12px;
+      padding: 0;
+      line-height: 1;
+      box-shadow: none;
+    }
+    .decision-btn:hover { box-shadow: var(--glow); }
+    .decision-btn.active.approved {
+      background: rgba(31,111,92,0.14);
+      border-color: rgba(31,111,92,0.45);
+      color: #1f6f5c;
+    }
+    .decision-btn.active.declined {
+      background: rgba(180,35,24,0.14);
+      border-color: rgba(180,35,24,0.45);
+      color: #b42318;
+    }
+    .decision-btn.active.maybe {
+      background: rgba(168,103,0,0.16);
+      border-color: rgba(168,103,0,0.45);
+      color: #8a5b00;
+    }
     .action-cell { white-space: nowrap; }
     th, td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
     th {
@@ -4058,8 +4115,8 @@ app.get("/admin/ui", (req, res) => {
         </div>
 
         <div class="panel" id="cv-list-panel" style="--delay:.08s;">
-          <div class="panel-title">CVs guardados</div>
-          <div class="panel-sub">Podés guardar CVs sin llamar y usarlos después.</div>
+      <div class="panel-title">CVs guardados</div>
+      <div class="panel-sub">Podés guardar CVs sin llamar y usarlos después.</div>
           <div class="grid">
             <div>
               <label>Local</label>
@@ -4089,6 +4146,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
+                  <th>Decisión</th>
                   <th>CV</th>
                   <th>Acción</th>
                 </tr>
@@ -7612,7 +7670,8 @@ app.get("/admin/ui", (req, res) => {
     function isLikelyInvalidName(name) {
       if (!name) return true;
       const lower = name.toLowerCase();
-      if (/\\b(restaurant|restaurante|experience|experiencia|profile|perfil|skills|habilidades|education|educacion|objective|objetivo|summary|resumen|curriculum|cv|resume|miami|fl|server|bartender|cook|cashier|runner|manager|idioma|idiomas|language|languages|ubicacion|ubicación|location|telefono|teléfono|phone|correo|email)\\b/i.test(lower)) {
+      if (/[&/]/.test(name)) return true;
+      if (/\\b(restaurant|restaurante|experience|experiencia|profile|perfil|skills|habilidades|education|educacion|objective|objetivo|summary|resumen|curriculum|cv|resume|miami|fl|server|bartender|cook|cashier|runner|manager|idioma|idiomas|language|languages|ubicacion|ubicación|location|telefono|teléfono|phone|correo|email|service|services|customer|food|kitchen|dishwasher|barista|host|hostess|waiter|waitress|driver|delivery|employee|employment|work|history|professional|assistant|supervisor)\\b/i.test(lower)) {
         return true;
       }
       if (/[0-9]/.test(name)) return true;
@@ -8742,8 +8801,12 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_text = item.cv_text;
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
+          entry.decision = item.decision || entry.decision || "";
           entry.created_at = item.created_at;
           entry.source = item.source;
+        }
+        if (!entry.decision && item.decision) {
+          entry.decision = item.decision;
         }
         if (item.active_call) {
           entry.active_call = true;
@@ -9062,6 +9125,26 @@ app.get("/admin/ui", (req, res) => {
       loadResults();
     }
 
+    function setDecisionButtonsActive(container, decision) {
+      if (!container) return;
+      container.querySelectorAll('.decision-btn').forEach((btn) => {
+        const key = btn.dataset.decision || '';
+        btn.classList.toggle('active', key === decision);
+      });
+    }
+
+    async function updateCvDecision(ids, decision) {
+      const payload = { ids, decision };
+      const resp = await fetch('/admin/cv/status', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'status_update_failed');
+      return data.decision || decision || '';
+    }
+
     function renderCvList(list) {
       const grouped = groupCandidates(Array.isArray(list) ? list : []);
       lastCvList = grouped;
@@ -9138,6 +9221,49 @@ app.get("/admin/ui", (req, res) => {
         statusTd.textContent = statusText || '—';
         if (statusText) statusTd.title = statusText;
         tr.appendChild(statusTd);
+        const decisionTd = document.createElement('td');
+        decisionTd.className = 'decision-cell';
+        const decisionWrap = document.createElement('div');
+        decisionWrap.className = 'decision-buttons';
+        const decisionOptions = [
+          { key: 'approved', label: '✓', title: 'Aprobado' },
+          { key: 'declined', label: '✕', title: 'Declinado' },
+          { key: 'maybe', label: '?', title: 'Indeciso' }
+        ];
+        decisionOptions.forEach((opt) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'decision-btn ' + opt.key;
+          btn.dataset.decision = opt.key;
+          btn.textContent = opt.label;
+          btn.title = opt.title;
+          btn.setAttribute('aria-label', opt.title);
+          btn.disabled = authRole === 'viewer';
+          btn.onclick = async (event) => {
+            event.stopPropagation();
+            if (authRole === 'viewer') return;
+            const ids = Array.isArray(item.cvIds) && item.cvIds.length
+              ? item.cvIds
+              : (item.id ? [item.id] : []);
+            if (!ids.length) return;
+            const next = item.decision === opt.key ? '' : opt.key;
+            decisionWrap.classList.add('is-loading');
+            try {
+              const updated = await updateCvDecision(ids, next);
+              item.decision = updated || '';
+              setDecisionButtonsActive(decisionWrap, item.decision);
+            } catch (err) {
+              console.error('decision update failed', err);
+              setCvListCount('Error: ' + err.message);
+            } finally {
+              decisionWrap.classList.remove('is-loading');
+            }
+          };
+          decisionWrap.appendChild(btn);
+        });
+        setDecisionButtonsActive(decisionWrap, item.decision || '');
+        decisionTd.appendChild(decisionWrap);
+        tr.appendChild(decisionTd);
         const cvTd = document.createElement('td');
         if (item.cv_url) {
           const wrap = document.createElement('div');
@@ -10917,6 +11043,7 @@ function buildCvEntry(payload = {}) {
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
+  const decision = (payload.decision || payload.status || "").toString().trim();
   return {
     id,
     created_at: createdAt,
@@ -10930,6 +11057,7 @@ function buildCvEntry(payload = {}) {
     cv_len: cvText.length,
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
+    decision,
     source
   };
 }
@@ -10962,9 +11090,9 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, source
+      cv_text, cv_url, cv_photo_url, decision, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -10976,6 +11104,7 @@ async function upsertCvDb(entry) {
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
+      decision = EXCLUDED.decision,
       source = EXCLUDED.source
   `;
   const values = [
@@ -10990,6 +11119,7 @@ async function upsertCvDb(entry) {
     entry.cv_text || "",
     entry.cv_url || "",
     entry.cv_photo_url || "",
+    entry.decision || "",
     entry.source || ""
   ];
   await dbQuery(sql, values);
@@ -11361,7 +11491,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.decision, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -11394,6 +11524,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
+      decision: row.decision || "",
       source: row.source || "",
       call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
       last_call_at: row.last_call_at ? new Date(row.last_call_at).toISOString() : "",
