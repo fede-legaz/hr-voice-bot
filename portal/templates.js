@@ -380,8 +380,9 @@ function renderApplyPage(page, options = {}) {
     </section>
   </div>
 
+  <script type="application/json" id="page-data">${pageJson}</script>
   <script>
-    const page = ${pageJson};
+    const page = JSON.parse(document.getElementById('page-data')?.textContent || '{}');
     const limits = page.limits || { resumeMaxBytes: 8 * 1024 * 1024, photoMaxBytes: 2 * 1024 * 1024 };
     let lang = page.localeDefault || 'es';
     let roleSelectEl = null;
