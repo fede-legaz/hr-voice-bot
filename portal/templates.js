@@ -426,7 +426,7 @@ function renderApplyPage(page, options = {}) {
           const g = Number(parts[1]);
           const b = Number(parts[2]);
           if ([r, g, b].every((n) => Number.isFinite(n))) {
-            return `${r}, ${g}, ${b}`;
+            return r + ', ' + g + ', ' + b;
           }
         }
       }
@@ -440,7 +440,7 @@ function renderApplyPage(page, options = {}) {
       const r = (num >> 16) & 255;
       const g = (num >> 8) & 255;
       const b = num & 255;
-      return `${r}, ${g}, ${b}`;
+      return r + ', ' + g + ', ' + b;
     }
 
     function splitChips(value) {
@@ -483,7 +483,7 @@ function renderApplyPage(page, options = {}) {
       const primaryRgb = colorToRgb(theme.colorPrimary);
       if (primaryRgb) {
         document.documentElement.style.setProperty('--primary-rgb', primaryRgb);
-        document.documentElement.style.setProperty('--ring', `rgba(${primaryRgb}, 0.25)`);
+        document.documentElement.style.setProperty('--ring', 'rgba(' + primaryRgb + ', 0.25)');
       }
       const accentRgb = colorToRgb(theme.colorAccent);
       if (accentRgb) document.documentElement.style.setProperty('--accent-rgb', accentRgb);
