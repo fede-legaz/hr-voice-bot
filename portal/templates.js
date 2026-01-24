@@ -30,7 +30,9 @@ function renderApplyPage(page, options = {}) {
       --text: #241b13;
       --muted: #6c5f57;
       --primary: #c84c33;
+      --primary-rgb: 200, 76, 51;
       --accent: #1f6f5c;
+      --accent-rgb: 31, 111, 92;
       --ring: rgba(200, 76, 51, 0.25);
       --shadow: 0 18px 40px rgba(36, 27, 19, 0.15);
       --font-heading: '${fontHeading}', 'Fraunces', serif;
@@ -41,10 +43,10 @@ function renderApplyPage(page, options = {}) {
       margin: 0;
       font-family: var(--font-body);
       color: var(--text);
-      background:
-        radial-gradient(circle at 10% 10%, rgba(200,76,51,0.08), transparent 45%),
-        radial-gradient(circle at 90% 20%, rgba(31,111,92,0.12), transparent 45%),
-        linear-gradient(120deg, #f6f2e9 0%, #f2efe7 60%, #f7f4ee 100%);
+      background-color: var(--bg);
+      background-image:
+        radial-gradient(circle at 10% 10%, rgba(var(--primary-rgb), 0.08), transparent 45%),
+        radial-gradient(circle at 90% 20%, rgba(var(--accent-rgb), 0.12), transparent 45%);
       min-height: 100vh;
     }
     .page {
@@ -413,6 +415,34 @@ function renderApplyPage(page, options = {}) {
       return val[lang] || val.es || val.en || fallback;
     }
 
+    function colorToRgb(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const rgbMatch = raw.match(/rgba?\\(([^)]+)\\)/i);
+      if (rgbMatch) {
+        const parts = rgbMatch[1].split(',').map((v) => v.trim());
+        if (parts.length >= 3) {
+          const r = Number(parts[0]);
+          const g = Number(parts[1]);
+          const b = Number(parts[2]);
+          if ([r, g, b].every((n) => Number.isFinite(n))) {
+            return `${r}, ${g}, ${b}`;
+          }
+        }
+      }
+      let hex = raw.replace('#', '');
+      if (hex.length === 3) {
+        hex = hex.split('').map((c) => c + c).join('');
+      }
+      if (hex.length !== 6) return '';
+      const num = parseInt(hex, 16);
+      if (Number.isNaN(num)) return '';
+      const r = (num >> 16) & 255;
+      const g = (num >> 8) & 255;
+      const b = num & 255;
+      return `${r}, ${g}, ${b}`;
+    }
+
     function splitChips(value) {
       if (!value) return [];
       const normalized = String(value || '')
@@ -450,6 +480,13 @@ function renderApplyPage(page, options = {}) {
       if (theme.colorMuted) document.documentElement.style.setProperty('--muted', theme.colorMuted);
       if (theme.colorPrimary) document.documentElement.style.setProperty('--primary', theme.colorPrimary);
       if (theme.colorAccent) document.documentElement.style.setProperty('--accent', theme.colorAccent);
+      const primaryRgb = colorToRgb(theme.colorPrimary);
+      if (primaryRgb) {
+        document.documentElement.style.setProperty('--primary-rgb', primaryRgb);
+        document.documentElement.style.setProperty('--ring', `rgba(${primaryRgb}, 0.25)`);
+      }
+      const accentRgb = colorToRgb(theme.colorAccent);
+      if (accentRgb) document.documentElement.style.setProperty('--accent-rgb', accentRgb);
       if (theme.fontHeading) document.documentElement.style.setProperty('--font-heading', theme.fontHeading + ', Fraunces, serif');
       if (theme.fontBody) document.documentElement.style.setProperty('--font-body', theme.fontBody + ', Manrope, sans-serif');
     }
