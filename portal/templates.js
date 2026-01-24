@@ -12,6 +12,7 @@ function renderApplyPage(page, options = {}) {
   const fontUrl = escapeHtml(page.theme?.fontUrl || "");
   const fontHeading = escapeHtml(page.theme?.fontHeading || "Fraunces");
   const fontBody = escapeHtml(page.theme?.fontBody || "Manrope");
+  const faviconUrl = escapeHtml(page.assets?.faviconUrl || "");
 
   return `<!doctype html>
 <html lang="en">
@@ -19,6 +20,7 @@ function renderApplyPage(page, options = {}) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${title}</title>
+  ${faviconUrl ? '<link rel="icon" href="' + faviconUrl + '" />' : ""}
   ${fontUrl ? '<link rel="stylesheet" href="' + fontUrl + '" />' : ""}
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600;700&family=Manrope:wght@400;600;700&display=swap" />
   <style>
@@ -1233,7 +1235,7 @@ function renderAdminPage(options = {}) {
           colorText: '#241b13',
           colorMuted: '#6c5f57'
         },
-        assets: { logoUrl: '', heroUrl: '', gallery: [] },
+        assets: { logoUrl: '', heroUrl: '', faviconUrl: '', gallery: [] },
         fields: {
           name: { label: { es: 'Nombre completo', en: 'Full name' }, required: true },
           email: { label: { es: 'Email', en: 'Email' }, required: true },

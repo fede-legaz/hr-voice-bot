@@ -24,7 +24,9 @@ const IMAGE_MIME = new Set([
   "image/jpeg",
   "image/png",
   "image/webp",
-  "image/gif"
+  "image/gif",
+  "image/x-icon",
+  "image/vnd.microsoft.icon"
 ]);
 
 const MIME_EXT = {
@@ -35,7 +37,9 @@ const MIME_EXT = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
   "image/webp": ".webp",
-  "image/gif": ".gif"
+  "image/gif": ".gif",
+  "image/x-icon": ".ico",
+  "image/vnd.microsoft.icon": ".ico"
 };
 
 function ensureDir(dirPath) {
@@ -391,6 +395,7 @@ function createPortalRouter(options = {}) {
       const uploads = {
         logo: { dataUrl: body.logo_data_url, fileName: body.logo_file_name || "logo" },
         hero: { dataUrl: body.hero_data_url, fileName: body.hero_file_name || "hero" },
+        favicon: { dataUrl: body.favicon_data_url, fileName: body.favicon_file_name || "favicon" },
         gallery: {
           dataUrls: Array.isArray(body.gallery_data_urls) ? body.gallery_data_urls : [],
           fileNames: Array.isArray(body.gallery_file_names) ? body.gallery_file_names : []
@@ -423,6 +428,19 @@ function createPortalRouter(options = {}) {
           publicUploadsBaseUrl
         });
         if (saved) page.assets.heroUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
+      }
+      if (uploads.favicon.dataUrl) {
+        const saved = await saveDataUrlFile({
+          dataUrl: uploads.favicon.dataUrl,
+          uploadsDir,
+          relDir: assetsDir,
+          fileName: uploads.favicon.fileName,
+          maxBytes: photoMaxBytes,
+          allowedMime: IMAGE_MIME,
+          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+          publicUploadsBaseUrl
+        });
+        if (saved) page.assets.faviconUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
       if (uploads.gallery.dataUrls.length) {
         const galleryUrls = Array.isArray(page.assets.gallery) ? page.assets.gallery.slice() : [];

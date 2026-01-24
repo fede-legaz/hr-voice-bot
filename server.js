@@ -2785,6 +2785,31 @@ app.get("/admin/ui", (req, res) => {
       color: var(--ink);
     }
     .portal-item.active { border-color: var(--primary); box-shadow: var(--glow); }
+    .portal-form { display: flex; flex-direction: column; gap: 16px; }
+    .portal-section {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+      background: #fff;
+      box-shadow: 0 12px 24px rgba(36, 27, 19, 0.08);
+    }
+    .portal-section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .portal-section-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); }
+    .portal-section-sub { font-size: 12px; color: var(--muted); }
+    .portal-subhead {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 6px 0 8px;
+    }
+    .portal-section .grid + .grid { margin-top: 10px; }
     .section-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); margin: 12px 0 6px; }
     .portal-question {
       border: 1px dashed var(--border);
@@ -4101,132 +4126,158 @@ app.get("/admin/ui", (req, res) => {
               <div class="portal-list" id="portal-list"></div>
             </div>
             <div class="portal-form">
-              <div class="grid">
-                <div>
-                  <label>Slug</label>
-                  <input type="text" id="portal-slug" placeholder="ej. mexi-cafe" />
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Información general</div>
+                    <div class="portal-section-sub">Slug, marca, idioma y URL pública.</div>
+                  </div>
                 </div>
-                <div>
-                  <label>Brand</label>
-                  <input type="text" id="portal-brand" placeholder="Ej. Mexi Cafe" />
-                </div>
-                <div>
-                  <label>Idioma default</label>
-                  <select id="portal-lang">
-                    <option value="es">ES</option>
-                    <option value="en">EN</option>
-                  </select>
-                </div>
-                <div>
-                  <label>Activo</label>
-                  <select id="portal-active">
-                    <option value="true">Sí</option>
-                    <option value="false">No</option>
-                  </select>
-                </div>
-                <div>
-                  <label>URL público</label>
-                  <div class="portal-url-row">
-                    <input type="text" id="portal-url" readonly />
-                    <button class="secondary" id="portal-copy-url" type="button">Copiar</button>
+                <div class="grid">
+                  <div>
+                    <label>Slug</label>
+                    <input type="text" id="portal-slug" placeholder="ej. mexi-cafe" />
+                  </div>
+                  <div>
+                    <label>Brand</label>
+                    <input type="text" id="portal-brand" placeholder="Ej. Mexi Cafe" />
+                  </div>
+                  <div>
+                    <label>Idioma default</label>
+                    <select id="portal-lang">
+                      <option value="es">ES</option>
+                      <option value="en">EN</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Activo</label>
+                    <select id="portal-active">
+                      <option value="true">Sí</option>
+                      <option value="false">No</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>URL público</label>
+                    <div class="portal-url-row">
+                      <input type="text" id="portal-url" readonly />
+                      <button class="secondary" id="portal-copy-url" type="button">Copiar</button>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <div class="section-title">Contenido</div>
-              <div class="grid">
-                <div>
-                  <label>Título (ES)</label>
-                  <input id="portal-title-es" type="text" />
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Contenido</div>
+                    <div class="portal-section-sub">Títulos, descripción y mensaje final.</div>
+                  </div>
                 </div>
-                <div>
-                  <label>Título (EN)</label>
-                  <input id="portal-title-en" type="text" />
-                </div>
-                <div>
-                  <label>Descripción (ES)</label>
-                  <textarea id="portal-desc-es"></textarea>
-                </div>
-                <div>
-                  <label>Descripción (EN)</label>
-                  <textarea id="portal-desc-en"></textarea>
-                </div>
-                <div>
-                  <label>Gracias (ES)</label>
-                  <input id="portal-thanks-es" type="text" />
-                </div>
-                <div>
-                  <label>Gracias (EN)</label>
-                  <input id="portal-thanks-en" type="text" />
+                <div class="grid">
+                  <div>
+                    <label>Título (ES)</label>
+                    <input id="portal-title-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Título (EN)</label>
+                    <input id="portal-title-en" type="text" />
+                  </div>
+                  <div>
+                    <label>Descripción (ES)</label>
+                    <textarea id="portal-desc-es"></textarea>
+                  </div>
+                  <div>
+                    <label>Descripción (EN)</label>
+                    <textarea id="portal-desc-en"></textarea>
+                  </div>
+                  <div>
+                    <label>Gracias (ES)</label>
+                    <input id="portal-thanks-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Gracias (EN)</label>
+                    <input id="portal-thanks-en" type="text" />
+                  </div>
                 </div>
               </div>
 
-              <div class="section-title">Diseño</div>
-              <div class="grid">
-                <div>
-                  <label>Preset de fonts</label>
-                  <select id="portal-font-preset">
-                    <option value="">Personalizado</option>
-                    <option value="fraunces-manrope">Fraunces + Manrope</option>
-                    <option value="spacegrotesk-dmsans">Space Grotesk + DM Sans</option>
-                    <option value="playfair-sourcesans">Playfair Display + Source Sans 3</option>
-                    <option value="cormorant-worksans">Cormorant Garamond + Work Sans</option>
-                    <option value="abril-nunito">Abril Fatface + Nunito</option>
-                    <option value="bebas-assistant">Bebas Neue + Assistant</option>
-                  </select>
-                </div>
-                <div>
-                  <label>Font Heading</label>
-                  <input id="portal-font-heading" type="text" list="portal-font-list" />
-                </div>
-                <div>
-                  <label>Font Body</label>
-                  <input id="portal-font-body" type="text" list="portal-font-list" />
-                </div>
-                <div>
-                  <label>Font URL</label>
-                  <input id="portal-font-url" type="text" />
-                </div>
-                <div>
-                  <label>Primary Color</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-primary" type="text" />
-                    <input id="portal-color-primary-picker" type="color" />
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Diseño</div>
+                    <div class="portal-section-sub">Tipografías y paleta de colores.</div>
                   </div>
                 </div>
-                <div>
-                  <label>Accent Color</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-accent" type="text" />
-                    <input id="portal-color-accent-picker" type="color" />
+                <div class="portal-subhead">Tipografía</div>
+                <div class="grid">
+                  <div>
+                    <label>Preset de fonts</label>
+                    <select id="portal-font-preset">
+                      <option value="">Personalizado</option>
+                      <option value="fraunces-manrope">Fraunces + Manrope</option>
+                      <option value="spacegrotesk-dmsans">Space Grotesk + DM Sans</option>
+                      <option value="playfair-sourcesans">Playfair Display + Source Sans 3</option>
+                      <option value="cormorant-worksans">Cormorant Garamond + Work Sans</option>
+                      <option value="abril-nunito">Abril Fatface + Nunito</option>
+                      <option value="bebas-assistant">Bebas Neue + Assistant</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Font Heading</label>
+                    <input id="portal-font-heading" type="text" list="portal-font-list" />
+                  </div>
+                  <div>
+                    <label>Font Body</label>
+                    <input id="portal-font-body" type="text" list="portal-font-list" />
+                  </div>
+                  <div>
+                    <label>Font URL</label>
+                    <input id="portal-font-url" type="text" />
                   </div>
                 </div>
-                <div>
-                  <label>Background</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-bg" type="text" />
-                    <input id="portal-color-bg-picker" type="color" />
+                <div class="portal-subhead">Colores</div>
+                <div class="grid">
+                  <div>
+                    <label>Primary Color</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-primary" type="text" />
+                      <input id="portal-color-primary-picker" type="color" />
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <label>Card</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-card" type="text" />
-                    <input id="portal-color-card-picker" type="color" />
+                  <div>
+                    <label>Accent Color</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-accent" type="text" />
+                      <input id="portal-color-accent-picker" type="color" />
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <label>Text</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-text" type="text" />
-                    <input id="portal-color-text-picker" type="color" />
+                  <div>
+                    <label>Background</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-bg" type="text" />
+                      <input id="portal-color-bg-picker" type="color" />
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <label>Muted</label>
-                  <div class="portal-color-row">
-                    <input id="portal-color-muted" type="text" />
-                    <input id="portal-color-muted-picker" type="color" />
+                  <div>
+                    <label>Card</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-card" type="text" />
+                      <input id="portal-color-card-picker" type="color" />
+                    </div>
+                  </div>
+                  <div>
+                    <label>Text</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-text" type="text" />
+                      <input id="portal-color-text-picker" type="color" />
+                    </div>
+                  </div>
+                  <div>
+                    <label>Muted</label>
+                    <div class="portal-color-row">
+                      <input id="portal-color-muted" type="text" />
+                      <input id="portal-color-muted-picker" type="color" />
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4246,204 +4297,269 @@ app.get("/admin/ui", (req, res) => {
                 <option value="Assistant"></option>
               </datalist>
 
-              <div class="section-title">Preview</div>
-              <div class="portal-preview" id="portal-preview">
-                <div class="portal-preview-hero">
+              <div class="portal-section">
+                <div class="portal-section-head">
                   <div>
-                    <div class="portal-preview-pill">Now hiring</div>
-                    <div class="portal-preview-brand-row">
-                      <img class="portal-preview-logo" id="portal-preview-logo" alt="Logo" />
-                      <div id="portal-preview-brand"></div>
-                    </div>
-                    <div class="portal-preview-title" id="portal-preview-title"></div>
-                    <div class="portal-preview-desc" id="portal-preview-desc"></div>
-                  </div>
-                  <div class="portal-preview-hero-image" id="portal-preview-hero">Hero image</div>
-                </div>
-                <div class="portal-preview-grid">
-                  <div class="portal-preview-card">
-                    <div class="portal-preview-card-title">Apply now</div>
-                    <div class="portal-preview-field">
-                      <div class="portal-preview-field-label" id="portal-preview-name-label"></div>
-                      <div class="portal-preview-field-input"></div>
-                    </div>
-                    <div class="portal-preview-field">
-                      <div class="portal-preview-field-label" id="portal-preview-email-label"></div>
-                      <div class="portal-preview-field-input"></div>
-                    </div>
-                    <div class="portal-preview-field">
-                      <div class="portal-preview-field-label" id="portal-preview-phone-label"></div>
-                      <div class="portal-preview-field-input"></div>
-                    </div>
-                    <div class="portal-preview-field">
-                      <div class="portal-preview-field-label" id="portal-preview-role-label"></div>
-                      <div class="portal-preview-field-input"></div>
-                    </div>
-                    <div class="portal-preview-field" id="portal-preview-location-field">
-                      <div class="portal-preview-field-label" id="portal-preview-location-label"></div>
-                      <div class="portal-preview-field-input portal-preview-field-list" id="portal-preview-location-input"></div>
-                    </div>
-                    <button class="portal-preview-btn" id="portal-preview-btn" type="button">Enviar postulacion</button>
-                  </div>
-                  <div class="portal-preview-card">
-                    <div class="portal-preview-card-title">Inside the team</div>
-                    <div class="portal-preview-desc" id="portal-preview-side"></div>
-                    <div class="portal-preview-gallery" id="portal-preview-gallery"></div>
+                    <div class="portal-section-title">Preview</div>
+                    <div class="portal-section-sub">Vista rápida de la página pública.</div>
                   </div>
                 </div>
-              </div>
-
-              <div class="section-title">Assets</div>
-              <div class="grid">
-                <div>
-                  <label>Logo URL</label>
-                  <input id="portal-logo-url" type="text" />
-                  <input id="portal-logo-file" type="file" accept="image/*" />
-                </div>
-                <div>
-                  <label>Hero URL</label>
-                  <input id="portal-hero-url" type="text" />
-                  <input id="portal-hero-file" type="file" accept="image/*" />
-                </div>
-                <div>
-                  <label>Gallery URLs (una por línea)</label>
-                  <textarea id="portal-gallery-urls"></textarea>
-                  <input id="portal-gallery-files" type="file" accept="image/*" multiple />
-                </div>
-              </div>
-
-              <div class="section-title">Campos base</div>
-              <div class="grid">
-                <div>
-                  <label>Nombre (ES)</label>
-                  <input id="portal-name-es" type="text" />
-                </div>
-                <div>
-                  <label>Nombre (EN)</label>
-                  <input id="portal-name-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-name-required" type="checkbox" />
-                  <span class="small">Requerido</span>
-                </div>
-              </div>
-              <div class="grid">
-                <div>
-                  <label>Email (ES)</label>
-                  <input id="portal-email-es" type="text" />
-                </div>
-                <div>
-                  <label>Email (EN)</label>
-                  <input id="portal-email-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-email-required" type="checkbox" />
-                  <span class="small">Requerido</span>
-                </div>
-              </div>
-              <div class="grid">
-                <div>
-                  <label>Teléfono (ES)</label>
-                  <input id="portal-phone-es" type="text" />
-                </div>
-                <div>
-                  <label>Teléfono (EN)</label>
-                  <input id="portal-phone-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-phone-required" type="checkbox" />
-                  <span class="small">Requerido</span>
-                </div>
-              </div>
-              <div class="grid">
-                <div>
-                  <label>Rol (ES)</label>
-                  <input id="portal-role-es" type="text" />
-                </div>
-                <div>
-                  <label>Rol (EN)</label>
-                  <input id="portal-role-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-role-required" type="checkbox" />
-                  <span class="small">Requerido</span>
-                </div>
-              </div>
-              <div class="grid">
-                <div>
-                  <label>Opciones de rol (una por línea)</label>
-                  <textarea id="portal-role-options"></textarea>
+                <div class="portal-preview" id="portal-preview">
+                  <div class="portal-preview-hero">
+                    <div>
+                      <div class="portal-preview-pill">Now hiring</div>
+                      <div class="portal-preview-brand-row">
+                        <img class="portal-preview-logo" id="portal-preview-logo" alt="Logo" />
+                        <div id="portal-preview-brand"></div>
+                      </div>
+                      <div class="portal-preview-title" id="portal-preview-title"></div>
+                      <div class="portal-preview-desc" id="portal-preview-desc"></div>
+                    </div>
+                    <div class="portal-preview-hero-image" id="portal-preview-hero">Hero image</div>
+                  </div>
+                  <div class="portal-preview-grid">
+                    <div class="portal-preview-card">
+                      <div class="portal-preview-card-title">Apply now</div>
+                      <div class="portal-preview-field">
+                        <div class="portal-preview-field-label" id="portal-preview-name-label"></div>
+                        <div class="portal-preview-field-input"></div>
+                      </div>
+                      <div class="portal-preview-field">
+                        <div class="portal-preview-field-label" id="portal-preview-email-label"></div>
+                        <div class="portal-preview-field-input"></div>
+                      </div>
+                      <div class="portal-preview-field">
+                        <div class="portal-preview-field-label" id="portal-preview-phone-label"></div>
+                        <div class="portal-preview-field-input"></div>
+                      </div>
+                      <div class="portal-preview-field">
+                        <div class="portal-preview-field-label" id="portal-preview-role-label"></div>
+                        <div class="portal-preview-field-input"></div>
+                      </div>
+                      <div class="portal-preview-field" id="portal-preview-location-field">
+                        <div class="portal-preview-field-label" id="portal-preview-location-label"></div>
+                        <div class="portal-preview-field-input portal-preview-field-list" id="portal-preview-location-input"></div>
+                      </div>
+                      <button class="portal-preview-btn" id="portal-preview-btn" type="button">Enviar postulacion</button>
+                    </div>
+                    <div class="portal-preview-card">
+                      <div class="portal-preview-card-title">Inside the team</div>
+                      <div class="portal-preview-desc" id="portal-preview-side"></div>
+                      <div class="portal-preview-gallery" id="portal-preview-gallery"></div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div class="section-title">Locaciones</div>
-              <div class="grid">
-                <div>
-                  <label>Locaciones (ES)</label>
-                  <input id="portal-location-es" type="text" />
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Assets</div>
+                    <div class="portal-section-sub">Logo, hero, favicon y galería.</div>
+                  </div>
                 </div>
-                <div>
-                  <label>Locations (EN)</label>
-                  <input id="portal-location-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-location-required" type="checkbox" />
-                  <span class="small">Requerido</span>
-                </div>
-                <div>
-                  <label>Estilo</label>
-                  <select id="portal-location-layout">
-                    <option value="cards">Tarjetas</option>
-                    <option value="chips">Chips</option>
-                    <option value="compact">Compacto</option>
-                    <option value="maps">Mini mapas</option>
-                  </select>
-                </div>
-              </div>
-              <div class="portal-location-options" id="portal-location-options"></div>
-              <div class="small" style="margin-top:4px;">Elegí las locaciones que aparecen en el portal público.</div>
-
-              <div class="section-title">Roles por locación</div>
-              <div id="portal-role-location-list" class="grid"></div>
-
-              <div class="section-title">CV y foto</div>
-              <div class="grid">
-                <div>
-                  <label>CV (ES)</label>
-                  <input id="portal-resume-es" type="text" />
-                </div>
-                <div>
-                  <label>CV (EN)</label>
-                  <input id="portal-resume-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-resume-required" type="checkbox" />
-                  <span class="small">CV requerido</span>
-                </div>
-              </div>
-              <div class="grid">
-                <div>
-                  <label>Foto (ES)</label>
-                  <input id="portal-photo-es" type="text" />
-                </div>
-                <div>
-                  <label>Foto (EN)</label>
-                  <input id="portal-photo-en" type="text" />
-                </div>
-                <div class="check-row">
-                  <input id="portal-photo-required" type="checkbox" />
-                  <span class="small">Foto requerida</span>
+                <div class="grid">
+                  <div>
+                    <label>Logo URL</label>
+                    <input id="portal-logo-url" type="text" />
+                    <input id="portal-logo-file" type="file" accept="image/*" />
+                  </div>
+                  <div>
+                    <label>Hero URL</label>
+                    <input id="portal-hero-url" type="text" />
+                    <input id="portal-hero-file" type="file" accept="image/*" />
+                  </div>
+                  <div>
+                    <label>Favicon URL</label>
+                    <input id="portal-favicon-url" type="text" />
+                    <input id="portal-favicon-file" type="file" accept="image/*,.ico" />
+                    <div class="small">Recomendado: PNG 512x512.</div>
+                  </div>
+                  <div>
+                    <label>Gallery URLs (una por línea)</label>
+                    <textarea id="portal-gallery-urls"></textarea>
+                    <input id="portal-gallery-files" type="file" accept="image/*" multiple />
+                  </div>
                 </div>
               </div>
 
-              <div class="section-title">Preguntas</div>
-              <div id="portal-question-list" class="grid"></div>
-              <button class="secondary" id="portal-add-question" type="button">+ Pregunta</button>
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Campos base</div>
+                    <div class="portal-section-sub">Campos obligatorios y etiquetas del formulario.</div>
+                  </div>
+                </div>
+                <div class="portal-subhead">Datos del candidato</div>
+                <div class="grid">
+                  <div>
+                    <label>Nombre (ES)</label>
+                    <input id="portal-name-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Nombre (EN)</label>
+                    <input id="portal-name-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-name-required" type="checkbox" />
+                    <span class="small">Requerido</span>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>Email (ES)</label>
+                    <input id="portal-email-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Email (EN)</label>
+                    <input id="portal-email-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-email-required" type="checkbox" />
+                    <span class="small">Requerido</span>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>Teléfono (ES)</label>
+                    <input id="portal-phone-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Teléfono (EN)</label>
+                    <input id="portal-phone-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-phone-required" type="checkbox" />
+                    <span class="small">Requerido</span>
+                  </div>
+                </div>
+                <div class="portal-subhead">Rol</div>
+                <div class="grid">
+                  <div>
+                    <label>Rol (ES)</label>
+                    <input id="portal-role-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Rol (EN)</label>
+                    <input id="portal-role-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-role-required" type="checkbox" />
+                    <span class="small">Requerido</span>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>Opciones de rol (una por línea)</label>
+                    <textarea id="portal-role-options"></textarea>
+                  </div>
+                </div>
+              </div>
 
-              <div class="row inline" style="margin-top:12px;">
-                <button id="portal-save" type="button">Guardar portal</button>
-                <button class="secondary" id="portal-delete" type="button">Eliminar</button>
-                <span class="status" id="portal-status"></span>
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Locaciones</div>
+                    <div class="portal-section-sub">Selector y estilo de locaciones.</div>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>Locaciones (ES)</label>
+                    <input id="portal-location-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Locations (EN)</label>
+                    <input id="portal-location-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-location-required" type="checkbox" />
+                    <span class="small">Requerido</span>
+                  </div>
+                  <div>
+                    <label>Estilo</label>
+                    <select id="portal-location-layout">
+                      <option value="cards">Tarjetas</option>
+                      <option value="chips">Chips</option>
+                      <option value="compact">Compacto</option>
+                      <option value="maps">Mini mapas</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="portal-location-options" id="portal-location-options"></div>
+                <div class="small" style="margin-top:4px;">Elegí las locaciones que aparecen en el portal público.</div>
+              </div>
+
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Roles por locación</div>
+                    <div class="portal-section-sub">Personalizá los roles disponibles por local.</div>
+                  </div>
+                </div>
+                <div id="portal-role-location-list" class="grid"></div>
+              </div>
+
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">CV y foto</div>
+                    <div class="portal-section-sub">Etiquetas y obligatoriedad de archivos.</div>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>CV (ES)</label>
+                    <input id="portal-resume-es" type="text" />
+                  </div>
+                  <div>
+                    <label>CV (EN)</label>
+                    <input id="portal-resume-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-resume-required" type="checkbox" />
+                    <span class="small">CV requerido</span>
+                  </div>
+                </div>
+                <div class="grid">
+                  <div>
+                    <label>Foto (ES)</label>
+                    <input id="portal-photo-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Foto (EN)</label>
+                    <input id="portal-photo-en" type="text" />
+                  </div>
+                  <div class="check-row">
+                    <input id="portal-photo-required" type="checkbox" />
+                    <span class="small">Foto requerida</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Preguntas</div>
+                    <div class="portal-section-sub">Sumá preguntas personalizadas.</div>
+                  </div>
+                </div>
+                <div id="portal-question-list" class="grid"></div>
+                <button class="secondary" id="portal-add-question" type="button">+ Pregunta</button>
+              </div>
+
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Acciones</div>
+                    <div class="portal-section-sub">Guardar o eliminar este portal.</div>
+                  </div>
+                </div>
+                <div class="row inline">
+                  <button id="portal-save" type="button">Guardar portal</button>
+                  <button class="secondary" id="portal-delete" type="button">Eliminar</button>
+                  <span class="status" id="portal-status"></span>
+                </div>
               </div>
             </div>
           </div>
@@ -4645,6 +4761,8 @@ app.get("/admin/ui", (req, res) => {
     const portalLogoFileEl = document.getElementById('portal-logo-file');
     const portalHeroUrlEl = document.getElementById('portal-hero-url');
     const portalHeroFileEl = document.getElementById('portal-hero-file');
+    const portalFaviconUrlEl = document.getElementById('portal-favicon-url');
+    const portalFaviconFileEl = document.getElementById('portal-favicon-file');
     const portalGalleryUrlsEl = document.getElementById('portal-gallery-urls');
     const portalGalleryFilesEl = document.getElementById('portal-gallery-files');
     const portalNameEsEl = document.getElementById('portal-name-es');
@@ -4792,7 +4910,7 @@ app.get("/admin/ui", (req, res) => {
     let editingUserId = '';
     let portalPages = [];
     let portalCurrent = null;
-    let portalPendingUploads = { logo: null, hero: null, gallery: [] };
+    let portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
     let portalLastApps = [];
     let portalPendingSlug = '';
     let portalLoaded = false;
@@ -4875,7 +4993,7 @@ app.get("/admin/ui", (req, res) => {
       portalLoaded = false;
       portalPages = [];
       portalCurrent = null;
-      portalPendingUploads = { logo: null, hero: null, gallery: [] };
+      portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
       portalLastApps = [];
       portalPendingSlug = '';
       if (portalListEl) portalListEl.innerHTML = '';
@@ -5888,7 +6006,7 @@ app.get("/admin/ui", (req, res) => {
           colorText: '#241b13',
           colorMuted: '#6c5f57'
         },
-        assets: { logoUrl: '', heroUrl: '', gallery: [] },
+        assets: { logoUrl: '', heroUrl: '', faviconUrl: '', gallery: [] },
         fields: {
           name: { label: { es: 'Nombre completo', en: 'Full name' }, required: true },
           email: { label: { es: 'Email', en: 'Email' }, required: true },
@@ -6045,7 +6163,7 @@ app.get("/admin/ui", (req, res) => {
       const page = portalFindPageBySlug(slug);
       if (!page) return;
       portalCurrent = portalApplyDefaults(JSON.parse(JSON.stringify(page)));
-      portalPendingUploads = { logo: null, hero: null, gallery: [] };
+      portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
       portalFillForm();
       portalRenderList();
       portalUpdateUrl();
@@ -6091,6 +6209,7 @@ app.get("/admin/ui", (req, res) => {
 
       portalSetVal(portalLogoUrlEl, page.assets.logoUrl || '');
       portalSetVal(portalHeroUrlEl, page.assets.heroUrl || '');
+      portalSetVal(portalFaviconUrlEl, page.assets.faviconUrl || '');
       portalSetVal(portalGalleryUrlsEl, (page.assets.gallery || []).join('\\n'));
 
       portalSetVal(portalNameEsEl, page.fields.name.label.es || '');
@@ -6392,6 +6511,7 @@ app.get("/admin/ui", (req, res) => {
 
       data.assets.logoUrl = (portalLogoUrlEl && portalLogoUrlEl.value || '').trim();
       data.assets.heroUrl = (portalHeroUrlEl && portalHeroUrlEl.value || '').trim();
+      data.assets.faviconUrl = (portalFaviconUrlEl && portalFaviconUrlEl.value || '').trim();
       const galleryRaw = (portalGalleryUrlsEl && portalGalleryUrlsEl.value || '');
       data.assets.gallery = galleryRaw.split(/\\n+/).map((v) => v.trim()).filter(Boolean);
 
@@ -6814,6 +6934,10 @@ app.get("/admin/ui", (req, res) => {
           payload.hero_data_url = portalPendingUploads.hero.dataUrl;
           payload.hero_file_name = portalPendingUploads.hero.fileName;
         }
+        if (portalPendingUploads.favicon) {
+          payload.favicon_data_url = portalPendingUploads.favicon.dataUrl;
+          payload.favicon_file_name = portalPendingUploads.favicon.fileName;
+        }
         if (portalPendingUploads.gallery.length) {
           payload.gallery_data_urls = portalPendingUploads.gallery.map((g) => g.dataUrl);
           payload.gallery_file_names = portalPendingUploads.gallery.map((g) => g.fileName);
@@ -6826,7 +6950,7 @@ app.get("/admin/ui", (req, res) => {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'save_failed');
-        portalPendingUploads = { logo: null, hero: null, gallery: [] };
+        portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
         portalPendingSlug = data.page && data.page.slug ? data.page.slug : payload.slug;
         await portalLoadPages();
         portalSetStatus('Guardado');
@@ -9142,7 +9266,7 @@ app.get("/admin/ui", (req, res) => {
     if (portalNewEl) {
       portalNewEl.onclick = () => {
         portalCurrent = portalDefaultPage();
-        portalPendingUploads = { logo: null, hero: null, gallery: [] };
+        portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
         portalFillForm();
         portalRenderList();
         portalSetStatus('');
@@ -9234,6 +9358,19 @@ app.get("/admin/ui", (req, res) => {
           portalSyncPreview();
         } catch (err) {
           portalSetStatus('Error cargando hero', true);
+        }
+      });
+    }
+    if (portalFaviconFileEl) {
+      portalFaviconFileEl.addEventListener('change', async (event) => {
+        const file = event.target.files && event.target.files[0];
+        if (!file) return;
+        try {
+          const dataUrl = await portalFileToDataUrl(file);
+          portalPendingUploads.favicon = { dataUrl, fileName: file.name };
+          portalSetStatus('Favicon listo');
+        } catch (err) {
+          portalSetStatus('Error cargando favicon', true);
         }
       });
     }
