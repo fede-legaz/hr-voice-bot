@@ -2912,6 +2912,17 @@ app.get("/admin/ui", (req, res) => {
       font-size: 12px;
       line-height: 1.4;
     }
+    .portal-preview-note {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.06);
+      color: var(--p-text, #241b13);
+      font-size: 11px;
+      font-weight: 600;
+      width: fit-content;
+    }
     .portal-preview-hero-image {
       border-radius: 14px;
       background: rgba(0, 0, 0, 0.06);
@@ -4181,6 +4192,7 @@ app.get("/admin/ui", (req, res) => {
                     <div class="portal-section-sub">Títulos, descripción y mensaje final.</div>
                   </div>
                 </div>
+                <div class="portal-subhead">Hero principal</div>
                 <div class="grid">
                   <div>
                     <label>Título (ES)</label>
@@ -4198,6 +4210,36 @@ app.get("/admin/ui", (req, res) => {
                     <label>Descripción (EN)</label>
                     <textarea id="portal-desc-en"></textarea>
                   </div>
+                </div>
+                <div class="portal-subhead">Sección "Inside the team"</div>
+                <div class="grid">
+                  <div>
+                    <label>Título lateral (ES)</label>
+                    <input id="portal-side-title-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Título lateral (EN)</label>
+                    <input id="portal-side-title-en" type="text" />
+                  </div>
+                  <div>
+                    <label>Texto lateral (ES)</label>
+                    <textarea id="portal-side-text-es"></textarea>
+                  </div>
+                  <div>
+                    <label>Texto lateral (EN)</label>
+                    <textarea id="portal-side-text-en"></textarea>
+                  </div>
+                  <div>
+                    <label>Nota lateral (ES)</label>
+                    <input id="portal-side-note-es" type="text" />
+                  </div>
+                  <div>
+                    <label>Nota lateral (EN)</label>
+                    <input id="portal-side-note-en" type="text" />
+                  </div>
+                </div>
+                <div class="portal-subhead">Mensaje final</div>
+                <div class="grid">
                   <div>
                     <label>Gracias (ES)</label>
                     <input id="portal-thanks-es" type="text" />
@@ -4350,13 +4392,14 @@ app.get("/admin/ui", (req, res) => {
                       </div>
                       <button class="portal-preview-btn" id="portal-preview-btn" type="button">Enviar postulacion</button>
                     </div>
-                    <div class="portal-preview-card">
-                      <div class="portal-preview-card-title">Inside the team</div>
-                      <div class="portal-preview-desc" id="portal-preview-side"></div>
-                      <div class="portal-preview-gallery" id="portal-preview-gallery"></div>
-                    </div>
+                  <div class="portal-preview-card">
+                    <div class="portal-preview-card-title" id="portal-preview-side-title">Inside the team</div>
+                    <div class="portal-preview-desc" id="portal-preview-side"></div>
+                    <div class="portal-preview-note" id="portal-preview-side-note"></div>
+                    <div class="portal-preview-gallery" id="portal-preview-gallery"></div>
                   </div>
                 </div>
+              </div>
               </div>
 
               <div class="portal-section">
@@ -4747,6 +4790,12 @@ app.get("/admin/ui", (req, res) => {
     const portalTitleEnEl = document.getElementById('portal-title-en');
     const portalDescEsEl = document.getElementById('portal-desc-es');
     const portalDescEnEl = document.getElementById('portal-desc-en');
+    const portalSideTitleEsEl = document.getElementById('portal-side-title-es');
+    const portalSideTitleEnEl = document.getElementById('portal-side-title-en');
+    const portalSideTextEsEl = document.getElementById('portal-side-text-es');
+    const portalSideTextEnEl = document.getElementById('portal-side-text-en');
+    const portalSideNoteEsEl = document.getElementById('portal-side-note-es');
+    const portalSideNoteEnEl = document.getElementById('portal-side-note-en');
     const portalThanksEsEl = document.getElementById('portal-thanks-es');
     const portalThanksEnEl = document.getElementById('portal-thanks-en');
     const portalFontHeadingEl = document.getElementById('portal-font-heading');
@@ -4817,7 +4866,9 @@ app.get("/admin/ui", (req, res) => {
     const portalPreviewPhoneLabelEl = document.getElementById('portal-preview-phone-label');
     const portalPreviewRoleLabelEl = document.getElementById('portal-preview-role-label');
     const portalPreviewBtnEl = document.getElementById('portal-preview-btn');
+    const portalPreviewSideTitleEl = document.getElementById('portal-preview-side-title');
     const portalPreviewSideEl = document.getElementById('portal-preview-side');
+    const portalPreviewSideNoteEl = document.getElementById('portal-preview-side-note');
     const portalPreviewGalleryEl = document.getElementById('portal-preview-gallery');
     const portalPreviewLocationFieldEl = document.getElementById('portal-preview-location-field');
     const portalPreviewLocationLabelEl = document.getElementById('portal-preview-location-label');
@@ -6001,7 +6052,10 @@ app.get("/admin/ui", (req, res) => {
         content: {
           title: { es: 'Trabaja con nosotros', en: 'Work with us' },
           description: { es: 'Sumate al equipo.', en: 'Join the team.' },
-          thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' }
+          thankYou: { es: 'Gracias! Te contactamos pronto.', en: 'Thanks! We will contact you soon.' },
+          sideTitle: { es: 'Dentro del equipo', en: 'Inside the team' },
+          sideText: { es: 'Ritmo rapido, crecimiento real, buena cultura.', en: 'Fast pace, real growth, strong culture.' },
+          sideNote: { es: 'Turnos flexibles y entrenamiento.', en: 'Flexible shifts and training.' }
         },
         theme: {
           fontHeading: 'Fraunces',
@@ -6053,7 +6107,10 @@ app.get("/admin/ui", (req, res) => {
           ...content,
           title: { ...base.content.title, ...(content.title || {}) },
           description: { ...base.content.description, ...(content.description || {}) },
-          thankYou: { ...base.content.thankYou, ...(content.thankYou || {}) }
+          thankYou: { ...base.content.thankYou, ...(content.thankYou || {}) },
+          sideTitle: { ...base.content.sideTitle, ...(content.sideTitle || {}) },
+          sideText: { ...base.content.sideText, ...(content.sideText || {}) },
+          sideNote: { ...base.content.sideNote, ...(content.sideNote || {}) }
         },
         theme: { ...base.theme, ...theme },
         assets: { ...base.assets, ...assets },
@@ -6202,6 +6259,12 @@ app.get("/admin/ui", (req, res) => {
       portalSetVal(portalTitleEnEl, page.content.title.en || '');
       portalSetVal(portalDescEsEl, page.content.description.es || '');
       portalSetVal(portalDescEnEl, page.content.description.en || '');
+      portalSetVal(portalSideTitleEsEl, page.content.sideTitle?.es || '');
+      portalSetVal(portalSideTitleEnEl, page.content.sideTitle?.en || '');
+      portalSetVal(portalSideTextEsEl, page.content.sideText?.es || '');
+      portalSetVal(portalSideTextEnEl, page.content.sideText?.en || '');
+      portalSetVal(portalSideNoteEsEl, page.content.sideNote?.es || '');
+      portalSetVal(portalSideNoteEnEl, page.content.sideNote?.en || '');
       portalSetVal(portalThanksEsEl, page.content.thankYou.es || '');
       portalSetVal(portalThanksEnEl, page.content.thankYou.en || '');
 
@@ -6504,6 +6567,12 @@ app.get("/admin/ui", (req, res) => {
       data.content.title.en = (portalTitleEnEl && portalTitleEnEl.value || '').trim();
       data.content.description.es = (portalDescEsEl && portalDescEsEl.value || '').trim();
       data.content.description.en = (portalDescEnEl && portalDescEnEl.value || '').trim();
+      data.content.sideTitle.es = (portalSideTitleEsEl && portalSideTitleEsEl.value || '').trim();
+      data.content.sideTitle.en = (portalSideTitleEnEl && portalSideTitleEnEl.value || '').trim();
+      data.content.sideText.es = (portalSideTextEsEl && portalSideTextEsEl.value || '').trim();
+      data.content.sideText.en = (portalSideTextEnEl && portalSideTextEnEl.value || '').trim();
+      data.content.sideNote.es = (portalSideNoteEsEl && portalSideNoteEsEl.value || '').trim();
+      data.content.sideNote.en = (portalSideNoteEnEl && portalSideNoteEnEl.value || '').trim();
       data.content.thankYou.es = (portalThanksEsEl && portalThanksEsEl.value || '').trim();
       data.content.thankYou.en = (portalThanksEnEl && portalThanksEnEl.value || '').trim();
 
@@ -6622,6 +6691,15 @@ app.get("/admin/ui", (req, res) => {
       const desc = (portalDescEsEl && portalDescEsEl.value || '').trim()
         || (portalDescEnEl && portalDescEnEl.value || '').trim()
         || 'Sumate al equipo.';
+      const sideTitle = (portalSideTitleEsEl && portalSideTitleEsEl.value || '').trim()
+        || (portalSideTitleEnEl && portalSideTitleEnEl.value || '').trim()
+        || 'Inside the team';
+      const sideText = (portalSideTextEsEl && portalSideTextEsEl.value || '').trim()
+        || (portalSideTextEnEl && portalSideTextEnEl.value || '').trim()
+        || 'Fast pace, real growth, strong culture.';
+      const sideNote = (portalSideNoteEsEl && portalSideNoteEsEl.value || '').trim()
+        || (portalSideNoteEnEl && portalSideNoteEnEl.value || '').trim()
+        || 'Flexible shifts and training.';
       const nameLabel = (portalNameEsEl && portalNameEsEl.value || '').trim() || 'Nombre completo';
       const emailLabel = (portalEmailEsEl && portalEmailEsEl.value || '').trim() || 'Email';
       const phoneLabel = (portalPhoneEsEl && portalPhoneEsEl.value || '').trim() || 'Telefono';
@@ -6639,8 +6717,11 @@ app.get("/admin/ui", (req, res) => {
       if (portalPreviewPhoneLabelEl) portalPreviewPhoneLabelEl.textContent = phoneLabel;
       if (portalPreviewRoleLabelEl) portalPreviewRoleLabelEl.textContent = roleLabel;
       if (portalPreviewLocationLabelEl) portalPreviewLocationLabelEl.textContent = locationLabel;
-      if (portalPreviewSideEl) {
-        portalPreviewSideEl.textContent = desc || 'Cultura, entrenamiento y crecimiento.';
+      if (portalPreviewSideTitleEl) portalPreviewSideTitleEl.textContent = sideTitle;
+      if (portalPreviewSideEl) portalPreviewSideEl.textContent = sideText;
+      if (portalPreviewSideNoteEl) {
+        portalPreviewSideNoteEl.textContent = sideNote;
+        portalPreviewSideNoteEl.style.display = sideNote ? '' : 'none';
       }
 
       const logoUrl = portalPreviewImage('logo');
