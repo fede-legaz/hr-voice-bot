@@ -3309,6 +3309,10 @@ app.get("/admin/ui", (req, res) => {
       box-shadow: var(--shadow);
       min-width: 90px;
     }
+    .audio-menu.open-up .audio-speed-menu {
+      top: auto;
+      bottom: 34px;
+    }
     .audio-speed-menu button {
       width: 100%;
       background: transparent;
@@ -8387,12 +8391,39 @@ app.get("/admin/ui", (req, res) => {
           event.stopPropagation();
           audio.playbackRate = speed;
           menu.classList.remove('open');
+          menu.classList.remove('open-up');
         };
         menuList.appendChild(btn);
       });
       menuBtn.onclick = (event) => {
         event.stopPropagation();
-        menu.classList.toggle('open');
+        const isOpen = menu.classList.contains('open');
+        document.querySelectorAll('.audio-menu.open').forEach((other) => {
+          if (other !== menu) {
+            other.classList.remove('open');
+            other.classList.remove('open-up');
+          }
+        });
+        if (isOpen) {
+          menu.classList.remove('open');
+          menu.classList.remove('open-up');
+          return;
+        }
+        menu.classList.add('open');
+        menu.classList.remove('open-up');
+        const wrapper = menu.closest('.table-wrapper');
+        if (wrapper) {
+          const wrapperRect = wrapper.getBoundingClientRect();
+          const menuRect = menuList.getBoundingClientRect();
+          const btnRect = menu.getBoundingClientRect();
+          const spaceBelow = wrapperRect.bottom - btnRect.bottom;
+          const spaceAbove = btnRect.top - wrapperRect.top;
+          if (spaceBelow < menuRect.height + 8 && spaceAbove >= menuRect.height + 8) {
+            menu.classList.add('open-up');
+          } else if (spaceBelow < menuRect.height + 8 && spaceAbove > spaceBelow) {
+            menu.classList.add('open-up');
+          }
+        }
       };
       menu.appendChild(menuBtn);
       menu.appendChild(menuList);
@@ -8860,7 +8891,10 @@ app.get("/admin/ui", (req, res) => {
     window.addEventListener('scroll', hideSummaryTooltip, true);
     window.addEventListener('resize', hideSummaryTooltip);
     window.addEventListener('click', () => {
-      document.querySelectorAll('.audio-menu.open').forEach((menu) => menu.classList.remove('open'));
+      document.querySelectorAll('.audio-menu.open, .audio-menu.open-up').forEach((menu) => {
+        menu.classList.remove('open');
+        menu.classList.remove('open-up');
+      });
     });
 
     async function deleteInterview(callId) {
@@ -10674,6 +10708,16 @@ DECÍ ESTO Y CALLATE:
       callsByStream.delete(tempKey);
       if (call.streamSid) callsByStream.set(call.streamSid, call);
       if (call.callSid) {
+        const tracked = callsByCallSid.get(call.callSid);
+        if (tracked && tracked !== call) {
+          if (!call.callStatus) call.callStatus = tracked.callStatus || tracked.status || "";
+          if (!call.status) call.status = tracked.status || tracked.callStatus || "";
+          if (!call.outcome) call.outcome = tracked.outcome || null;
+          if (!call.outcome_detail) call.outcome_detail = tracked.outcome_detail || "";
+          if (!call.startedAt && tracked.startedAt) call.startedAt = tracked.startedAt;
+          if (tracked.expiresAt) call.expiresAt = Math.max(call.expiresAt || 0, tracked.expiresAt);
+        }
+        if (!call.callStatus) call.callStatus = "in-progress";
         callsByCallSid.set(call.callSid, call);
         call.expiresAt = Date.now() + CALL_TTL_MS;
         if (AUTO_RECORD) {
