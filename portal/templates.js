@@ -416,11 +416,11 @@ function renderApplyPage(page, options = {}) {
     function splitChips(value) {
       if (!value) return [];
       const normalized = String(value || '')
-        .replace(/\r/g, '\n')
-        .replace(/[•·]/g, '\n');
+        .replace(/\\r/g, '\\n')
+        .replace(/[•·]/g, '\\n');
       return normalized
-        .split(/\n+/)
-        .map((part) => part.replace(/^[-–—\s]+/, '').trim())
+        .split(/\\n+/)
+        .map((part) => part.replace(/^[-–—\\s]+/, '').trim())
         .filter(Boolean);
     }
 
