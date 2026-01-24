@@ -3058,14 +3058,18 @@ app.get("/admin/ui", (req, res) => {
       text-overflow: ellipsis;
     }
     .candidate-cell {
+      min-width: 0;
+      max-width: 100%;
+      vertical-align: middle;
+      background: transparent;
+    }
+    .candidate-wrap {
       display: flex;
       align-items: center;
       gap: 10px;
       min-width: 0;
-      max-width: 100%;
       width: 100%;
       min-height: 32px;
-      overflow: hidden;
     }
     .candidate-avatar {
       width: 32px;
@@ -3092,7 +3096,11 @@ app.get("/admin/ui", (req, res) => {
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      display: block;
+      display: inline-block;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      margin: 0;
     }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
@@ -8942,6 +8950,8 @@ app.get("/admin/ui", (req, res) => {
         addCell(roleLabel, 'cell-compact', roleLabel);
         const candidateTd = document.createElement('td');
         candidateTd.className = 'candidate-cell';
+        const candidateWrap = document.createElement('div');
+        candidateWrap.className = 'candidate-wrap';
         if (item.cv_photo_url) {
           const avatar = document.createElement('img');
           avatar.alt = '';
@@ -8963,13 +8973,14 @@ app.get("/admin/ui", (req, res) => {
             avatar.style.visibility = 'visible';
             attachAvatarHandlers(avatar, result.thumb, result.focus);
           });
-          candidateTd.appendChild(avatar);
+          candidateWrap.appendChild(avatar);
         }
         const nameSpan = document.createElement('span');
         nameSpan.className = 'candidate-name';
         nameSpan.textContent = item.applicant || '—';
         if (item.applicant) nameSpan.title = item.applicant;
-        candidateTd.appendChild(nameSpan);
+        candidateWrap.appendChild(nameSpan);
+        candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
         addCell(item.phone || '');
         const info = cvStatusInfo(item);
