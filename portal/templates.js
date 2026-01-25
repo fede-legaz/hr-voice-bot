@@ -535,7 +535,7 @@ function renderApplyPage(page, options = {}) {
       phoneLink.rel = 'noopener';
       wrapper.appendChild(phoneLink);
       wrapper.appendChild(document.createTextNode(' · '));
-      const safeName = String(contactName || 'HR Team').replace(/[\n\r]/g, ' ').trim() || 'HR Team';
+      const safeName = String(contactName || 'HR Team').replace(/[\\n\\r]/g, ' ').trim() || 'HR Team';
       const vcard = [
         'BEGIN:VCARD',
         'VERSION:3.0',
