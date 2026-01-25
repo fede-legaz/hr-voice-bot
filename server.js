@@ -1940,15 +1940,26 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
           cv_text: cvEntry.cv_text || "",
           applicant: entry.applicant || cvEntry.applicant || "",
           phone: entry.phone || cvEntry.phone || "",
+          decision: cvEntry.decision || entry.decision || "",
           audio_url: audioUrl || entry.audio_url || "",
           cv_url: cvUrl || entry.cv_url || cvEntry.cv_url || ""
         });
         continue;
       }
     }
+    let decision = entry.decision || "";
+    if (!decision && entry.cv_id) {
+      const cvEntry = cvStoreById.get(entry.cv_id);
+      if (cvEntry && cvEntry.decision) decision = cvEntry.decision;
+    }
     const audioUrl = await resolveStoredUrl(entry.audio_url || "");
     const cvUrl = await resolveStoredUrl(entry.cv_url || "");
-    results.push({ ...entry, audio_url: audioUrl || entry.audio_url || "", cv_url: cvUrl || entry.cv_url || "" });
+    results.push({
+      ...entry,
+      decision,
+      audio_url: audioUrl || entry.audio_url || "",
+      cv_url: cvUrl || entry.cv_url || ""
+    });
   }
   return res.json({ ok: true, calls: results });
 });
@@ -4210,6 +4221,12 @@ app.get("/admin/ui", (req, res) => {
             <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
             <button class="tab-pill" data-filter="all" type="button">Todas</button>
           </div>
+          <div class="inline" id="results-decision-tabs" style="margin-top:8px;">
+            <button class="tab-pill active" data-decision="all" type="button">Todas</button>
+            <button class="tab-pill" data-decision="approved" type="button">Aprobados</button>
+            <button class="tab-pill" data-decision="maybe" type="button">Indecisos</button>
+            <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
+          </div>
           <div class="table-wrapper" style="margin-top:14px;">
             <table>
               <thead>
@@ -4221,6 +4238,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
+                  <th>Decisión</th>
                   <th>CV</th>
                   <th>Audio</th>
                   <th>Acción</th>
@@ -5041,6 +5059,7 @@ app.get("/admin/ui", (req, res) => {
     const resultsSearchEl = document.getElementById('results-search');
     const resultsRefreshEl = document.getElementById('results-refresh');
     const resultsTabsEl = document.getElementById('results-tabs');
+    const resultsDecisionTabsEl = document.getElementById('results-decision-tabs');
     const resultsBodyEl = document.getElementById('results-body');
     const resultsCountEl = document.getElementById('results-count');
     let state = { config: {} };
@@ -5059,6 +5078,7 @@ app.get("/admin/ui", (req, res) => {
     let cvPollUntil = 0;
     let cvFilterMode = 'no_calls';
     let resultsFilterMode = 'completed';
+    let resultsDecisionMode = 'all';
     let lastCvList = [];
     let lastResults = [];
     let currentCvSource = '';
@@ -8776,6 +8796,8 @@ app.get("/admin/ui", (req, res) => {
             attempts: 0,
             noAnswerAttempts: 0,
             callIds: [],
+            cvIds: [],
+            decision: call.decision || '',
             _latestAt: createdAt
           };
           map.set(key, entry);
@@ -8783,9 +8805,14 @@ app.get("/admin/ui", (req, res) => {
         entry.attempts += 1;
         if (call.outcome === 'NO_ANSWER') entry.noAnswerAttempts += 1;
         if (call.callId) entry.callIds.push(call.callId);
+        const cvId = call.cv_id || call.cvId || '';
+        if (cvId && !entry.cvIds.includes(cvId)) entry.cvIds.push(cvId);
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           Object.assign(entry, call);
           entry._latestAt = createdAt;
+        }
+        if (!entry.decision && call.decision) {
+          entry.decision = call.decision;
         }
       });
       return Array.from(map.values());
@@ -9005,6 +9032,11 @@ app.get("/admin/ui", (req, res) => {
         if (resultsFilterMode === 'no_answer') return call.outcome === 'NO_ANSWER';
         if (resultsFilterMode === 'completed') return call.outcome !== 'NO_ANSWER';
         return true;
+      }).filter((call) => {
+        if (resultsDecisionMode === 'approved') return call.decision === 'approved';
+        if (resultsDecisionMode === 'declined') return call.decision === 'declined';
+        if (resultsDecisionMode === 'maybe') return call.decision === 'maybe';
+        return true;
       });
       resultsBodyEl.innerHTML = '';
       filtered.forEach((call) => {
@@ -9042,6 +9074,50 @@ app.get("/admin/ui", (req, res) => {
         }
         statusTd.appendChild(statusDiv);
         tr.appendChild(statusTd);
+        const decisionTd = document.createElement('td');
+        decisionTd.className = 'decision-cell';
+        const decisionWrap = document.createElement('div');
+        decisionWrap.className = 'decision-buttons';
+        const decisionOptions = [
+          { key: 'approved', label: '✓', title: 'Aprobado' },
+          { key: 'declined', label: '✕', title: 'Descartado' },
+          { key: 'maybe', label: '?', title: 'Indeciso' }
+        ];
+        const decisionIds = Array.isArray(call.cvIds) && call.cvIds.length
+          ? call.cvIds
+          : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
+        const canUpdateDecision = authRole !== 'viewer' && decisionIds.length;
+        decisionOptions.forEach((opt) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'decision-btn ' + opt.key;
+          btn.dataset.decision = opt.key;
+          btn.textContent = opt.label;
+          btn.title = opt.title;
+          btn.setAttribute('aria-label', opt.title);
+          btn.disabled = !canUpdateDecision;
+          btn.onclick = async (event) => {
+            event.stopPropagation();
+            if (!canUpdateDecision) return;
+            const next = call.decision === opt.key ? '' : opt.key;
+            decisionWrap.classList.add('is-loading');
+            try {
+              const updated = await updateCvDecision(decisionIds, next);
+              call.decision = updated || '';
+              setDecisionButtonsActive(decisionWrap, call.decision);
+              if (resultsDecisionMode !== 'all') loadResults();
+            } catch (err) {
+              console.error('decision update failed', err);
+              setResultsCount('Error: ' + err.message);
+            } finally {
+              decisionWrap.classList.remove('is-loading');
+            }
+          };
+          decisionWrap.appendChild(btn);
+        });
+        setDecisionButtonsActive(decisionWrap, call.decision || '');
+        decisionTd.appendChild(decisionWrap);
+        tr.appendChild(decisionTd);
         const cvTd = document.createElement('td');
         if (call.cv_url) {
           const wrap = document.createElement('div');
@@ -9780,6 +9856,15 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = () => {
           resultsFilterMode = btn.dataset.filter || 'all';
           resultsTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+          renderResults(lastResults);
+        };
+      });
+    }
+    if (resultsDecisionTabsEl) {
+      resultsDecisionTabsEl.querySelectorAll('button').forEach((btn) => {
+        btn.onclick = () => {
+          resultsDecisionMode = btn.dataset.decision || 'all';
+          resultsDecisionTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
           renderResults(lastResults);
         };
       });
@@ -11348,6 +11433,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      COALESCE(cv.decision, '') AS decision,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
       COALESCE(c.phone, cv.phone) AS phone_resolved
     FROM calls c
@@ -11392,6 +11478,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       audio_url: audioUrl || "",
       english_required: !!row.english_required,
       cv_id: row.cv_id || "",
+      decision: row.decision || "",
       cv_text: row.cv_text || "",
       cv_url: cvUrl || ""
     });
@@ -11434,6 +11521,7 @@ async function fetchCallById(callId) {
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      COALESCE(cv.decision, '') AS decision,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
       COALESCE(c.phone, cv.phone) AS phone_resolved
     FROM calls c
@@ -11476,6 +11564,7 @@ async function fetchCallById(callId) {
     audio_url: audioUrl || "",
     english_required: !!row.english_required,
     cv_id: row.cv_id || "",
+    decision: row.decision || "",
     cv_text: row.cv_text || "",
     cv_url: cvUrl || ""
   };
