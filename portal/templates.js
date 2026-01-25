@@ -340,6 +340,25 @@ function renderApplyPage(page, options = {}) {
       font-weight: 600;
       text-decoration: none;
     }
+    .form-grid.is-complete {
+      min-height: 320px;
+      align-content: center;
+      gap: 16px;
+    }
+    .form-grid.is-complete .row,
+    .form-grid.is-complete #custom-fields,
+    .form-grid.is-complete #file-fields,
+    .form-grid.is-complete .submit-btn {
+      display: none;
+    }
+    .form-grid.is-complete .status {
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .form-grid.is-complete .status-note {
+      font-size: 15px;
+      color: var(--text);
+    }
     .req { color: var(--primary); font-weight: 700; }
     .chip-list {
       display: flex;
@@ -434,6 +453,7 @@ function renderApplyPage(page, options = {}) {
       sideText: document.querySelector('[data-side-text]'),
       sideNote: document.querySelector('[data-side-note]'),
       gallery: document.getElementById('gallery'),
+      form: document.getElementById('apply-form'),
       baseFields: document.getElementById('base-fields'),
       customFields: document.getElementById('custom-fields'),
       fileFields: document.getElementById('file-fields'),
@@ -906,6 +926,9 @@ function renderApplyPage(page, options = {}) {
         els.statusNote.textContent = '';
         els.statusNote.innerHTML = '';
       }
+      if (els.form && (!text || isError)) {
+        els.form.classList.remove('is-complete');
+      }
     }
 
     function readFileAsDataUrl(file) {
@@ -998,6 +1021,7 @@ function renderApplyPage(page, options = {}) {
         if (!resp.ok) throw new Error(data.error || 'submit_failed');
 
         setStatus(t(page.content?.thankYou, 'Thanks! We will contact you soon.'), false);
+        if (els.form) els.form.classList.add('is-complete');
         renderStatusNote();
         document.getElementById('apply-form').reset();
       } catch (err) {
