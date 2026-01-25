@@ -255,6 +255,7 @@ function createPortalStoreDb(options = {}) {
       name: row.name || "",
       email: row.email || "",
       phone: row.phone || "",
+      consent: !!row.consent,
       answers: row.answers || {},
       resume_url: row.resume_url || "",
       photo_url: row.photo_url || "",
@@ -389,6 +390,7 @@ function createPortalStoreDb(options = {}) {
       name: app.name || "",
       email: app.email || "",
       phone: app.phone || "",
+      consent: !!app.consent,
       answers: app.answers || {},
       resume_url: app.resume_url || "",
       photo_url: app.photo_url || "",
@@ -398,10 +400,10 @@ function createPortalStoreDb(options = {}) {
       const resp = await dbPool.query(
         `
         INSERT INTO portal_applications (
-          id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, locations
+          id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        RETURNING id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, locations, created_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        RETURNING id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
       `,
         [
           entry.id,
@@ -411,6 +413,7 @@ function createPortalStoreDb(options = {}) {
           entry.name,
           entry.email,
           entry.phone,
+          entry.consent,
           entry.answers,
           entry.resume_url,
           entry.photo_url,
@@ -431,7 +434,7 @@ function createPortalStoreDb(options = {}) {
       if (!slug) {
         const resp = await dbPool.query(
           `
-          SELECT id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, locations, created_at
+          SELECT id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
           FROM portal_applications
           ORDER BY created_at DESC
         `
@@ -441,7 +444,7 @@ function createPortalStoreDb(options = {}) {
       }
       const resp = await dbPool.query(
         `
-        SELECT id, slug, brand, role, name, email, phone, answers, resume_url, photo_url, locations, created_at
+        SELECT id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
         FROM portal_applications
         WHERE slug = $1
         ORDER BY created_at DESC

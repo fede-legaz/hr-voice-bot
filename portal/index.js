@@ -148,6 +148,8 @@ function createPortalRouter(options = {}) {
   const saveCvEntry = typeof options.saveCvEntry === "function" ? options.saveCvEntry : null;
   const uploadToSpaces = typeof options.uploadToSpaces === "function" ? options.uploadToSpaces : null;
   const useSpacesUploads = !!(uploadToSpaces && /^https?:\/\//i.test(publicUploadsBaseUrl));
+  const contactPhone = String(options.contactPhone || "").trim();
+  const contactName = String(options.contactName || "").trim();
 
   router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
 
@@ -160,7 +162,9 @@ function createPortalRouter(options = {}) {
     const payload = {
       ...page,
       slug,
-      limits: { resumeMaxBytes, photoMaxBytes }
+      limits: { resumeMaxBytes, photoMaxBytes },
+      contactPhone,
+      contactName
     };
     res.type("text/html").send(renderApplyPage(payload));
   });
@@ -174,7 +178,9 @@ function createPortalRouter(options = {}) {
     const payload = {
       ...page,
       slug,
-      limits: { resumeMaxBytes, photoMaxBytes }
+      limits: { resumeMaxBytes, photoMaxBytes },
+      contactPhone,
+      contactName
     };
     res.json({ ok: true, page: payload });
   });
@@ -193,6 +199,7 @@ function createPortalRouter(options = {}) {
       const phoneRaw = String(body.phone || "").trim();
       const phone = normalizePhone(phoneRaw);
       const role = String(body.role || page.role || "").trim();
+      const consent = body.consent === true || body.consent === "true" || body.consent === "on" || body.consent === 1;
       const locationField = page.fields?.locations || {};
       const rawLocations = Array.isArray(body.locations)
         ? body.locations
@@ -226,6 +233,7 @@ function createPortalRouter(options = {}) {
       const answers = {};
 
       if (!name) return res.status(400).json({ error: "missing_name" });
+      if (!consent) return res.status(400).json({ error: "missing_consent" });
       if (page.fields?.email?.required !== false && !/.+@.+\..+/.test(email)) {
         return res.status(400).json({ error: "invalid_email" });
       }
@@ -297,6 +305,7 @@ function createPortalRouter(options = {}) {
         name,
         email,
         phone,
+        consent,
         answers,
         locations,
         resume_url: resumeUrl,

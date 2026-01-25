@@ -306,11 +306,40 @@ function renderApplyPage(page, options = {}) {
     }
     .submit-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 20px rgba(200,76,51,0.3); }
     .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; box-shadow: none; transform: none; }
+    .consent {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(31,111,92,0.06);
+      border: 1px solid rgba(31,111,92,0.16);
+      font-size: 13px;
+      color: var(--text);
+      line-height: 1.45;
+    }
+    .consent input {
+      width: 18px;
+      height: 18px;
+      margin-top: 2px;
+      accent-color: var(--primary);
+    }
     .gallery { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
     .gallery img { width: 100%; height: 120px; object-fit: cover; border-radius: 16px; }
     .status { font-weight: 600; margin-top: 10px; }
     .status.error { color: #b42318; }
     .status.ok { color: #1f6f5c; }
+    .status-note {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .status-note a {
+      color: var(--primary);
+      font-weight: 600;
+      text-decoration: none;
+    }
     .req { color: var(--primary); font-weight: 700; }
     .chip-list {
       display: flex;
@@ -371,6 +400,7 @@ function renderApplyPage(page, options = {}) {
           <div id="file-fields" class="form-grid"></div>
           <button class="submit-btn" id="submit-btn" type="submit">Send application</button>
           <div class="status" id="status"></div>
+          <div class="status-note" id="status-note"></div>
         </form>
       </div>
       <div class="card" id="side-card">
@@ -388,6 +418,8 @@ function renderApplyPage(page, options = {}) {
     const limits = page.limits || { resumeMaxBytes: 8 * 1024 * 1024, photoMaxBytes: 2 * 1024 * 1024 };
     let lang = page.localeDefault || 'es';
     let roleSelectEl = null;
+    const contactPhoneRaw = page.contactPhone || (page.contact && page.contact.phone) || '';
+    const contactName = page.contactName || (page.contact && page.contact.name) || page.brand || 'HR Team';
 
     const els = {
       brand: document.querySelector('[data-brand]'),
@@ -406,6 +438,7 @@ function renderApplyPage(page, options = {}) {
       customFields: document.getElementById('custom-fields'),
       fileFields: document.getElementById('file-fields'),
       status: document.getElementById('status'),
+      statusNote: document.getElementById('status-note'),
       submit: document.getElementById('submit-btn')
     };
 
@@ -470,6 +503,53 @@ function renderApplyPage(page, options = {}) {
         els.sideNote.appendChild(chip);
       });
       els.sideNote.style.display = '';
+    }
+
+    function normalizePhoneForLink(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      const cleaned = raw.replace(/[^\d+]/g, '');
+      if (!cleaned) return '';
+      if (cleaned.startsWith('+')) return cleaned;
+      return '+' + cleaned.replace(/\D/g, '');
+    }
+
+    function renderStatusNote() {
+      if (!els.statusNote) return;
+      els.statusNote.textContent = '';
+      els.statusNote.innerHTML = '';
+      const phone = normalizePhoneForLink(contactPhoneRaw);
+      if (!phone) return;
+      const noteText = t(
+        {
+          es: 'Para evitar perder la llamada, guardá el número del que te vamos a contactar:',
+          en: 'To avoid missing our call, please save the number we will call you from:'
+        },
+        'Please save our calling number:'
+      );
+      const wrapper = document.createElement('div');
+      wrapper.textContent = noteText + ' ';
+      const phoneLink = document.createElement('a');
+      phoneLink.href = 'tel:' + phone;
+      phoneLink.textContent = contactPhoneRaw || phone;
+      phoneLink.rel = 'noopener';
+      wrapper.appendChild(phoneLink);
+      wrapper.appendChild(document.createTextNode(' · '));
+      const safeName = String(contactName || 'HR Team').replace(/[\n\r]/g, ' ').trim() || 'HR Team';
+      const vcard = [
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        'FN:' + safeName,
+        'TEL;TYPE=CELL:' + phone,
+        'END:VCARD'
+      ].join('\\n');
+      const vcardLink = document.createElement('a');
+      vcardLink.href = 'data:text/vcard;charset=utf-8,' + encodeURIComponent(vcard);
+      vcardLink.download = 'contact.vcf';
+      vcardLink.textContent = t({ es: 'Guardar contacto', en: 'Save contact' }, 'Save contact');
+      vcardLink.rel = 'noopener';
+      wrapper.appendChild(vcardLink);
+      els.statusNote.appendChild(wrapper);
     }
 
     function applyTheme() {
@@ -792,6 +872,25 @@ function renderApplyPage(page, options = {}) {
       photoWrap.appendChild(photoHint);
       els.fileFields.appendChild(photoWrap);
 
+      const consentWrap = document.createElement('label');
+      consentWrap.className = 'consent';
+      const consentInput = document.createElement('input');
+      consentInput.type = 'checkbox';
+      consentInput.id = 'consent';
+      consentInput.name = 'consent';
+      consentInput.required = true;
+      const consentText = document.createElement('span');
+      consentText.textContent = t(
+        {
+          es: 'Al enviar este formulario, aceptás ser contactado por SMS o llamada telefónica sobre tu postulación.',
+          en: 'By submitting this form, you agree to be contacted via SMS or voice call about your application.'
+        },
+        'By submitting this form, you agree to be contacted about your application.'
+      );
+      consentWrap.appendChild(consentInput);
+      consentWrap.appendChild(consentText);
+      els.fileFields.appendChild(consentWrap);
+
       if (hasRoleByLocation) {
         document.querySelectorAll('input[name="locations"]').forEach((input) => {
           input.addEventListener('change', () => syncRoleOptions(roleSelectEl, fields));
@@ -803,6 +902,10 @@ function renderApplyPage(page, options = {}) {
     function setStatus(text, isError) {
       els.status.textContent = text || '';
       els.status.className = 'status' + (isError ? ' error' : ' ok');
+      if (els.statusNote) {
+        els.statusNote.textContent = '';
+        els.statusNote.innerHTML = '';
+      }
     }
 
     function readFileAsDataUrl(file) {
@@ -826,6 +929,7 @@ function renderApplyPage(page, options = {}) {
         const role = document.getElementById('role')?.value?.trim() || '';
         const locationInputs = Array.from(document.querySelectorAll('input[name="locations"]:checked'));
         const locations = locationInputs.map((input) => input.value).filter(Boolean);
+        const consent = !!document.getElementById('consent')?.checked;
 
         if (!name) throw new Error(t({ es: 'Nombre requerido', en: 'Name is required' }, 'Name is required'));
         const emailRe = /.+@.+\..+/;
@@ -837,6 +941,9 @@ function renderApplyPage(page, options = {}) {
         }
         if (page.fields?.locations?.required && locations.length === 0) {
           throw new Error(t({ es: 'Selecciona una locacion', en: 'Select a location' }, 'Select a location'));
+        }
+        if (!consent) {
+          throw new Error(t({ es: 'Tenés que aceptar los términos de contacto', en: 'You must accept the contact terms' }, 'You must accept the contact terms'));
         }
 
         const answers = {};
@@ -873,6 +980,7 @@ function renderApplyPage(page, options = {}) {
           role,
           locations,
           lang,
+          consent,
           answers,
           resume_data_url: resumeFile ? await readFileAsDataUrl(resumeFile) : '',
           resume_file_name: resumeFile ? resumeFile.name : '',
@@ -890,6 +998,7 @@ function renderApplyPage(page, options = {}) {
         if (!resp.ok) throw new Error(data.error || 'submit_failed');
 
         setStatus(t(page.content?.thankYou, 'Thanks! We will contact you soon.'), false);
+        renderStatusNote();
         document.getElementById('apply-form').reset();
       } catch (err) {
         setStatus(err.message || 'submit_failed', true);

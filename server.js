@@ -1511,6 +1511,7 @@ async function initDb() {
         name TEXT,
         email TEXT,
         phone TEXT,
+        consent BOOLEAN NOT NULL DEFAULT FALSE,
         answers JSONB,
         resume_url TEXT,
         photo_url TEXT,
@@ -1518,6 +1519,7 @@ async function initDb() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS consent BOOLEAN NOT NULL DEFAULT FALSE;`);
     await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS locations JSONB;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_slug ON portal_applications (slug);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_created ON portal_applications (created_at DESC);`);
@@ -1660,6 +1662,8 @@ const portalRouter = createPortalRouter({
   dbPool,
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
   photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
+  contactPhone: TWILIO_VOICE_FROM || TWILIO_SMS_FROM,
+  contactName: "HRBOT",
   requireAdmin: requireAdminUser,
   requireWrite,
   saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
