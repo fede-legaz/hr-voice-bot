@@ -213,15 +213,30 @@ function createPortalStore(options = {}) {
   };
 }
 
-function createPortalStoreDb(options = {}) {
-  const dbPool = options.dbPool;
-  const logger = options.logger || console;
+  function createPortalStoreDb(options = {}) {
+    const dbPool = options.dbPool;
+    const logger = options.logger || console;
 
-  function toIso(value) {
+    function toIso(value) {
     if (!value) return null;
     const d = value instanceof Date ? value : new Date(value);
     if (Number.isNaN(d.getTime())) return null;
     return d.toISOString();
+  }
+
+  function ensureJsonValue(value, fallback) {
+    if (value === undefined || value === null) {
+      return JSON.stringify(fallback);
+    }
+    if (typeof value === "string") {
+      try {
+        JSON.parse(value);
+        return value;
+      } catch {
+        return JSON.stringify(fallback);
+      }
+    }
+    return JSON.stringify(value);
   }
 
   function mapPageRow(row) {
@@ -353,13 +368,13 @@ function createPortalStoreDb(options = {}) {
           payload.role,
           payload.active,
           payload.localeDefault,
-          payload.content,
-          payload.theme,
-          payload.fields,
-          payload.resume,
-          payload.photo,
-          payload.questions,
-          payload.assets
+          ensureJsonValue(payload.content, {}),
+          ensureJsonValue(payload.theme, {}),
+          ensureJsonValue(payload.fields, {}),
+          ensureJsonValue(payload.resume, {}),
+          ensureJsonValue(payload.photo, {}),
+          ensureJsonValue(payload.questions, []),
+          ensureJsonValue(payload.assets, {})
         ]
       );
       return mapPageRow(resp.rows?.[0]) || null;
@@ -414,10 +429,10 @@ function createPortalStoreDb(options = {}) {
           entry.email,
           entry.phone,
           entry.consent,
-          entry.answers,
+          ensureJsonValue(entry.answers, {}),
           entry.resume_url,
           entry.photo_url,
-          entry.locations
+          ensureJsonValue(entry.locations, [])
         ]
       );
       return mapAppRow(resp.rows?.[0]) || entry;
