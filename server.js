@@ -2641,11 +2641,21 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
         return res.status(400).json({ error: "cv_file_too_large" });
       }
       const parsed = parseDataUrl(fileDataUrl);
-      if (parsed && spacesEnabled) {
+      if (parsed) {
         const ext = path.extname(fileName || "") || (parsed.mime === "application/pdf" ? ".pdf" : ".bin");
-        const key = `cvs/${id}/${sanitizeFilename(path.basename(fileName || `cv${ext}`))}`;
-        await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
-        cvUrl = key;
+        const safeName = sanitizeFilename(path.basename(fileName || `cv${ext}`));
+        if (spacesEnabled) {
+          const key = `cvs/${id}/${safeName}`;
+          await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
+          cvUrl = key;
+        } else {
+          const relPath = path.posix.join("cvs", id, safeName);
+          const fullPath = path.join(adminUploadsDir, ...relPath.split("/"));
+          await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.promises.writeFile(fullPath, parsed.buffer);
+          const baseUrl = (portalPublicUploadsBaseUrl || "/uploads").replace(/\/+$/, "");
+          cvUrl = `${baseUrl}/${relPath}`;
+        }
       }
     }
     if (photoDataUrl) {
@@ -2654,11 +2664,21 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
         return res.status(400).json({ error: "cv_photo_too_large" });
       }
       const parsed = parseDataUrl(photoDataUrl);
-      if (parsed && spacesEnabled) {
+      if (parsed) {
         const ext = parsed.mime === "image/png" ? ".png" : ".jpg";
-        const key = `cvs/${id}/photo${ext}`;
-        await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
-        cvPhotoUrl = key;
+        const file = `photo${ext}`;
+        if (spacesEnabled) {
+          const key = `cvs/${id}/${file}`;
+          await uploadToSpaces({ key, body: parsed.buffer, contentType: parsed.mime });
+          cvPhotoUrl = key;
+        } else {
+          const relPath = path.posix.join("cvs", id, file);
+          const fullPath = path.join(adminUploadsDir, ...relPath.split("/"));
+          await fs.promises.mkdir(path.dirname(fullPath), { recursive: true });
+          await fs.promises.writeFile(fullPath, parsed.buffer);
+          const baseUrl = (portalPublicUploadsBaseUrl || "/uploads").replace(/\/+$/, "");
+          cvPhotoUrl = `${baseUrl}/${relPath}`;
+        }
       }
     }
     const entry = buildCvEntry(body);
