@@ -1434,19 +1434,20 @@ function normalizePushSubscription(data) {
   return { endpoint, subscription: sub };
 }
 
-async function upsertPushSubscription({ endpoint, subscription, userEmail, userRole, userAgent }) {
+async function upsertPushSubscription({ endpoint, subscription, userEmail, userRole, userAgent, allowedBrands }) {
   if (!endpoint || !subscription) return false;
   if (!dbPool) {
-    pushSubscriptions.set(endpoint, { endpoint, subscription, userEmail, userRole, userAgent });
+    pushSubscriptions.set(endpoint, { endpoint, subscription, userEmail, userRole, userAgent, allowedBrands });
     return true;
   }
   const sql = `
-    INSERT INTO push_subscriptions (endpoint, subscription, user_email, user_role, user_agent, updated_at)
-    VALUES ($1, $2, $3, $4, $5, NOW())
+    INSERT INTO push_subscriptions (endpoint, subscription, user_email, user_role, allowed_brands, user_agent, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, NOW())
     ON CONFLICT (endpoint)
     DO UPDATE SET subscription = EXCLUDED.subscription,
       user_email = EXCLUDED.user_email,
       user_role = EXCLUDED.user_role,
+      allowed_brands = EXCLUDED.allowed_brands,
       user_agent = EXCLUDED.user_agent,
       updated_at = NOW()
   `;
@@ -1455,6 +1456,7 @@ async function upsertPushSubscription({ endpoint, subscription, userEmail, userR
     subscription,
     userEmail || null,
     userRole || null,
+    Array.isArray(allowedBrands) ? allowedBrands : null,
     userAgent || null
   ]);
   return true;
@@ -1469,20 +1471,25 @@ async function removePushSubscription(endpoint) {
 
 async function listPushSubscriptions() {
   if (!dbPool) return Array.from(pushSubscriptions.values());
-  const result = await dbQuery("SELECT endpoint, subscription FROM push_subscriptions");
+  const result = await dbQuery("SELECT endpoint, subscription, allowed_brands FROM push_subscriptions");
   return (result?.rows || []).map((row) => ({
     endpoint: row.endpoint,
-    subscription: row.subscription
+    subscription: row.subscription,
+    allowedBrands: Array.isArray(row.allowed_brands) ? row.allowed_brands : (row.allowed_brands || [])
   }));
 }
 
-async function sendPushToAll(payload) {
+async function sendPushToAll(payload, brand) {
   if (!pushEnabled) return 0;
   const subscriptions = await listPushSubscriptions();
   if (!subscriptions.length) return 0;
   const body = JSON.stringify(payload || {});
   let sent = 0;
   for (const sub of subscriptions) {
+    const allowed = Array.isArray(sub.allowedBrands) ? sub.allowedBrands : [];
+    if (brand && allowed.length && !isBrandAllowed(allowed, brand)) {
+      continue;
+    }
     try {
       await webpush.sendNotification(sub.subscription, body);
       sent += 1;
@@ -1513,7 +1520,27 @@ async function notifyPortalApplication({ application, page }) {
     url: slug ? `/admin/ui?view=portal&slug=${encodeURIComponent(slug)}` : "/admin/ui?view=portal",
     icon: "/admin/icon.svg"
   };
-  return sendPushToAll(payload);
+  return sendPushToAll(payload, brand);
+}
+
+async function notifyInterviewCompleted({ call, scoring }) {
+  if (!pushEnabled || !call || !scoring) return 0;
+  const brand = call.brandKey || call.brand || "";
+  const name = call.applicant || "Candidato";
+  const score = scoring?.score_0_100 ?? call.score ?? "";
+  const rec = scoring?.recommendation || call.recommendation || "";
+  const recText = rec === "advance" ? "Avanzar" : rec === "reject" ? "No avanzar" : (rec ? "Revisar" : "");
+  const bodyParts = [name];
+  if (brand) bodyParts.push(brand);
+  if (score !== "" && score !== null && score !== undefined) bodyParts.push(`Score ${score}`);
+  if (recText) bodyParts.push(recText);
+  const payload = {
+    title: "Entrevista completada",
+    body: bodyParts.join(" · "),
+    url: "/admin/ui?view=interviews",
+    icon: "/admin/icon.svg"
+  };
+  return sendPushToAll(payload, brand);
 }
 
 async function initDb() {
@@ -1667,11 +1694,13 @@ async function initDb() {
         subscription JSONB NOT NULL,
         user_email TEXT,
         user_role TEXT,
+        allowed_brands JSONB,
         user_agent TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await dbPool.query(`ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS allowed_brands JSONB;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_email ON push_subscriptions (user_email);`);
 
     const loaded = await loadRoleConfigFromDb();
@@ -1924,7 +1953,8 @@ app.post("/admin/push/subscribe", requireConfigOrViewer, async (req, res) => {
       subscription: normalized.subscription,
       userEmail: req.userEmail || "",
       userRole: req.userRole || "",
-      userAgent: req.headers["user-agent"] || ""
+      userAgent: req.headers["user-agent"] || "",
+      allowedBrands: normalizeAllowedBrands(req.allowedBrands || [])
     });
     return res.json({ ok: true });
   } catch (err) {
@@ -2399,14 +2429,11 @@ app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => 
     }
     if (!call) return res.status(404).json({ error: "call_not_found" });
     const hydrated = hydrateCallForWhatsapp(call);
-    const scoring = buildScoringFromCall(hydrated);
-    const note = hydrated.noTranscriptReason || hydrated.noAnswerReason || hydrated.outcome_detail || "";
-    await sendWhatsappMessage({ body: formatWhatsapp(scoring, hydrated, { note }) });
+    if (!hydrated.scoring) hydrated.scoring = buildScoringFromCall(hydrated);
+    await sendWhatsappReport(hydrated, { force: true });
     const mediaUrl = await getCallAudioMediaUrl(hydrated);
-    if (mediaUrl) {
-      await sendWhatsappMessage({ mediaUrl });
-    }
-    return res.json({ ok: true, media: !!mediaUrl });
+    const cvUrl = await getCallCvMediaUrl(hydrated);
+    return res.json({ ok: true, audio: !!mediaUrl, cv: !!cvUrl });
   } catch (err) {
     console.error("[admin/whatsapp] failed", err);
     return res.status(400).json({ error: "whatsapp_failed", detail: err.message });
@@ -3635,10 +3662,11 @@ app.get("/admin/ui", (req, res) => {
     .detail-value { color: #1f2a24; font-weight: 600; }
     .detail-block {
       grid-column: 1 / -1;
-      border: 1px solid var(--border);
-      background: #fdfbf7;
-      border-radius: 12px;
-      padding: 10px 12px;
+      border-top: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+      border-radius: 0;
+      padding: 10px 2px;
       white-space: pre-wrap;
       font-size: 12px;
       line-height: 1.45;
@@ -12620,7 +12648,6 @@ function formatWhatsapp(scoring, call, opts = {}) {
 
 function buildScoringFromCall(call) {
   if (!call) return null;
-  if (call.outcome) return null;
   const hasScore = call.score !== null && call.score !== undefined;
   const hasData = !!call.summary || hasScore || !!call.recommendation;
   if (!hasData) return null;
@@ -12691,6 +12718,13 @@ async function getCallAudioMediaUrl(call) {
     return `${PUBLIC_BASE_URL}/r/${call.recordingToken}`;
   }
   return "";
+}
+
+async function getCallCvMediaUrl(call) {
+  if (!call) return "";
+  const cvUrl = call.cvUrl || call.cv_url || call.resumeUrl || call.resume_url || "";
+  if (!cvUrl) return "";
+  return resolveStoredUrl(cvUrl, 24 * 60 * 60);
 }
 
 async function placeOutboundCall(payload) {
@@ -12950,14 +12984,23 @@ async function markNoSpeech(call, reason) {
 }
 
 
-async function sendWhatsappReport(call) {
-  if (call.whatsappSent) return;
+async function sendWhatsappReport(call, opts = {}) {
+  if (call.whatsappSent && !opts.force) return;
   const note = call.noTranscriptReason || "";
+  const scoring = call.scoring || buildScoringFromCall(call);
   try {
-    await sendWhatsappMessage({ body: formatWhatsapp(call.scoring, call, { note }) });
+    await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
   } catch (err) {
     console.error("[whatsapp] failed sending text", err);
     return;
+  }
+  try {
+    const cvUrl = await getCallCvMediaUrl(call);
+    if (cvUrl) {
+      await sendWhatsappMessage({ mediaUrl: cvUrl });
+    }
+  } catch (err) {
+    console.error("[whatsapp] failed sending cv", err);
   }
   try {
     const mediaUrl = await getCallAudioMediaUrl(call);
@@ -13002,6 +13045,14 @@ async function maybeScoreAndSend(call) {
       call.scoring = await scoreTranscript(call, transcriptText);
     } catch (err) {
       console.error("[scoring] failed", err);
+    }
+  }
+  if (call.scoring && !call.pushNotified) {
+    try {
+      await notifyInterviewCompleted({ call, scoring: call.scoring });
+      call.pushNotified = true;
+    } catch (err) {
+      console.error("[push] interview notify failed", err);
     }
   }
   try {
