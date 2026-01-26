@@ -3072,6 +3072,20 @@ app.get("/admin/ui", (req, res) => {
       background: rgba(255, 255, 255, 0.15);
       border-color: rgba(255, 255, 255, 0.35);
     }
+    .nav-badge {
+      margin-left: auto;
+      min-width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      background: #f4a261;
+      color: #0b3440;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 0 6px;
+    }
     .nav-icon {
       width: 28px;
       height: 28px;
@@ -4310,10 +4324,12 @@ app.get("/admin/ui", (req, res) => {
         <button class="nav-item" id="nav-calls" type="button" title="Candidates">
           <span class="nav-icon">C</span>
           <span class="nav-label">Candidates</span>
+          <span class="nav-badge" id="nav-calls-badge"></span>
         </button>
         <button class="nav-item" id="nav-interviews" type="button" title="Interviews">
           <span class="nav-icon">I</span>
           <span class="nav-label">Interviews</span>
+          <span class="nav-badge" id="nav-interviews-badge"></span>
         </button>
         <button class="nav-item" id="nav-portal" type="button" title="Portal">
           <span class="nav-icon">P</span>
@@ -5413,6 +5429,8 @@ app.get("/admin/ui", (req, res) => {
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const navPortalEl = document.getElementById('nav-portal');
+    const navCallsBadgeEl = document.getElementById('nav-calls-badge');
+    const navInterviewsBadgeEl = document.getElementById('nav-interviews-badge');
     const brandListEl = document.getElementById('brand-list');
     const addBrandEl = document.getElementById('add-brand');
     const viewTitleEl = document.getElementById('view-title');
@@ -5615,6 +5633,7 @@ app.get("/admin/ui", (req, res) => {
     let loginMode = 'admin';
     let authRole = 'admin';
     let authBrands = [];
+    let authEmail = '';
     let adminToken = '';
     let systemPromptUnlocked = false;
     let lastLoadError = '';
@@ -5624,11 +5643,14 @@ app.get("/admin/ui", (req, res) => {
     let resultsTimer = null;
     let cvTimer = null;
     let cvActiveTimer = null;
+    let badgeTimer = null;
     let cvPollUntil = 0;
     let cvFilterMode = 'no_calls';
     let resultsFilterMode = 'completed';
     let resultsDecisionMode = 'all';
+    let lastCvRaw = [];
     let lastCvList = [];
+    let lastResultsRaw = [];
     let lastResults = [];
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
@@ -5650,6 +5672,8 @@ app.get("/admin/ui", (req, res) => {
     let pendingUserPhotoDataUrl = '';
     let pendingUserPhotoName = '';
     let pendingUserPhotoClear = false;
+    let candidatesBadgeItems = [];
+    let interviewsBadgeItems = [];
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -5700,6 +5724,9 @@ app.get("/admin/ui", (req, res) => {
     const AUTH_TOKEN_KEY = 'hrbot_auth_token';
     const AUTH_ROLE_KEY = 'hrbot_auth_role';
     const AUTH_BRANDS_KEY = 'hrbot_auth_brands';
+    const AUTH_EMAIL_KEY = 'hrbot_auth_email';
+    const CANDIDATES_SEEN_KEY = 'hrbot_candidates_seen_at';
+    const INTERVIEWS_SEEN_KEY = 'hrbot_interviews_seen_at';
 
     function stopPolling() {
       if (resultsTimer) {
@@ -5714,6 +5741,10 @@ app.get("/admin/ui", (req, res) => {
         clearTimeout(cvActiveTimer);
         cvActiveTimer = null;
       }
+      if (badgeTimer) {
+        clearInterval(badgeTimer);
+        badgeTimer = null;
+      }
       cvPollUntil = 0;
     }
 
@@ -5722,6 +5753,16 @@ app.get("/admin/ui", (req, res) => {
       if (appEl) appEl.style.display = isLoggedIn ? 'flex' : 'none';
       if (logoutBtnEl) logoutBtnEl.style.display = isLoggedIn ? '' : 'none';
       if (userPanelToggleEl) userPanelToggleEl.style.display = isLoggedIn ? '' : 'none';
+      if (!isLoggedIn) {
+        if (navCallsBadgeEl) {
+          navCallsBadgeEl.textContent = '';
+          navCallsBadgeEl.style.display = 'none';
+        }
+        if (navInterviewsBadgeEl) {
+          navInterviewsBadgeEl.textContent = '';
+          navInterviewsBadgeEl.style.display = 'none';
+        }
+      }
     }
 
     function clearAuthState() {
@@ -5729,6 +5770,7 @@ app.get("/admin/ui", (req, res) => {
       adminToken = '';
       authRole = 'viewer';
       authBrands = [];
+      authEmail = '';
       systemPromptUnlocked = false;
       lockSystemPrompt();
       setAdminStatus('Bloqueado');
@@ -5748,6 +5790,16 @@ app.get("/admin/ui", (req, res) => {
       if (userEmailTextEl) userEmailTextEl.textContent = '';
       if (userRoleTextEl) userRoleTextEl.textContent = '';
       applyUserAvatar('', '');
+      candidatesBadgeItems = [];
+      interviewsBadgeItems = [];
+      if (navCallsBadgeEl) {
+        navCallsBadgeEl.textContent = '';
+        navCallsBadgeEl.style.display = 'none';
+      }
+      if (navInterviewsBadgeEl) {
+        navInterviewsBadgeEl.textContent = '';
+        navInterviewsBadgeEl.style.display = 'none';
+      }
       if (pushEnableEl) pushEnableEl.disabled = true;
       if (pushDisableEl) pushDisableEl.disabled = true;
       setPushStatus('Inactivo', 'Iniciá sesión para activar.');
@@ -5835,6 +5887,11 @@ app.get("/admin/ui", (req, res) => {
         localStorage.setItem(AUTH_TOKEN_KEY, tokenEl.value);
         localStorage.setItem(AUTH_ROLE_KEY, authRole || 'viewer');
         localStorage.setItem(AUTH_BRANDS_KEY, JSON.stringify(authBrands || []));
+        if (authEmail) {
+          localStorage.setItem(AUTH_EMAIL_KEY, authEmail);
+        } else {
+          localStorage.removeItem(AUTH_EMAIL_KEY);
+        }
       } catch (err) {}
     }
 
@@ -5844,6 +5901,7 @@ app.get("/admin/ui", (req, res) => {
         localStorage.removeItem(AUTH_TOKEN_KEY);
         localStorage.removeItem(AUTH_ROLE_KEY);
         localStorage.removeItem(AUTH_BRANDS_KEY);
+        localStorage.removeItem(AUTH_EMAIL_KEY);
       } catch (err) {}
     }
 
@@ -5899,6 +5957,11 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'me_failed');
         const user = data.user || {};
         currentUserProfile = user;
+        const email = (user.email || '').trim();
+        if (email && email !== authEmail) {
+          authEmail = email;
+          syncPortalToken();
+        }
         if (userEmailTextEl) userEmailTextEl.textContent = user.email || 'Admin';
         if (userRoleTextEl) userRoleTextEl.textContent = user.role ? ('Rol: ' + user.role) : '';
         applyUserAvatar(user.profile_photo_url || '', user.email || '');
@@ -7833,6 +7896,138 @@ app.get("/admin/ui", (req, res) => {
       return td;
     }
 
+    function resolveSeenKey(baseKey) {
+      const suffix = (authEmail || '').trim().toLowerCase() || authRole || 'viewer';
+      return baseKey + ':' + suffix;
+    }
+
+    function getSeenTimestamp(key) {
+      try {
+        const raw = localStorage.getItem(resolveSeenKey(key));
+        return raw ? Number(raw) : 0;
+      } catch (err) {
+        return 0;
+      }
+    }
+
+    function setSeenTimestamp(key, ts) {
+      try {
+        localStorage.setItem(resolveSeenKey(key), String(ts || Date.now()));
+      } catch (err) {}
+    }
+
+    function updateBadge(el, count) {
+      if (!el) return;
+      if (count > 0) {
+        el.textContent = count > 99 ? '99+' : String(count);
+        el.style.display = 'inline-flex';
+      } else {
+        el.textContent = '';
+        el.style.display = 'none';
+      }
+    }
+
+    function isInterviewCompleted(call) {
+      if (!call) return false;
+      if (call.outcome === 'NO_ANSWER') return false;
+      if (call.score !== null && call.score !== undefined) return true;
+      if (call.summary && String(call.summary).trim()) return true;
+      if (call.recommendation) return true;
+      return false;
+    }
+
+    function isPortalSource(value) {
+      return String(value || '').toLowerCase().trim().startsWith('portal:');
+    }
+
+    function computeCandidatesNewCount(list) {
+      const items = Array.isArray(list) ? list : [];
+      const lastSeen = getSeenTimestamp(CANDIDATES_SEEN_KEY);
+      let count = 0;
+      items.forEach((item) => {
+        if (!isPortalSource(item.source)) return;
+        const created = item.created_at ? new Date(item.created_at).getTime() : 0;
+        if (!created || created <= lastSeen) return;
+        count += 1;
+      });
+      return count;
+    }
+
+    function computeInterviewsNewCount(list) {
+      const items = Array.isArray(list) ? list : [];
+      const lastSeen = getSeenTimestamp(INTERVIEWS_SEEN_KEY);
+      let count = 0;
+      items.forEach((item) => {
+        if (!isPortalSource(item.source)) return;
+        const created = item.created_at ? new Date(item.created_at).getTime() : 0;
+        if (!created || created <= lastSeen) return;
+        if (!isInterviewCompleted(item)) return;
+        count += 1;
+      });
+      return count;
+    }
+
+    function updateCandidatesBadge(list) {
+      updateBadge(navCallsBadgeEl, computeCandidatesNewCount(list));
+    }
+
+    function updateInterviewsBadge(list) {
+      updateBadge(navInterviewsBadgeEl, computeInterviewsNewCount(list));
+    }
+
+    function markCandidatesSeen(list) {
+      const items = Array.isArray(list) ? list : [];
+      const latest = items
+        .filter((item) => isPortalSource(item.source))
+        .map((item) => new Date(item.created_at || 0).getTime())
+        .filter((t) => Number.isFinite(t) && t > 0)
+        .sort((a, b) => b - a)[0];
+      if (latest) setSeenTimestamp(CANDIDATES_SEEN_KEY, latest);
+      updateCandidatesBadge(items);
+    }
+
+    function markInterviewsSeen(list) {
+      const items = Array.isArray(list) ? list : [];
+      const latest = items
+        .filter((item) => isPortalSource(item.source))
+        .filter((item) => isInterviewCompleted(item))
+        .map((item) => new Date(item.created_at || 0).getTime())
+        .filter((t) => Number.isFinite(t) && t > 0)
+        .sort((a, b) => b - a)[0];
+      if (latest) setSeenTimestamp(INTERVIEWS_SEEN_KEY, latest);
+      updateInterviewsBadge(items);
+    }
+
+    async function fetchCandidatesBadge() {
+      try {
+        const resp = await fetch('/admin/cv?limit=200', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) return;
+        candidatesBadgeItems = Array.isArray(data.cvs) ? data.cvs : [];
+        updateCandidatesBadge(candidatesBadgeItems);
+      } catch (err) {}
+    }
+
+    async function fetchInterviewsBadge() {
+      try {
+        const resp = await fetch('/admin/calls?limit=200', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) return;
+        interviewsBadgeItems = Array.isArray(data.calls) ? data.calls : [];
+        updateInterviewsBadge(interviewsBadgeItems);
+      } catch (err) {}
+    }
+
+    function startBadgePolling() {
+      if (badgeTimer) return;
+      fetchCandidatesBadge().catch(() => {});
+      fetchInterviewsBadge().catch(() => {});
+      badgeTimer = setInterval(() => {
+        fetchCandidatesBadge().catch(() => {});
+        fetchInterviewsBadge().catch(() => {});
+      }, 30000);
+    }
+
     function portalRenderApplications(apps) {
       if (!portalAppBodyEl) return;
       const list = Array.isArray(apps) ? apps : [];
@@ -8165,6 +8360,12 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'calls') {
         scheduleCvLoad();
+      }
+      if (activeView === 'calls' && lastCvRaw.length) {
+        markCandidatesSeen(lastCvRaw);
+      }
+      if (activeView === 'interviews' && lastResultsRaw.length) {
+        markInterviewsSeen(lastResultsRaw);
       }
       if (activeView === 'portal') {
         ensurePortalLoaded();
@@ -8829,13 +9030,14 @@ app.get("/admin/ui", (req, res) => {
       const w = img.naturalWidth || img.width || 0;
       const h = img.naturalHeight || img.height || 0;
       if (!w || !h) return '';
-      const pad = 0.08;
+      const padX = 0.3;
+      const padY = 0.6;
       const bw = box.width * w;
       const bh = box.height * h;
       const cx = (box.left + box.width / 2) * w;
-      const cy = (box.top + box.height / 2) * h;
-      const sw = bw * (1 + pad);
-      const sh = bh * (1 + pad);
+      const cy = (box.top + box.height / 2) * h - (bh * 0.18);
+      const sw = Math.min(w, bw * (1 + padX));
+      const sh = Math.min(h, bh * (1 + padY));
       const sx = clampValue(cx - sw / 2, 0, w - sw);
       const sy = clampValue(cy - sh / 2, 0, h - sh);
       const scale = Math.min(1, maxSide / Math.max(sw, sh));
@@ -9632,9 +9834,12 @@ app.get("/admin/ui", (req, res) => {
         if (call.callId) entry.callIds.push(call.callId);
         const cvId = call.cv_id || call.cvId || '';
         if (cvId && !entry.cvIds.includes(cvId)) entry.cvIds.push(cvId);
+        if (!entry.source && call.source) entry.source = call.source;
         if (!entry._latestAt || createdAt >= entry._latestAt) {
+          const prevSource = entry.source || '';
           Object.assign(entry, call);
           entry._latestAt = createdAt;
+          if (!entry.source && prevSource) entry.source = prevSource;
         }
         if (!entry.decision && call.decision) {
           entry.decision = call.decision;
@@ -9851,7 +10056,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderResults(calls) {
-      const grouped = groupCalls(Array.isArray(calls) ? calls : []);
+      const raw = Array.isArray(calls) ? calls : [];
+      lastResultsRaw = raw;
+      const grouped = groupCalls(raw);
       lastResults = grouped;
       const filtered = grouped.filter((call) => {
         if (resultsFilterMode === 'no_answer') return call.outcome === 'NO_ANSWER';
@@ -10011,6 +10218,10 @@ app.get("/admin/ui", (req, res) => {
       } else {
         setResultsCount(shown + ' de ' + total + ' llamadas');
       }
+      updateInterviewsBadge(raw);
+      if (activeView === 'interviews') {
+        markInterviewsSeen(raw);
+      }
     }
 
     async function loadResults() {
@@ -10081,7 +10292,9 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function renderCvList(list) {
-      const grouped = groupCandidates(Array.isArray(list) ? list : []);
+      const raw = Array.isArray(list) ? list : [];
+      lastCvRaw = raw;
+      const grouped = groupCandidates(raw);
       lastCvList = grouped;
       const filtered = grouped.filter((item) => {
         const info = cvStatusInfo(item);
@@ -10317,6 +10530,10 @@ app.get("/admin/ui", (req, res) => {
       } else {
         setCvListCount(shown + ' de ' + total + ' Candidates');
       }
+      updateCandidatesBadge(raw);
+      if (activeView === 'calls') {
+        markCandidatesSeen(raw);
+      }
     }
 
     async function loadCvList() {
@@ -10391,20 +10608,24 @@ app.get("/admin/ui", (req, res) => {
       let storedToken = '';
       let storedRole = '';
       let storedBrands = [];
+      let storedEmail = '';
       try {
         storedToken = localStorage.getItem(AUTH_TOKEN_KEY) || localStorage.getItem('portalToken') || '';
         storedRole = localStorage.getItem(AUTH_ROLE_KEY) || '';
         const rawBrands = localStorage.getItem(AUTH_BRANDS_KEY) || '[]';
         storedBrands = JSON.parse(rawBrands);
+        storedEmail = localStorage.getItem(AUTH_EMAIL_KEY) || '';
       } catch (err) {
         storedToken = '';
         storedRole = '';
         storedBrands = [];
+        storedEmail = '';
       }
       if (!storedToken) return false;
       tokenEl.value = storedToken;
       authRole = storedRole || 'viewer';
       authBrands = Array.isArray(storedBrands) ? storedBrands : [];
+      authEmail = storedEmail || '';
       const ok = await loadConfig();
       if (!ok) {
         clearAuthState();
@@ -10418,6 +10639,7 @@ app.get("/admin/ui", (req, res) => {
       setActiveView(VIEW_CALLS);
       refreshPushStatus();
       loadMe();
+      startBadgePolling();
       return true;
     }
 
@@ -10441,6 +10663,7 @@ app.get("/admin/ui", (req, res) => {
           tokenEl.value = data.token || '';
           authRole = data.role || 'viewer';
           authBrands = data.allowed_brands || data.allowedBrands || [];
+          authEmail = email;
           const ok = await loadConfig();
           if (!ok) throw new Error(lastLoadError || 'load failed');
           setLoginStatus('');
@@ -10451,6 +10674,7 @@ app.get("/admin/ui", (req, res) => {
           setActiveView(VIEW_CALLS);
           refreshPushStatus();
           loadMe();
+          startBadgePolling();
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
         }
@@ -10466,6 +10690,7 @@ app.get("/admin/ui", (req, res) => {
       tokenEl.value = key;
       authRole = 'admin';
       authBrands = [];
+      authEmail = '';
       const ok = await loadConfig();
       if (ok) {
         setLoginStatus('');
@@ -10475,6 +10700,7 @@ app.get("/admin/ui", (req, res) => {
         loadUsers();
         refreshPushStatus();
         loadMe();
+        startBadgePolling();
         if (pendingPortalView === VIEW_PORTAL) {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
@@ -10752,7 +10978,7 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = () => {
           cvFilterMode = btn.dataset.filter || 'all';
           cvTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-          renderCvList(lastCvList);
+          renderCvList(lastCvRaw);
         };
       });
     }
@@ -10761,7 +10987,7 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = () => {
           resultsFilterMode = btn.dataset.filter || 'all';
           resultsTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-          renderResults(lastResults);
+          renderResults(lastResultsRaw);
         };
       });
     }
@@ -10770,7 +10996,7 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = () => {
           resultsDecisionMode = btn.dataset.decision || 'all';
           resultsDecisionTabsEl.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
-          renderResults(lastResults);
+          renderResults(lastResultsRaw);
         };
       });
     }
@@ -12345,6 +12571,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
       COALESCE(cv.decision, '') AS decision,
+      COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
       COALESCE(c.phone, cv.phone) AS phone_resolved
     FROM calls c
@@ -12390,6 +12617,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       english_required: !!row.english_required,
       cv_id: row.cv_id || "",
       decision: row.decision || "",
+      source: row.source || "",
       cv_text: row.cv_text || "",
       cv_url: cvUrl || ""
     });
@@ -12433,6 +12661,7 @@ async function fetchCallById(callId) {
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
       COALESCE(cv.decision, '') AS decision,
+      COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
       COALESCE(c.phone, cv.phone) AS phone_resolved
     FROM calls c
@@ -12476,6 +12705,7 @@ async function fetchCallById(callId) {
     english_required: !!row.english_required,
     cv_id: row.cv_id || "",
     decision: row.decision || "",
+    source: row.source || "",
     cv_text: row.cv_text || "",
     cv_url: cvUrl || ""
   };
