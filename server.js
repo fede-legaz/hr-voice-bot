@@ -2424,8 +2424,11 @@ app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => 
     if (!call) {
       call = callHistory.find((c) => c && (c.callId === callId || c.callSid === callId));
     }
-    if (!call && dbPool) {
-      call = await fetchCallById(callId);
+    if (dbPool) {
+      const dbCall = await fetchCallById(callId);
+      if (dbCall) {
+        call = call ? { ...call, ...dbCall } : dbCall;
+      }
     }
     if (!call) return res.status(404).json({ error: "call_not_found" });
     const hydrated = hydrateCallForWhatsapp(call);
@@ -12474,6 +12477,14 @@ async function fetchCallById(callId) {
   };
 }
 
+async function fetchCvUrlById(cvId) {
+  if (!dbPool || !cvId) return "";
+  const result = await dbQuery("SELECT cv_url FROM cvs WHERE id = $1 LIMIT 1", [cvId]);
+  const row = result?.rows?.[0];
+  if (!row || !row.cv_url) return "";
+  return resolveStoredUrl(row.cv_url, 24 * 60 * 60);
+}
+
 async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBrands }) {
   if (!dbPool) return [];
   const where = [];
@@ -12988,6 +12999,18 @@ async function sendWhatsappReport(call, opts = {}) {
   if (call.whatsappSent && !opts.force) return;
   const note = call.noTranscriptReason || "";
   const scoring = call.scoring || buildScoringFromCall(call);
+  const cvId = call.cvId || call.cv_id || "";
+  if (!call.cvUrl && !call.cv_url && cvId) {
+    try {
+      const dbCvUrl = await fetchCvUrlById(cvId);
+      if (dbCvUrl) {
+        call.cvUrl = dbCvUrl;
+        call.cv_url = dbCvUrl;
+      }
+    } catch (err) {
+      console.error("[whatsapp] failed fetching cv url", err);
+    }
+  }
   try {
     await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
   } catch (err) {
@@ -12997,7 +13020,16 @@ async function sendWhatsappReport(call, opts = {}) {
   try {
     const cvUrl = await getCallCvMediaUrl(call);
     if (cvUrl) {
-      await sendWhatsappMessage({ mediaUrl: cvUrl });
+      try {
+        await sendWhatsappMessage({ mediaUrl: cvUrl });
+      } catch (err) {
+        console.error("[whatsapp] failed sending cv", err);
+        try {
+          await sendWhatsappMessage({ body: `CV: ${cvUrl}` });
+        } catch (err2) {
+          console.error("[whatsapp] failed sending cv link", err2);
+        }
+      }
     }
   } catch (err) {
     console.error("[whatsapp] failed sending cv", err);
