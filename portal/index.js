@@ -146,6 +146,7 @@ function createPortalRouter(options = {}) {
   const requireWrite = options.requireWrite || requireAdmin;
   const requireAdminPage = options.requireAdminPage || null;
   const saveCvEntry = typeof options.saveCvEntry === "function" ? options.saveCvEntry : null;
+  const notifyOnApplication = typeof options.notifyOnApplication === "function" ? options.notifyOnApplication : null;
   const uploadToSpaces = typeof options.uploadToSpaces === "function" ? options.uploadToSpaces : null;
   const useSpacesUploads = !!(uploadToSpaces && /^https?:\/\//i.test(publicUploadsBaseUrl));
   const contactPhone = String(options.contactPhone || "").trim();
@@ -342,6 +343,12 @@ function createPortalRouter(options = {}) {
             source: `portal:${slug}`
           });
         }
+      }
+
+      if (notifyOnApplication) {
+        Promise.resolve(notifyOnApplication({ application, page })).catch((err) => {
+          logger.error("[portal] notify failed", err?.message || err);
+        });
       }
 
       return res.json({ ok: true, application_id: appId });

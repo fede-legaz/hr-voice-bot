@@ -9,6 +9,7 @@ const crypto = require("crypto");
 const { Pool } = require("pg");
 const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
+const webpush = require("web-push");
 const { createPortalRouter } = require("./portal");
 
 const PORT = Number(process.env.PORT || 8080);
@@ -52,9 +53,24 @@ const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
 const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
 const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
 const USER_SESSION_TTL_MS = Number(process.env.USER_SESSION_TTL_MS) || VIEWER_SESSION_TTL_MS;
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || PUBLIC_BASE_URL;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
+
+let pushEnabled = false;
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  try {
+    webpush.setVapidDetails(VAPID_SUBJECT || PUBLIC_BASE_URL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+    pushEnabled = true;
+  } catch (err) {
+    console.error("[push] failed to configure VAPID", err.message);
+  }
+} else if (VAPID_PUBLIC_KEY || VAPID_PRIVATE_KEY) {
+  console.warn("[push] missing VAPID keys, push disabled");
+}
 
 const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
@@ -812,6 +828,7 @@ const cvStore = [];
 const cvStoreById = new Map();
 let cvStoreSaveTimer = null;
 let cvStoreSaving = false;
+const pushSubscriptions = new Map();
 const ACTIVE_CALL_STATUSES = new Set(["queued", "initiated", "ringing", "answered", "in-progress", "in progress"]);
 let roleConfig = null;
 let roleConfigSource = "defaults";
@@ -1175,13 +1192,13 @@ function getUserSession(authHeader) {
 
 function resolveAuthContext(authHeader) {
   if (isConfigAuth(authHeader)) {
-    return { role: "admin", allowedBrands: null };
+    return { role: "admin", allowedBrands: null, email: null };
   }
   const session = getUserSession(authHeader);
   if (!session) return null;
   const role = normalizeUserRole(session.role);
   const allowedBrands = role === "admin" ? null : normalizeAllowedBrands(session.allowedBrands);
-  return { role, allowedBrands };
+  return { role, allowedBrands, email: session.email || "" };
 }
 
 function requireConfig(req, res, next) {
@@ -1197,6 +1214,7 @@ function requireConfigOrViewer(req, res, next) {
   if (ctx) {
     req.userRole = ctx.role;
     req.allowedBrands = ctx.allowedBrands;
+    req.userEmail = ctx.email || "";
     return next();
   }
   if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
@@ -1219,6 +1237,7 @@ function requireWrite(req, res, next) {
   }
   req.userRole = ctx.role;
   req.allowedBrands = ctx.allowedBrands;
+  req.userEmail = ctx.email || "";
   next();
 }
 
@@ -1236,6 +1255,7 @@ function requireAdminUser(req, res, next) {
   }
   req.userRole = ctx.role;
   req.allowedBrands = null;
+  req.userEmail = ctx.email || "";
   next();
 }
 
@@ -1381,6 +1401,96 @@ async function deleteUserFromDb(id) {
   return result?.rowCount || 0;
 }
 
+function normalizePushSubscription(data) {
+  if (!data || typeof data !== "object") return null;
+  const sub = data.subscription && typeof data.subscription === "object" ? data.subscription : data;
+  const endpoint = typeof sub.endpoint === "string" ? sub.endpoint.trim() : "";
+  if (!endpoint) return null;
+  return { endpoint, subscription: sub };
+}
+
+async function upsertPushSubscription({ endpoint, subscription, userEmail, userRole, userAgent }) {
+  if (!endpoint || !subscription) return false;
+  if (!dbPool) {
+    pushSubscriptions.set(endpoint, { endpoint, subscription, userEmail, userRole, userAgent });
+    return true;
+  }
+  const sql = `
+    INSERT INTO push_subscriptions (endpoint, subscription, user_email, user_role, user_agent, updated_at)
+    VALUES ($1, $2, $3, $4, $5, NOW())
+    ON CONFLICT (endpoint)
+    DO UPDATE SET subscription = EXCLUDED.subscription,
+      user_email = EXCLUDED.user_email,
+      user_role = EXCLUDED.user_role,
+      user_agent = EXCLUDED.user_agent,
+      updated_at = NOW()
+  `;
+  await dbQuery(sql, [
+    endpoint,
+    subscription,
+    userEmail || null,
+    userRole || null,
+    userAgent || null
+  ]);
+  return true;
+}
+
+async function removePushSubscription(endpoint) {
+  if (!endpoint) return false;
+  if (!dbPool) return pushSubscriptions.delete(endpoint);
+  await dbQuery("DELETE FROM push_subscriptions WHERE endpoint = $1", [endpoint]);
+  return true;
+}
+
+async function listPushSubscriptions() {
+  if (!dbPool) return Array.from(pushSubscriptions.values());
+  const result = await dbQuery("SELECT endpoint, subscription FROM push_subscriptions");
+  return (result?.rows || []).map((row) => ({
+    endpoint: row.endpoint,
+    subscription: row.subscription
+  }));
+}
+
+async function sendPushToAll(payload) {
+  if (!pushEnabled) return 0;
+  const subscriptions = await listPushSubscriptions();
+  if (!subscriptions.length) return 0;
+  const body = JSON.stringify(payload || {});
+  let sent = 0;
+  for (const sub of subscriptions) {
+    try {
+      await webpush.sendNotification(sub.subscription, body);
+      sent += 1;
+    } catch (err) {
+      const status = err?.statusCode || err?.body?.statusCode;
+      if (status === 404 || status === 410) {
+        await removePushSubscription(sub.endpoint);
+      } else {
+        console.warn("[push] send failed", err?.message || err);
+      }
+    }
+  }
+  return sent;
+}
+
+async function notifyPortalApplication({ application, page }) {
+  if (!pushEnabled || !application) return 0;
+  const brand = application.brand || page?.brand || "";
+  const role = application.role || page?.role || "";
+  const name = application.name || "Nuevo candidato";
+  const slug = application.slug || page?.slug || "";
+  const bodyParts = [name];
+  if (brand) bodyParts.push(brand);
+  if (role) bodyParts.push(role);
+  const payload = {
+    title: "Nueva postulacion",
+    body: bodyParts.join(" · "),
+    url: slug ? `/admin/ui?view=portal&slug=${encodeURIComponent(slug)}` : "/admin/ui?view=portal",
+    icon: "/admin/icon.svg"
+  };
+  return sendPushToAll(payload);
+}
+
 async function initDb() {
   if (!dbPool) return;
   try {
@@ -1524,6 +1634,19 @@ async function initDb() {
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_slug ON portal_applications (slug);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_created ON portal_applications (created_at DESC);`);
 
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        endpoint TEXT PRIMARY KEY,
+        subscription JSONB NOT NULL,
+        user_email TEXT,
+        user_role TEXT,
+        user_agent TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_push_subscriptions_email ON push_subscriptions (user_email);`);
+
     const loaded = await loadRoleConfigFromDb();
     if (!loaded && roleConfig) {
       const seeded = await saveRoleConfigToDb(roleConfig);
@@ -1666,7 +1789,8 @@ const portalRouter = createPortalRouter({
   contactName: "HRBOT",
   requireAdmin: requireAdminUser,
   requireWrite,
-  saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry))
+  saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry)),
+  notifyOnApplication: (payload) => notifyPortalApplication(payload)
 });
 app.use("/", portalRouter);
 
@@ -1702,6 +1826,124 @@ app.post("/admin/login", async (req, res) => {
   }
   const token = createUserSession({ email, role: "viewer", allowedBrands: [] });
   return res.json({ ok: true, token, role: "viewer", allowed_brands: [] });
+});
+
+app.get("/admin/push/public-key", requireConfigOrViewer, (req, res) => {
+  return res.json({
+    ok: true,
+    enabled: pushEnabled,
+    publicKey: pushEnabled ? VAPID_PUBLIC_KEY : ""
+  });
+});
+
+app.post("/admin/push/subscribe", requireConfigOrViewer, async (req, res) => {
+  if (!pushEnabled) return res.status(503).json({ error: "push_disabled" });
+  const normalized = normalizePushSubscription(req.body || {});
+  if (!normalized) return res.status(400).json({ error: "invalid_subscription" });
+  try {
+    await upsertPushSubscription({
+      endpoint: normalized.endpoint,
+      subscription: normalized.subscription,
+      userEmail: req.userEmail || "",
+      userRole: req.userRole || "",
+      userAgent: req.headers["user-agent"] || ""
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[push] subscribe failed", err);
+    return res.status(500).json({ error: "subscribe_failed" });
+  }
+});
+
+app.post("/admin/push/unsubscribe", requireConfigOrViewer, async (req, res) => {
+  const normalized = normalizePushSubscription(req.body || {});
+  const endpoint = normalized?.endpoint || String(req.body?.endpoint || "").trim();
+  if (!endpoint) return res.status(400).json({ error: "missing_endpoint" });
+  try {
+    await removePushSubscription(endpoint);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[push] unsubscribe failed", err);
+    return res.status(500).json({ error: "unsubscribe_failed" });
+  }
+});
+
+app.get("/admin/manifest.json", (req, res) => {
+  res.json({
+    name: "HRBOT Console",
+    short_name: "HRBOT",
+    start_url: "/admin/ui",
+    scope: "/admin/",
+    display: "standalone",
+    background_color: "#f4efe6",
+    theme_color: "#1b7a8c",
+    icons: [
+      {
+        src: "/admin/icon.svg",
+        sizes: "any",
+        type: "image/svg+xml"
+      }
+    ]
+  });
+});
+
+app.get("/admin/icon.svg", (req, res) => {
+  res.type("image/svg+xml").send(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1b7a8c"/>
+      <stop offset="100%" stop-color="#0f5563"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="url(#g)"/>
+  <circle cx="64" cy="64" r="40" fill="#f4efe6"/>
+  <text x="64" y="74" text-anchor="middle" font-family="Arial, sans-serif" font-size="40" fill="#1b7a8c" font-weight="700">H</text>
+</svg>
+  `.trim());
+});
+
+app.get("/admin/sw.js", (req, res) => {
+  res.type("application/javascript").send(`
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil(self.clients.claim());
+});
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch (err) {
+    try {
+      data = JSON.parse(event.data.text());
+    } catch (e) {
+      data = {};
+    }
+  }
+  const title = data.title || 'HRBOT';
+  const options = {
+    body: data.body || '',
+    icon: data.icon || '/admin/icon.svg',
+    badge: data.badge || '/admin/icon.svg',
+    data: { url: data.url || '/admin/ui' }
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+self.addEventListener('notificationclick', (event) => {
+  const url = event.notification?.data?.url || '/admin/ui';
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
+      for (const client of clientsArr) {
+        if (client.url && client.focus) {
+          if (client.url.includes(url)) return client.focus();
+        }
+      }
+      return self.clients.openWindow(url);
+    })
+  );
+});
+  `.trim());
 });
 
 app.get("/admin/users", requireAdminUser, async (req, res) => {
@@ -2531,6 +2773,10 @@ app.get("/admin/ui", (req, res) => {
 <head>
   <meta charset="utf-8" />
   <title>HRBOT Console</title>
+  <link rel="manifest" href="/admin/manifest.json" />
+  <meta name="theme-color" content="#1b7a8c" />
+  <link rel="icon" href="/admin/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/admin/icon.svg" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" />
   <style>
     :root {
@@ -3914,6 +4160,25 @@ app.get("/admin/ui", (req, res) => {
             <span class="small" id="admin-status"></span>
           </div>
         </div>
+        <div class="panel" id="push-panel" style="--delay:.065s;">
+          <div class="panel-title">Notificaciones</div>
+          <div class="panel-sub">Recibí avisos cuando entra una nueva postulación del portal.</div>
+          <div class="grid">
+            <div>
+              <label>Estado</label>
+              <div class="status" id="push-status">Cargando...</div>
+              <div class="small" id="push-detail"></div>
+            </div>
+            <div>
+              <label>Acciones</label>
+              <div class="inline">
+                <button id="push-enable" type="button">Activar notificaciones</button>
+                <button class="secondary" id="push-disable" type="button">Desactivar</button>
+              </div>
+              <div class="small">El navegador pedirá permiso la primera vez.</div>
+            </div>
+          </div>
+        </div>
         <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
           <div class="user-hero">
             <div>
@@ -5008,6 +5273,11 @@ app.get("/admin/ui", (req, res) => {
     const adminTokenEl = document.getElementById('admin-token');
     const adminUnlockEl = document.getElementById('admin-unlock');
     const adminStatusEl = document.getElementById('admin-status');
+    const pushPanelEl = document.getElementById('push-panel');
+    const pushEnableEl = document.getElementById('push-enable');
+    const pushDisableEl = document.getElementById('push-disable');
+    const pushStatusEl = document.getElementById('push-status');
+    const pushDetailEl = document.getElementById('push-detail');
     const previewBrandEl = document.getElementById('preview-brand');
     const previewRoleEl = document.getElementById('preview-role');
     const previewApplicantEl = document.getElementById('preview-applicant');
@@ -5186,6 +5456,9 @@ app.get("/admin/ui", (req, res) => {
       if (portalAppBodyEl) portalAppBodyEl.innerHTML = '';
       if (portalAppCountEl) portalAppCountEl.textContent = '';
       if (portalStatusEl) portalStatusEl.textContent = '';
+      if (pushEnableEl) pushEnableEl.disabled = true;
+      if (pushDisableEl) pushDisableEl.disabled = true;
+      setPushStatus('Inactivo', 'Iniciá sesión para activar.');
     }
 
     function logout() {
@@ -6042,6 +6315,131 @@ app.get("/admin/ui", (req, res) => {
       if (!token) return {};
       if (token.startsWith('Bearer ')) return { Authorization: token };
       return { Authorization: 'Bearer ' + token };
+    }
+
+    function setPushStatus(status, detail) {
+      if (!pushStatusEl) return;
+      pushStatusEl.textContent = status || '';
+      if (pushDetailEl) pushDetailEl.textContent = detail || '';
+    }
+
+    function pushSupported() {
+      return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    }
+
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const rawData = window.atob(base64);
+      const outputArray = new Uint8Array(rawData.length);
+      for (let i = 0; i < rawData.length; ++i) {
+        outputArray[i] = rawData.charCodeAt(i);
+      }
+      return outputArray;
+    }
+
+    async function fetchPushConfig() {
+      const resp = await fetch('/admin/push/public-key', { headers: portalAuthHeaders() });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'push_config_failed');
+      return data;
+    }
+
+    async function getPushRegistration() {
+      if (!pushSupported()) return null;
+      const reg = await navigator.serviceWorker.getRegistration('/admin/');
+      if (reg) return reg;
+      return navigator.serviceWorker.register('/admin/sw.js', { scope: '/admin/' });
+    }
+
+    async function getPushSubscription() {
+      const reg = await getPushRegistration();
+      if (!reg) return null;
+      return reg.pushManager.getSubscription();
+    }
+
+    async function refreshPushStatus() {
+      if (!pushPanelEl) return;
+      if (!pushSupported()) {
+        pushPanelEl.style.display = 'none';
+        return;
+      }
+      pushPanelEl.style.display = '';
+      if (!tokenEl || !tokenEl.value) {
+        setPushStatus('Inactivo', 'Iniciá sesión para activar.');
+        if (pushEnableEl) pushEnableEl.disabled = true;
+        if (pushDisableEl) pushDisableEl.disabled = true;
+        return;
+      }
+      let config = null;
+      try {
+        config = await fetchPushConfig();
+      } catch (err) {
+        setPushStatus('Error', err.message || 'No se pudo cargar.');
+        if (pushEnableEl) pushEnableEl.disabled = true;
+        if (pushDisableEl) pushDisableEl.disabled = true;
+        return;
+      }
+      if (!config.enabled) {
+        setPushStatus('Deshabilitado', 'Faltan las llaves VAPID en el server.');
+        if (pushEnableEl) pushEnableEl.disabled = true;
+        if (pushDisableEl) pushDisableEl.disabled = true;
+        return;
+      }
+      const permission = Notification.permission;
+      const sub = await getPushSubscription();
+      if (permission === 'denied') {
+        setPushStatus('Bloqueadas', 'Habilitá notificaciones en el navegador.');
+      } else if (sub) {
+        setPushStatus('Activas');
+      } else {
+        setPushStatus('Inactivas');
+      }
+      if (pushEnableEl) pushEnableEl.disabled = permission === 'denied';
+      if (pushDisableEl) pushDisableEl.disabled = !sub;
+    }
+
+    async function enablePush() {
+      if (!pushSupported()) return;
+      setPushStatus('Activando...');
+      const config = await fetchPushConfig();
+      if (!config.enabled || !config.publicKey) {
+        setPushStatus('Deshabilitado');
+        return;
+      }
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        setPushStatus('Bloqueadas', 'Permiso denegado.');
+        return;
+      }
+      const reg = await getPushRegistration();
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(config.publicKey)
+      });
+      await fetch('/admin/push/subscribe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+        body: JSON.stringify({ subscription: sub })
+      });
+      setPushStatus('Activas');
+      if (pushDisableEl) pushDisableEl.disabled = false;
+    }
+
+    async function disablePush() {
+      if (!pushSupported()) return;
+      setPushStatus('Desactivando...');
+      const sub = await getPushSubscription();
+      if (sub) {
+        await sub.unsubscribe();
+        await fetch('/admin/push/unsubscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({ endpoint: sub.endpoint })
+        });
+      }
+      setPushStatus('Inactivas');
+      if (pushDisableEl) pushDisableEl.disabled = true;
     }
 
     function portalSetStatus(msg, isError) {
@@ -9594,6 +9992,7 @@ app.get("/admin/ui", (req, res) => {
           applyRoleAccess();
           if (authRole === 'admin') loadUsers();
           setActiveView(VIEW_CALLS);
+          refreshPushStatus();
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
         }
@@ -9616,6 +10015,7 @@ app.get("/admin/ui", (req, res) => {
         syncPortalToken();
         applyRoleAccess();
         loadUsers();
+        refreshPushStatus();
         if (pendingPortalView === VIEW_PORTAL) {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
@@ -9637,6 +10037,16 @@ app.get("/admin/ui", (req, res) => {
     loginModeAdminEl.onclick = () => setLoginMode('admin');
     loginModeViewerEl.onclick = () => setLoginMode('viewer');
     loginBtnEl.onclick = login;
+    if (pushEnableEl) {
+      pushEnableEl.onclick = () => {
+        enablePush().catch((err) => setPushStatus('Error', err.message));
+      };
+    }
+    if (pushDisableEl) {
+      pushDisableEl.onclick = () => {
+        disablePush().catch((err) => setPushStatus('Error', err.message));
+      };
+    }
     if (userSaveEl) userSaveEl.onclick = saveUser;
     if (userClearEl) userClearEl.onclick = resetUserForm;
     if (logoutBtnEl) logoutBtnEl.onclick = logout;
@@ -9933,6 +10343,7 @@ app.get("/admin/ui", (req, res) => {
     lockSystemPrompt();
     setAdminStatus('Bloqueado');
     initSidebarState();
+    refreshPushStatus();
     if (window.matchMedia) {
       const mq = window.matchMedia('(max-width: 980px)');
       if (mq.addEventListener) {
