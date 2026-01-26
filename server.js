@@ -4050,6 +4050,9 @@ app.get("/admin/ui", (req, res) => {
     tbody tr:nth-child(even) td { background: #fbf7f0; }
     tr.row-clickable { cursor: pointer; }
     tr.row-clickable:hover td { background: #f5f1e9; }
+    tbody tr.is-new td { background: rgba(27, 122, 140, 0.12); }
+    tbody tr.is-new:hover td { background: rgba(27, 122, 140, 0.18); }
+    tbody tr.is-new td:first-child { box-shadow: inset 3px 0 0 rgba(27, 122, 140, 0.5); }
     .score-pill {
       padding: 4px 8px;
       border-radius: 999px;
@@ -10074,6 +10077,7 @@ app.get("/admin/ui", (req, res) => {
       lastResultsRaw = raw;
       const grouped = groupCalls(raw);
       lastResults = grouped;
+      const lastSeen = getSeenTimestamp(INTERVIEWS_SEEN_KEY);
       const filtered = grouped.filter((call) => {
         if (resultsFilterMode === 'no_answer') return call.outcome === 'NO_ANSWER';
         if (resultsFilterMode === 'completed') return call.outcome !== 'NO_ANSWER';
@@ -10087,6 +10091,10 @@ app.get("/admin/ui", (req, res) => {
       resultsBodyEl.innerHTML = '';
       filtered.forEach((call) => {
         const tr = document.createElement('tr');
+        const created = call.created_at ? new Date(call.created_at).getTime() : 0;
+        if (created && created > lastSeen && isPortalSource(call.source)) {
+          tr.classList.add('is-new');
+        }
         tr.classList.add('row-clickable');
         tr.addEventListener('click', (event) => {
           if (event.target.closest('button, a, audio, input, .audio-player')) return;
@@ -10310,6 +10318,7 @@ app.get("/admin/ui", (req, res) => {
       lastCvRaw = raw;
       const grouped = groupCandidates(raw);
       lastCvList = grouped;
+      const lastSeen = getSeenTimestamp(CANDIDATES_SEEN_KEY);
       const filtered = grouped.filter((item) => {
         const info = cvStatusInfo(item);
         if (info.inCall) return true;
@@ -10322,6 +10331,10 @@ app.get("/admin/ui", (req, res) => {
       let hasActiveCall = false;
       filtered.forEach((item) => {
         const tr = document.createElement('tr');
+        const created = item.created_at ? new Date(item.created_at).getTime() : 0;
+        if (created && created > lastSeen && isPortalSource(item.source)) {
+          tr.classList.add('is-new');
+        }
         const addCell = (value, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
