@@ -2977,6 +2977,7 @@ app.get("/admin/ui", (req, res) => {
 <html>
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>HRBOT Console</title>
   <link rel="manifest" href="/admin/manifest.json" />
   <meta name="theme-color" content="#1b7a8c" />
@@ -4098,6 +4099,37 @@ app.get("/admin/ui", (req, res) => {
     .badge.review { background: rgba(244, 162, 97, 0.2); color: #8a4a14; }
     .badge.reject { background: rgba(206, 76, 50, 0.18); color: #7b2914; }
     .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .sidebar-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(10, 18, 22, 0.45);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+      z-index: 15;
+    }
+    body.sidebar-open .sidebar-overlay {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .mobile-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 6px;
+      margin: -6px -6px 12px;
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      background: var(--bg);
+      border-bottom: 1px solid rgba(228, 218, 200, 0.6);
+    }
+    .mobile-title {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--ink);
+    }
     .login-screen {
       position: fixed;
       inset: 0;
@@ -4236,36 +4268,35 @@ app.get("/admin/ui", (req, res) => {
     @media (max-width: 980px) {
       .app { flex-direction: column; }
       .sidebar {
-        width: 100%;
-        flex-basis: auto;
-        position: sticky;
-        top: 0;
-        z-index: 12;
-        max-height: 60vh;
+        position: fixed;
+        inset: 0 auto 0 0;
+        height: 100dvh;
+        width: min(82vw, 320px);
+        max-width: 320px;
+        transform: translateX(-104%);
+        transition: transform 0.2s ease;
+        z-index: 20;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+        box-shadow: 0 20px 40px rgba(14, 20, 24, 0.35);
       }
-      .content { padding: 20px; }
+      .sidebar.collapsed {
+        width: min(82vw, 320px);
+        flex-basis: auto;
+        padding: 24px;
+        align-items: stretch;
+        transform: translateX(-104%);
+      }
+      .sidebar:not(.collapsed) { transform: translateX(0); }
+      .content { padding: 18px 16px 40px; }
+      .mobile-bar { display: flex; }
       .portal-layout { grid-template-columns: 1fr; }
       .user-form-grid { grid-template-columns: 1fr; }
       .user-hero { flex-direction: column; align-items: flex-start; }
       .user-roles { justify-content: flex-start; }
     }
     @media (max-width: 820px) {
-      .sidebar { padding: 18px; }
-      .sidebar.collapsed {
-        width: 100%;
-        flex-basis: auto;
-        padding: 14px 16px;
-        align-items: stretch;
-        max-height: 68px;
-        overflow: hidden;
-      }
-      .sidebar.collapsed .brand-title { display: block; }
-      .sidebar.collapsed .nav,
-      .sidebar.collapsed .brand-list,
-      .sidebar.collapsed .nav-section-title,
-      .sidebar.collapsed .nav-add { display: none; }
+      .sidebar { padding: 20px; }
       .content-header { align-items: flex-start; }
       .header-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
       .panel { padding: 18px; }
@@ -4363,8 +4394,14 @@ app.get("/admin/ui", (req, res) => {
         <button class="secondary nav-add" id="add-brand" type="button" title="Nuevo local">+ Nuevo local</button>
       </nav>
     </aside>
+    <div id="sidebar-overlay" class="sidebar-overlay"></div>
 
     <section class="content">
+      <div class="mobile-bar">
+        <button class="secondary icon-btn" id="mobile-menu" type="button" aria-label="Menú">☰</button>
+        <div class="mobile-title" id="mobile-title">HRBOT</div>
+        <span></span>
+      </div>
       <div class="content-header">
         <div>
           <div class="eyebrow" id="view-label">Configuración</div>
@@ -5446,6 +5483,9 @@ app.get("/admin/ui", (req, res) => {
     const loginStatusEl = document.getElementById('login-status');
     const sidebarEl = document.getElementById('sidebar');
     const sidebarToggleEl = document.getElementById('sidebar-toggle');
+    const sidebarOverlayEl = document.getElementById('sidebar-overlay');
+    const mobileMenuEl = document.getElementById('mobile-menu');
+    const mobileTitleEl = document.getElementById('mobile-title');
     const statusEl = document.getElementById('status');
     const tokenEl = document.getElementById('token');
     const navGeneralEl = document.getElementById('nav-general');
@@ -5843,6 +5883,7 @@ app.get("/admin/ui", (req, res) => {
     function setSidebarCollapsed(collapsed, persist = true) {
       if (!sidebarEl) return;
       sidebarEl.classList.toggle('collapsed', collapsed);
+      document.body.classList.toggle('sidebar-open', !collapsed);
       if (sidebarToggleEl) {
         sidebarToggleEl.textContent = collapsed ? '>' : '|||';
         sidebarToggleEl.title = collapsed ? 'Expandir menú' : 'Minimizar menú';
@@ -8374,6 +8415,9 @@ app.get("/admin/ui", (req, res) => {
         viewTitleEl.textContent = 'General';
         viewLabelEl.textContent = 'Configuración';
       }
+      if (mobileTitleEl) {
+        mobileTitleEl.textContent = viewTitleEl.textContent || 'HRBOT';
+      }
       updateNavActive();
       updateCallBrandOptions();
       updateRoleOptions();
@@ -8392,6 +8436,9 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'portal') {
         ensurePortalLoaded();
+      }
+      if (window.matchMedia && window.matchMedia('(max-width: 980px)').matches) {
+        setSidebarCollapsed(true);
       }
     }
 
@@ -10818,6 +10865,16 @@ app.get("/admin/ui", (req, res) => {
       sidebarToggleEl.onclick = () => {
         setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
       };
+    }
+    if (mobileMenuEl && sidebarEl) {
+      mobileMenuEl.onclick = () => {
+        setSidebarCollapsed(!sidebarEl.classList.contains('collapsed'));
+      };
+    }
+    if (sidebarOverlayEl) {
+      sidebarOverlayEl.addEventListener('click', () => {
+        setSidebarCollapsed(true);
+      });
     }
     navGeneralEl.onclick = () => setActiveView('');
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
