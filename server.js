@@ -9835,11 +9835,25 @@ app.get("/admin/ui", (req, res) => {
         const cvId = call.cv_id || call.cvId || '';
         if (cvId && !entry.cvIds.includes(cvId)) entry.cvIds.push(cvId);
         if (!entry.source && call.source) entry.source = call.source;
+        if (!entry.cv_url && call.cv_url) entry.cv_url = call.cv_url;
+        if (!entry.cv_text && call.cv_text) entry.cv_text = call.cv_text;
+        if (!entry.cv_id && call.cv_id) entry.cv_id = call.cv_id;
+        const prevSource = entry.source || '';
+        const prevCvUrl = entry.cv_url || '';
+        const prevCvText = entry.cv_text || '';
+        const prevCvId = entry.cv_id || '';
         if (!entry._latestAt || createdAt >= entry._latestAt) {
-          const prevSource = entry.source || '';
           Object.assign(entry, call);
           entry._latestAt = createdAt;
           if (!entry.source && prevSource) entry.source = prevSource;
+          if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
+          if (!entry.cv_text && prevCvText) entry.cv_text = prevCvText;
+          if (!entry.cv_id && prevCvId) entry.cv_id = prevCvId;
+        } else {
+          if (!entry.source && prevSource) entry.source = prevSource;
+          if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
+          if (!entry.cv_text && prevCvText) entry.cv_text = prevCvText;
+          if (!entry.cv_id && prevCvId) entry.cv_id = prevCvId;
         }
         if (!entry.decision && call.decision) {
           entry.decision = call.decision;
@@ -10154,14 +10168,14 @@ app.get("/admin/ui", (req, res) => {
         if (call.cv_url) {
           const wrap = document.createElement('div');
           wrap.className = 'action-stack';
-          const link = document.createElement('a');
-          link.href = call.cv_url;
-          link.target = '_blank';
-          link.rel = 'noopener';
-          link.textContent = 'Ver CV';
-          link.className = 'secondary btn-compact';
-          link.style.textDecoration = 'none';
-          wrap.appendChild(link);
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary btn-compact';
+          btn.textContent = 'Ver CV';
+          btn.onclick = () => {
+            window.open(call.cv_url, '_blank', 'noopener');
+          };
+          wrap.appendChild(btn);
           cvTd.appendChild(wrap);
         } else {
           cvTd.textContent = '—';
@@ -10335,19 +10349,10 @@ app.get("/admin/ui", (req, res) => {
           avatar.style.visibility = 'hidden';
           avatar.onerror = () => avatar.remove();
           const photoUrl = item.cv_photo_url;
-          resolvePhotoThumb(photoUrl).then((result) => {
-            if (!avatar.isConnected) return;
-            if (!result || !result.thumb) {
-              avatar.remove();
-              return;
-            }
-            avatar.dataset.faceX = String(result.focus.centerX || 0);
-            avatar.dataset.faceY = String(result.focus.centerY || 0);
-            avatar.src = result.thumb;
-            applyFaceFocusToImg(avatar, result.focus);
-            avatar.style.visibility = 'visible';
-            attachAvatarHandlers(avatar, result.thumb, result.focus);
-          });
+          avatar.src = photoUrl;
+          avatar.style.objectPosition = '50% 30%';
+          avatar.style.visibility = 'visible';
+          attachAvatarHandlers(avatar, photoUrl);
           candidateWrap.appendChild(avatar);
         }
         const nameSpan = document.createElement('span');
