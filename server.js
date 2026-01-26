@@ -5943,10 +5943,14 @@ app.get("/admin/ui", (req, res) => {
       setLoggedInUI(false);
     }
 
+    function isMobileViewport() {
+      return !!(window.matchMedia && window.matchMedia('(max-width: 980px)').matches);
+    }
+
     function setSidebarCollapsed(collapsed, persist = true) {
       if (!sidebarEl) return;
       sidebarEl.classList.toggle('collapsed', collapsed);
-      document.body.classList.toggle('sidebar-open', !collapsed);
+      document.body.classList.toggle('sidebar-open', isMobileViewport() && !collapsed);
       if (sidebarToggleEl) {
         sidebarToggleEl.textContent = collapsed ? '>' : '|||';
         sidebarToggleEl.title = collapsed ? 'Expandir menú' : 'Minimizar menú';
