@@ -4107,6 +4107,7 @@ app.get("/admin/ui", (req, res) => {
       pointer-events: none;
       transition: opacity 0.2s ease;
       z-index: 15;
+      display: none;
     }
     body.sidebar-open .sidebar-overlay {
       opacity: 1;
@@ -4130,6 +4131,15 @@ app.get("/admin/ui", (req, res) => {
       font-size: 15px;
       color: var(--ink);
     }
+    .panel.has-mobile-toggle .panel-body { margin-top: 12px; }
+    .panel-toggle {
+      display: none;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      box-shadow: none;
+    }
+    .panel.mobile-collapsed .panel-body { display: none; }
     .login-screen {
       position: fixed;
       inset: 0;
@@ -4267,6 +4277,7 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 980px) {
       .app { flex-direction: column; }
+      .sidebar-overlay { display: block; }
       .sidebar {
         position: fixed;
         inset: 0 auto 0 0;
@@ -4297,12 +4308,64 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 820px) {
       .sidebar { padding: 20px; }
+      .panel-toggle { display: inline-flex; align-items: center; gap: 6px; }
       .content-header { align-items: flex-start; }
       .header-actions { width: 100%; justify-content: flex-start; flex-wrap: wrap; }
       .panel { padding: 18px; }
       .grid { grid-template-columns: 1fr; }
       .inline { align-items: stretch; }
       .table-wrapper { max-height: none; }
+    }
+    @media (max-width: 760px) {
+      .table-wrapper { overflow: visible; }
+      .cv-table, .results-table { border-collapse: separate; }
+      .cv-table thead, .results-table thead { display: none; }
+      .cv-table tbody, .results-table tbody { display: block; }
+      .cv-table tbody tr, .results-table tbody tr {
+        display: block;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 4px 2px;
+        margin-bottom: 12px;
+        box-shadow: var(--shadow);
+      }
+      .cv-table tbody tr.is-new, .results-table tbody tr.is-new {
+        border-color: rgba(27, 122, 140, 0.55);
+        box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.18), var(--shadow);
+      }
+      .cv-table tbody tr td, .results-table tbody tr td {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 8px;
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(228, 218, 200, 0.65);
+        background: transparent !important;
+        align-items: center;
+      }
+      .cv-table tbody tr td:last-child, .results-table tbody tr td:last-child { border-bottom: none; }
+      .cv-table tbody tr td::before, .results-table tbody tr td::before {
+        content: attr(data-label);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        font-weight: 700;
+      }
+      .cv-table tbody tr td[data-label=""]::before,
+      .results-table tbody tr td[data-label=""]::before { content: ""; }
+      .cv-table tbody tr:nth-child(even) td,
+      .results-table tbody tr:nth-child(even) td { background: transparent !important; }
+      .candidate-wrap { gap: 8px; }
+      .candidate-avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 12px;
+        flex-basis: 36px;
+      }
+      .action-stack { justify-content: flex-start; flex-wrap: wrap; }
+      .decision-buttons { flex-wrap: wrap; }
+      .decision-cell { white-space: normal; }
     }
     @media (max-width: 640px) {
       body { font-size: 14px; }
@@ -4773,7 +4836,7 @@ app.get("/admin/ui", (req, res) => {
             <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
           </div>
           <div class="table-wrapper" style="margin-top:14px;">
-            <table>
+            <table class="results-table">
               <thead>
                 <tr>
                   <th>Score</th>
@@ -5918,6 +5981,55 @@ app.get("/admin/ui", (req, res) => {
         collapsed = false;
       }
       setSidebarCollapsed(collapsed, false);
+    }
+
+    function enableMobilePanelToggle(panelId, opts = {}) {
+      const panel = document.getElementById(panelId);
+      if (!panel || panel.classList.contains('has-mobile-toggle')) return;
+      const title = panel.querySelector(':scope > .panel-title');
+      const sub = panel.querySelector(':scope > .panel-sub');
+      if (!title || !sub) return;
+      const body = document.createElement('div');
+      body.className = 'panel-body';
+      const children = Array.from(panel.children);
+      children.forEach((child) => {
+        if (child === title || child === sub) return;
+        body.appendChild(child);
+      });
+      panel.appendChild(body);
+      panel.classList.add('has-mobile-toggle');
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'panel-toggle secondary';
+      sub.insertAdjacentElement('afterend', toggle);
+      const media = window.matchMedia ? window.matchMedia('(max-width: 820px)') : null;
+      const defaultCollapsed = opts.defaultCollapsed === true;
+      const collapsedLabel = opts.collapsedLabel || 'Mostrar filtros';
+      const expandedLabel = opts.expandedLabel || 'Ocultar filtros';
+      const syncState = (forceCollapsed) => {
+        const isMobile = media ? media.matches : false;
+        if (!isMobile) {
+          panel.classList.remove('mobile-collapsed');
+          toggle.textContent = expandedLabel;
+          toggle.setAttribute('aria-expanded', 'true');
+          return;
+        }
+        const shouldCollapse = typeof forceCollapsed === 'boolean' ? forceCollapsed : defaultCollapsed;
+        panel.classList.toggle('mobile-collapsed', shouldCollapse);
+        const expanded = !panel.classList.contains('mobile-collapsed');
+        toggle.textContent = expanded ? expandedLabel : collapsedLabel;
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      };
+      toggle.addEventListener('click', () => {
+        panel.classList.toggle('mobile-collapsed');
+        const expanded = !panel.classList.contains('mobile-collapsed');
+        toggle.textContent = expanded ? expandedLabel : collapsedLabel;
+        toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      });
+      if (media && media.addEventListener) {
+        media.addEventListener('change', () => syncState(false));
+      }
+      syncState(defaultCollapsed && media && media.matches);
     }
 
     function clearCallForm() {
@@ -10167,25 +10279,30 @@ app.get("/admin/ui", (req, res) => {
           if (event.target.closest('button, a, audio, input, .audio-player')) return;
           toggleInterviewDetailsRow(tr, call);
         });
-        const addCell = (value, className, title) => {
+        const addCell = (value, label, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
+          td.dataset.label = label || '';
           if (className) td.className = className;
           if (title) td.title = title;
           tr.appendChild(td);
         };
         const scoreTd = document.createElement('td');
+        scoreTd.dataset.label = 'Score';
         scoreTd.appendChild(scorePill(call.score));
         tr.appendChild(scoreTd);
-        tr.appendChild(buildDateCell(call.created_at));
+        const dateTd = buildDateCell(call.created_at);
+        dateTd.dataset.label = 'Fecha';
+        tr.appendChild(dateTd);
         const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
-        addCell(brandLabel, 'cell-compact', brandLabel);
-      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
-        addCell(roleLabel, 'cell-compact', roleLabel);
-        addCell(call.applicant);
-        addCell(call.phone);
+        addCell(brandLabel, 'Local', 'cell-compact', brandLabel);
+        const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+        addCell(roleLabel, 'Posición', 'cell-compact', roleLabel);
+        addCell(call.applicant, 'Candidato');
+        addCell(call.phone, 'Teléfono');
         const statusText = formatInterviewSummary(call);
         const statusTd = document.createElement('td');
+        statusTd.dataset.label = 'Estado';
         const statusDiv = document.createElement('div');
         statusDiv.className = 'summary-cell';
         statusDiv.textContent = statusText;
@@ -10197,6 +10314,7 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(statusTd);
         const decisionTd = document.createElement('td');
         decisionTd.className = 'decision-cell';
+        decisionTd.dataset.label = 'Decisión';
         const decisionWrap = document.createElement('div');
         decisionWrap.className = 'decision-buttons';
         const decisionOptions = [
@@ -10240,6 +10358,7 @@ app.get("/admin/ui", (req, res) => {
         decisionTd.appendChild(decisionWrap);
         tr.appendChild(decisionTd);
         const cvTd = document.createElement('td');
+        cvTd.dataset.label = 'CV';
         if (call.cv_url) {
           const wrap = document.createElement('div');
           wrap.className = 'action-stack';
@@ -10257,6 +10376,7 @@ app.get("/admin/ui", (req, res) => {
         }
         tr.appendChild(cvTd);
         const audioTd = document.createElement('td');
+        audioTd.dataset.label = 'Audio';
         if (call.audio_url) {
           const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
           const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
@@ -10267,6 +10387,7 @@ app.get("/admin/ui", (req, res) => {
         }
         tr.appendChild(audioTd);
         const actionTd = document.createElement('td');
+        actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
         if (authRole === 'admin' && call.callId) {
@@ -10402,9 +10523,10 @@ app.get("/admin/ui", (req, res) => {
         if (created && created > lastSeen && isPortalSource(item.source)) {
           tr.classList.add('is-new');
         }
-        const addCell = (value, className, title) => {
+        const addCell = (value, label, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
+          td.dataset.label = label || '';
           if (className) td.className = className;
           if (title) td.title = title;
           tr.appendChild(td);
@@ -10412,13 +10534,15 @@ app.get("/admin/ui", (req, res) => {
         const dateTd = buildDateCell(item.created_at);
         dateTd.classList.add('cell-compact');
         dateTd.title = formatDate(item.created_at);
+        dateTd.dataset.label = 'Fecha';
         tr.appendChild(dateTd);
         const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
         const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
-        addCell(brandLabel, 'cell-compact', brandLabel);
-        addCell(roleLabel, 'cell-compact', roleLabel);
+        addCell(brandLabel, 'Local', 'cell-compact', brandLabel);
+        addCell(roleLabel, 'Posición', 'cell-compact', roleLabel);
         const candidateTd = document.createElement('td');
         candidateTd.className = 'candidate-cell';
+        candidateTd.dataset.label = 'Candidato';
         const candidateWrap = document.createElement('div');
         candidateWrap.className = 'candidate-wrap';
         if (item.cv_photo_url) {
@@ -10442,7 +10566,7 @@ app.get("/admin/ui", (req, res) => {
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
-        addCell(item.phone || '');
+        addCell(item.phone || '', 'Teléfono');
         const info = cvStatusInfo(item);
         if (info.inCall) {
           tr.classList.add('call-active');
@@ -10453,9 +10577,11 @@ app.get("/admin/ui", (req, res) => {
         statusTd.className = 'cv-status ' + (info.statusClass || '');
         statusTd.textContent = statusText || '—';
         if (statusText) statusTd.title = statusText;
+        statusTd.dataset.label = 'Estado';
         tr.appendChild(statusTd);
         const decisionTd = document.createElement('td');
         decisionTd.className = 'decision-cell';
+        decisionTd.dataset.label = 'Decisión';
         const decisionWrap = document.createElement('div');
         decisionWrap.className = 'decision-buttons';
         const decisionOptions = [
@@ -10498,6 +10624,7 @@ app.get("/admin/ui", (req, res) => {
         decisionTd.appendChild(decisionWrap);
         tr.appendChild(decisionTd);
         const cvTd = document.createElement('td');
+        cvTd.dataset.label = 'CV';
         if (item.cv_url) {
           const wrap = document.createElement('div');
           wrap.className = 'inline';
@@ -10526,6 +10653,7 @@ app.get("/admin/ui", (req, res) => {
         tr.appendChild(cvTd);
         const actionTd = document.createElement('td');
         actionTd.className = 'action-cell';
+        actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
         const canWrite = authRole !== 'viewer';
@@ -11156,6 +11284,21 @@ app.get("/admin/ui", (req, res) => {
     setLoginMode('admin');
     lockSystemPrompt();
     setAdminStatus('Bloqueado');
+    enableMobilePanelToggle('call-panel', {
+      defaultCollapsed: true,
+      collapsedLabel: 'Mostrar carga CV',
+      expandedLabel: 'Ocultar carga CV'
+    });
+    enableMobilePanelToggle('cv-list-panel', {
+      defaultCollapsed: false,
+      collapsedLabel: 'Mostrar filtros',
+      expandedLabel: 'Ocultar filtros'
+    });
+    enableMobilePanelToggle('results-panel', {
+      defaultCollapsed: true,
+      collapsedLabel: 'Mostrar filtros',
+      expandedLabel: 'Ocultar filtros'
+    });
     initSidebarState();
     refreshPushStatus();
     if (!autoLoginUsed) {
