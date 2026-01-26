@@ -1808,6 +1808,10 @@ function sanitizeFilename(name = "") {
   return name.replace(/[^\w.\-]+/g, "_");
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 const PROFILE_MIME_EXT = {
   "image/jpeg": ".jpg",
   "image/png": ".png",
@@ -13028,12 +13032,14 @@ async function sendWhatsappReport(call, opts = {}) {
   } catch (err) {
     console.error("[whatsapp] failed sending cv", err);
   }
+  await sleep(1500);
   try {
     await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
   } catch (err) {
     console.error("[whatsapp] failed sending text", err);
     return;
   }
+  await sleep(1000);
   try {
     const mediaUrl = await getCallAudioMediaUrl(call);
     if (mediaUrl) {
