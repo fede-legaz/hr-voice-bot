@@ -35,6 +35,7 @@ const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
 const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
 const CV_PHOTO_MAX_BYTES = Number(process.env.CV_PHOTO_MAX_BYTES) || 350 * 1024;
+const PROFILE_PHOTO_MAX_BYTES = Number(process.env.PROFILE_PHOTO_MAX_BYTES) || 2 * 1024 * 1024;
 const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.AUDIO_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
 const DB_AUDIO_MAX_BYTES = Number(process.env.DB_AUDIO_MAX_BYTES) || AUDIO_UPLOAD_MAX_BYTES;
 const VOICE = process.env.VOICE || "marin";
@@ -1320,7 +1321,7 @@ async function fetchUserByEmail(email) {
   const normalized = normalizeEmail(email);
   if (!normalized) return null;
   const result = await dbQuery(
-    "SELECT id, email, password_hash, role, allowed_brands, active FROM users WHERE email = $1 LIMIT 1",
+    "SELECT id, email, password_hash, role, allowed_brands, active, profile_photo_url FROM users WHERE email = $1 LIMIT 1",
     [normalized]
   );
   return result?.rows?.[0] || null;
@@ -1390,6 +1391,30 @@ async function updateUserInDb(id, { email, password, role, allowed_brands, activ
     SET ${fields.join(", ")}, updated_at = NOW()
     WHERE id = $${values.length}
     RETURNING id, email, role, allowed_brands, active, created_at, updated_at
+  `;
+  const result = await dbQuery(sql, values);
+  return result?.rows?.[0] || null;
+}
+
+async function updateUserProfileByEmail(email, payload = {}) {
+  if (!dbPool || !email) return null;
+  const fields = [];
+  const values = [];
+  if (payload.password) {
+    values.push(hashPassword(payload.password));
+    fields.push(`password_hash = $${values.length}`);
+  }
+  if (payload.profile_photo_url !== undefined) {
+    values.push(payload.profile_photo_url || null);
+    fields.push(`profile_photo_url = $${values.length}`);
+  }
+  if (!fields.length) return null;
+  values.push(normalizeEmail(email));
+  const sql = `
+    UPDATE users
+    SET ${fields.join(", ")}, updated_at = NOW()
+    WHERE email = $${values.length}
+    RETURNING id, email, role, allowed_brands, active, profile_photo_url, created_at, updated_at
   `;
   const result = await dbQuery(sql, values);
   return result?.rows?.[0] || null;
@@ -1582,12 +1607,14 @@ async function initDb() {
         role TEXT NOT NULL,
         allowed_brands TEXT[] NOT NULL DEFAULT '{}'::text[],
         active BOOLEAN NOT NULL DEFAULT TRUE,
+        profile_photo_url TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
     await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_brands TEXT[] NOT NULL DEFAULT '{}'::text[];`);
     await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;`);
+    await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);`);
 
     await dbPool.query(`
@@ -1752,6 +1779,56 @@ function sanitizeFilename(name = "") {
   return name.replace(/[^\w.\-]+/g, "_");
 }
 
+const PROFILE_MIME_EXT = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif"
+};
+
+function extForMime(mime, fallbackName) {
+  const known = PROFILE_MIME_EXT[mime];
+  if (known) return known;
+  const fallback = path.extname(fallbackName || "");
+  if (fallback) return fallback.toLowerCase();
+  return ".bin";
+}
+
+function ensureDir(dirPath) {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+  }
+}
+
+async function saveProfilePhoto({ dataUrl, fileName, userKey, uploadsDir, uploadToSpacesFn, publicUploadsBaseUrl }) {
+  if (!dataUrl) return "";
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) throw new Error("invalid_data_url");
+  if (!parsed.mime || !parsed.mime.startsWith("image/")) {
+    throw new Error("unsupported_file_type");
+  }
+  if (parsed.buffer.length > PROFILE_PHOTO_MAX_BYTES) {
+    throw new Error("file_too_large");
+  }
+  const ext = extForMime(parsed.mime, fileName);
+  const safeName = sanitizeFilename(path.basename(fileName || "avatar"));
+  const finalName = safeName.endsWith(ext) ? safeName : safeName + ext;
+  const relDir = path.posix.join("profile-photos", userKey || "user");
+  const relPath = path.posix.join(relDir, finalName);
+  if (uploadToSpacesFn) {
+    await uploadToSpacesFn({ key: relPath, body: parsed.buffer, contentType: parsed.mime });
+  } else {
+    const fullDir = path.join(uploadsDir, relDir);
+    ensureDir(fullDir);
+    const fullPath = path.join(fullDir, finalName);
+    await fs.promises.writeFile(fullPath, parsed.buffer);
+  }
+  const baseUrl = publicUploadsBaseUrl || "/uploads";
+  return `${baseUrl}/${relPath}`;
+}
+
 async function uploadToSpaces({ key, body, contentType }) {
   if (!s3Client || !SPACES_BUCKET) return "";
   const params = {
@@ -1775,6 +1852,7 @@ const portalSpacesBaseUrl = getSpacesPublicBaseUrl();
 const portalUseSpaces = !!(portalSpacesBaseUrl && s3Client);
 const portalPublicUploadsBaseUrl = portalUseSpaces ? portalSpacesBaseUrl : "/uploads";
 const portalUploadToSpaces = portalUseSpaces ? uploadToSpaces : null;
+const adminUploadsDir = path.join(__dirname, "data", "uploads");
 
 const portalRouter = createPortalRouter({
   dataDir: path.join(__dirname, "data"),
@@ -1865,6 +1943,79 @@ app.post("/admin/push/unsubscribe", requireConfigOrViewer, async (req, res) => {
   } catch (err) {
     console.error("[push] unsubscribe failed", err);
     return res.status(500).json({ error: "unsubscribe_failed" });
+  }
+});
+
+app.get("/admin/me", requireConfigOrViewer, async (req, res) => {
+  if (!dbPool || !req.userEmail) {
+    return res.json({
+      ok: true,
+      can_update: false,
+      user: {
+        email: req.userEmail || "",
+        role: req.userRole || "viewer",
+        allowed_brands: req.allowedBrands || [],
+        profile_photo_url: ""
+      }
+    });
+  }
+  try {
+    const user = await fetchUserByEmail(req.userEmail);
+    if (!user) return res.status(404).json({ error: "user_not_found" });
+    return res.json({
+      ok: true,
+      can_update: true,
+      user: {
+        email: user.email,
+        role: normalizeUserRole(user.role),
+        allowed_brands: Array.isArray(user.allowed_brands) ? user.allowed_brands : [],
+        profile_photo_url: user.profile_photo_url || ""
+      }
+    });
+  } catch (err) {
+    console.error("[admin/me] failed", err);
+    return res.status(500).json({ error: "me_failed" });
+  }
+});
+
+app.put("/admin/me", requireConfigOrViewer, async (req, res) => {
+  if (!dbPool || !req.userEmail) {
+    return res.status(503).json({ error: "db_unavailable" });
+  }
+  try {
+    const password = String(req.body?.password || "").trim();
+    const photoDataUrl = req.body?.profile_photo_data_url || "";
+    const photoFileName = req.body?.profile_photo_file_name || "avatar";
+    const clearPhoto = req.body?.profile_photo_clear === true || req.body?.profile_photo_clear === "true";
+    const payload = {};
+    if (password) payload.password = password;
+    if (clearPhoto) payload.profile_photo_url = "";
+    if (photoDataUrl) {
+      const userKey = sanitizeFilename(req.userEmail || "user").toLowerCase();
+      const url = await saveProfilePhoto({
+        dataUrl: photoDataUrl,
+        fileName: photoFileName,
+        userKey,
+        uploadsDir: adminUploadsDir,
+        uploadToSpacesFn: portalUploadToSpaces,
+        publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+      });
+      payload.profile_photo_url = url;
+    }
+    const updated = await updateUserProfileByEmail(req.userEmail, payload);
+    if (!updated) return res.status(400).json({ error: "profile_update_failed" });
+    return res.json({
+      ok: true,
+      user: {
+        email: updated.email,
+        role: normalizeUserRole(updated.role),
+        allowed_brands: Array.isArray(updated.allowed_brands) ? updated.allowed_brands : [],
+        profile_photo_url: updated.profile_photo_url || ""
+      }
+    });
+  } catch (err) {
+    console.error("[admin/me] update failed", err);
+    return res.status(400).json({ error: err.message || "profile_update_failed" });
   }
 });
 
@@ -3955,6 +4106,38 @@ app.get("/admin/ui", (req, res) => {
       background: #fff;
       border: 1px solid var(--border);
     }
+    .user-modal-card { width: min(780px, 92vw); }
+    .user-modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .user-meta {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .user-avatar-lg {
+      width: 64px;
+      height: 64px;
+      border-radius: 18px;
+      background: #efe6d8;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: var(--primary-dark);
+      overflow: hidden;
+      position: relative;
+    }
+    .user-avatar-lg img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+    .user-avatar-lg.has-img img { display: block; }
+    .user-avatar-lg.has-img span { display: none; }
     .photo-tooltip {
       position: fixed;
       display: none;
@@ -4117,6 +4300,7 @@ app.get("/admin/ui", (req, res) => {
           <input type="hidden" id="token" />
           <button class="secondary" id="load" type="button">Reload</button>
           <button id="save" type="button">Save</button>
+          <button class="secondary" id="user-panel-toggle" type="button">Perfil</button>
           <button class="secondary" id="logout" type="button" style="display:none;">Salir</button>
         </div>
       </div>
@@ -4158,25 +4342,6 @@ app.get("/admin/ui", (req, res) => {
               <button class="secondary" id="admin-unlock" type="button">Unlock</button>
             </div>
             <span class="small" id="admin-status"></span>
-          </div>
-        </div>
-        <div class="panel" id="push-panel" style="--delay:.065s;">
-          <div class="panel-title">Notificaciones</div>
-          <div class="panel-sub">Recibí avisos cuando entra una nueva postulación del portal.</div>
-          <div class="grid">
-            <div>
-              <label>Estado</label>
-              <div class="status" id="push-status">Cargando...</div>
-              <div class="small" id="push-detail"></div>
-            </div>
-            <div>
-              <label>Acciones</label>
-              <div class="inline">
-                <button id="push-enable" type="button">Activar notificaciones</button>
-                <button class="secondary" id="push-disable" type="button">Desactivar</button>
-              </div>
-              <div class="small">El navegador pedirá permiso la primera vez.</div>
-            </div>
           </div>
         </div>
         <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
@@ -5104,6 +5269,67 @@ app.get("/admin/ui", (req, res) => {
       </section>
     </section>
   </div>
+  <div id="user-modal" class="cv-modal">
+    <div class="cv-modal-card user-modal-card">
+      <div class="user-modal-head">
+        <div>
+          <div class="panel-title">Usuario</div>
+          <div class="panel-sub" id="user-subtitle">Perfil y preferencias.</div>
+        </div>
+        <button class="secondary" id="user-modal-close" type="button">Cerrar</button>
+      </div>
+      <div class="user-meta">
+        <div class="user-avatar-lg" id="user-avatar-wrap">
+          <img id="user-avatar-img" alt="Avatar" />
+          <span id="user-avatar-fallback">U</span>
+        </div>
+        <div class="user-meta-text">
+          <div id="user-email-text" style="font-weight:700;"></div>
+          <div class="small" id="user-role-text"></div>
+        </div>
+      </div>
+      <div class="grid">
+        <div>
+          <label>Nueva contraseña</label>
+          <input type="password" id="user-password-new" placeholder="********" />
+        </div>
+        <div>
+          <label>Confirmar contraseña</label>
+          <input type="password" id="user-password-confirm" placeholder="********" />
+        </div>
+      </div>
+      <div class="row">
+        <label>Foto de perfil</label>
+        <div class="inline">
+          <input type="file" id="user-photo-input" accept="image/*" />
+          <button class="secondary" id="user-photo-clear" type="button">Quitar foto</button>
+        </div>
+      </div>
+      <div class="row inline">
+        <button id="user-save-profile" type="button">Guardar cambios</button>
+        <button class="secondary" id="user-logout" type="button">Salir</button>
+        <span class="status" id="user-profile-status"></span>
+      </div>
+      <div class="divider"></div>
+      <div class="panel-title">Notificaciones</div>
+      <div class="panel-sub">Recibí avisos cuando entra una nueva postulación del portal.</div>
+      <div class="grid">
+        <div>
+          <label>Estado</label>
+          <div class="status" id="push-status">Cargando...</div>
+          <div class="small" id="push-detail"></div>
+        </div>
+        <div>
+          <label>Acciones</label>
+          <div class="inline">
+            <button id="push-enable" type="button">Activar notificaciones</button>
+            <button class="secondary" id="push-disable" type="button">Desactivar</button>
+          </div>
+          <div class="small">El navegador pedirá permiso la primera vez.</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="cv-modal" class="cv-modal">
     <div class="cv-modal-card">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
@@ -5164,6 +5390,21 @@ app.get("/admin/ui", (req, res) => {
     const loadBtnEl = document.getElementById('load');
     const saveBtnEl = document.getElementById('save');
     const logoutBtnEl = document.getElementById('logout');
+    const userPanelToggleEl = document.getElementById('user-panel-toggle');
+    const userModalEl = document.getElementById('user-modal');
+    const userModalCloseEl = document.getElementById('user-modal-close');
+    const userEmailTextEl = document.getElementById('user-email-text');
+    const userRoleTextEl = document.getElementById('user-role-text');
+    const userAvatarWrapEl = document.getElementById('user-avatar-wrap');
+    const userAvatarImgEl = document.getElementById('user-avatar-img');
+    const userAvatarFallbackEl = document.getElementById('user-avatar-fallback');
+    const userPasswordNewEl = document.getElementById('user-password-new');
+    const userPasswordConfirmEl = document.getElementById('user-password-confirm');
+    const userPhotoInputEl = document.getElementById('user-photo-input');
+    const userPhotoClearEl = document.getElementById('user-photo-clear');
+    const userSaveProfileEl = document.getElementById('user-save-profile');
+    const userProfileStatusEl = document.getElementById('user-profile-status');
+    const userLogoutEl = document.getElementById('user-logout');
     const portalListEl = document.getElementById('portal-list');
     const portalNewEl = document.getElementById('portal-new');
     const portalSaveEl = document.getElementById('portal-save');
@@ -5273,7 +5514,6 @@ app.get("/admin/ui", (req, res) => {
     const adminTokenEl = document.getElementById('admin-token');
     const adminUnlockEl = document.getElementById('admin-unlock');
     const adminStatusEl = document.getElementById('admin-status');
-    const pushPanelEl = document.getElementById('push-panel');
     const pushEnableEl = document.getElementById('push-enable');
     const pushDisableEl = document.getElementById('push-disable');
     const pushStatusEl = document.getElementById('push-status');
@@ -5371,6 +5611,10 @@ app.get("/admin/ui", (req, res) => {
     let portalPendingSlug = '';
     let portalLoaded = false;
     let pendingPortalView = '';
+    let currentUserProfile = null;
+    let pendingUserPhotoDataUrl = '';
+    let pendingUserPhotoName = '';
+    let pendingUserPhotoClear = false;
     const CV_CHAR_LIMIT = 4000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -5410,9 +5654,17 @@ app.get("/admin/ui", (req, res) => {
     function setCallStatus(msg) { callStatusEl.textContent = msg || ''; }
     function setCvStatus(msg) { cvStatusEl.textContent = msg || ''; }
     function setUserStatus(msg) { if (userStatusEl) userStatusEl.textContent = msg || ''; }
+    function setUserProfileStatus(msg, isError) {
+      if (!userProfileStatusEl) return;
+      userProfileStatusEl.textContent = msg || '';
+      userProfileStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
     const SIDEBAR_STATE_KEY = 'hrbot_sidebar_collapsed';
+    const AUTH_TOKEN_KEY = 'hrbot_auth_token';
+    const AUTH_ROLE_KEY = 'hrbot_auth_role';
+    const AUTH_BRANDS_KEY = 'hrbot_auth_brands';
 
     function stopPolling() {
       if (resultsTimer) {
@@ -5434,6 +5686,7 @@ app.get("/admin/ui", (req, res) => {
       if (loginScreenEl) loginScreenEl.style.display = isLoggedIn ? 'none' : 'flex';
       if (appEl) appEl.style.display = isLoggedIn ? 'flex' : 'none';
       if (logoutBtnEl) logoutBtnEl.style.display = isLoggedIn ? '' : 'none';
+      if (userPanelToggleEl) userPanelToggleEl.style.display = isLoggedIn ? '' : 'none';
     }
 
     function clearAuthState() {
@@ -5456,6 +5709,10 @@ app.get("/admin/ui", (req, res) => {
       if (portalAppBodyEl) portalAppBodyEl.innerHTML = '';
       if (portalAppCountEl) portalAppCountEl.textContent = '';
       if (portalStatusEl) portalStatusEl.textContent = '';
+      currentUserProfile = null;
+      if (userEmailTextEl) userEmailTextEl.textContent = '';
+      if (userRoleTextEl) userRoleTextEl.textContent = '';
+      applyUserAvatar('', '');
       if (pushEnableEl) pushEnableEl.disabled = true;
       if (pushDisableEl) pushDisableEl.disabled = true;
       setPushStatus('Inactivo', 'Iniciá sesión para activar.');
@@ -5464,12 +5721,11 @@ app.get("/admin/ui", (req, res) => {
     function logout() {
       stopPolling();
       clearAuthState();
+      closeUserModal();
       if (loginTokenEl) loginTokenEl.value = '';
       if (loginEmailEl) loginEmailEl.value = '';
       if (loginPasswordEl) loginPasswordEl.value = '';
-      try {
-        localStorage.removeItem('portalToken');
-      } catch (err) {}
+      clearStoredAuth();
       setLoginMode('admin');
       setLoggedInUI(false);
     }
@@ -5541,6 +5797,18 @@ app.get("/admin/ui", (req, res) => {
       if (!tokenEl || !tokenEl.value) return;
       try {
         localStorage.setItem('portalToken', tokenEl.value);
+        localStorage.setItem(AUTH_TOKEN_KEY, tokenEl.value);
+        localStorage.setItem(AUTH_ROLE_KEY, authRole || 'viewer');
+        localStorage.setItem(AUTH_BRANDS_KEY, JSON.stringify(authBrands || []));
+      } catch (err) {}
+    }
+
+    function clearStoredAuth() {
+      try {
+        localStorage.removeItem('portalToken');
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        localStorage.removeItem(AUTH_ROLE_KEY);
+        localStorage.removeItem(AUTH_BRANDS_KEY);
       } catch (err) {}
     }
 
@@ -5561,6 +5829,121 @@ app.get("/admin/ui", (req, res) => {
       if (cvFileEl) cvFileEl.disabled = !canWrite;
       if (!isAdmin && activeView === 'general') {
         setActiveView(VIEW_CALLS);
+      }
+    }
+
+    function initialsFromEmail(email) {
+      const value = (email || '').trim();
+      if (!value) return 'U';
+      const base = value.split('@')[0] || value;
+      const parts = base.split(/[._\-\s]+/).filter(Boolean);
+      if (!parts.length) return base.slice(0, 2).toUpperCase();
+      if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+
+    function applyUserAvatar(url, email) {
+      if (!userAvatarWrapEl) return;
+      const clean = (url || '').trim();
+      const initials = initialsFromEmail(email);
+      if (userAvatarFallbackEl) userAvatarFallbackEl.textContent = initials;
+      if (clean) {
+        userAvatarImgEl.src = clean;
+        userAvatarWrapEl.classList.add('has-img');
+      } else {
+        userAvatarImgEl.removeAttribute('src');
+        userAvatarWrapEl.classList.remove('has-img');
+      }
+    }
+
+    async function loadMe() {
+      if (!tokenEl || !tokenEl.value) return;
+      try {
+        const resp = await fetch('/admin/me', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'me_failed');
+        const user = data.user || {};
+        currentUserProfile = user;
+        if (userEmailTextEl) userEmailTextEl.textContent = user.email || 'Admin';
+        if (userRoleTextEl) userRoleTextEl.textContent = user.role ? ('Rol: ' + user.role) : '';
+        applyUserAvatar(user.profile_photo_url || '', user.email || '');
+        const canUpdate = data.can_update !== false;
+        if (userSaveProfileEl) userSaveProfileEl.disabled = !canUpdate;
+        if (userPhotoInputEl) userPhotoInputEl.disabled = !canUpdate;
+        if (userPhotoClearEl) userPhotoClearEl.disabled = !canUpdate;
+      } catch (err) {
+        setUserProfileStatus('Error: ' + err.message, true);
+      }
+    }
+
+    function openUserModal() {
+      if (!userModalEl) return;
+      userModalEl.style.display = 'flex';
+      setUserProfileStatus('');
+      pendingUserPhotoDataUrl = '';
+      pendingUserPhotoName = '';
+      pendingUserPhotoClear = false;
+      if (userPasswordNewEl) userPasswordNewEl.value = '';
+      if (userPasswordConfirmEl) userPasswordConfirmEl.value = '';
+      if (userPhotoInputEl) userPhotoInputEl.value = '';
+      loadMe();
+      refreshPushStatus();
+    }
+
+    function closeUserModal() {
+      if (!userModalEl) return;
+      userModalEl.style.display = 'none';
+    }
+
+    async function saveUserProfile() {
+      if (!tokenEl || !tokenEl.value) return;
+      const password = (userPasswordNewEl && userPasswordNewEl.value || '').trim();
+      const confirm = (userPasswordConfirmEl && userPasswordConfirmEl.value || '').trim();
+      if (password || confirm) {
+        if (password.length < 6) {
+          setUserProfileStatus('La contraseña debe tener al menos 6 caracteres.', true);
+          return;
+        }
+        if (password !== confirm) {
+          setUserProfileStatus('Las contraseñas no coinciden.', true);
+          return;
+        }
+      }
+      const payload = {};
+      if (password) payload.password = password;
+      if (pendingUserPhotoClear) payload.profile_photo_clear = true;
+      if (pendingUserPhotoDataUrl) {
+        payload.profile_photo_data_url = pendingUserPhotoDataUrl;
+        payload.profile_photo_file_name = pendingUserPhotoName || 'avatar';
+      }
+      if (!Object.keys(payload).length) {
+        setUserProfileStatus('Sin cambios para guardar.');
+        return;
+      }
+      setUserProfileStatus('Guardando...');
+      try {
+        const resp = await fetch('/admin/me', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'profile_failed');
+        if (data.user) {
+          currentUserProfile = data.user;
+          if (userEmailTextEl) userEmailTextEl.textContent = data.user.email || 'Admin';
+          if (userRoleTextEl) userRoleTextEl.textContent = data.user.role ? ('Rol: ' + data.user.role) : '';
+          applyUserAvatar(data.user.profile_photo_url || '', data.user.email || '');
+        }
+        pendingUserPhotoDataUrl = '';
+        pendingUserPhotoName = '';
+        pendingUserPhotoClear = false;
+        if (userPhotoInputEl) userPhotoInputEl.value = '';
+        if (userPasswordNewEl) userPasswordNewEl.value = '';
+        if (userPasswordConfirmEl) userPasswordConfirmEl.value = '';
+        setUserProfileStatus('Guardado.');
+      } catch (err) {
+        setUserProfileStatus('Error: ' + err.message, true);
       }
     }
 
@@ -6359,12 +6742,13 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function refreshPushStatus() {
-      if (!pushPanelEl) return;
+      if (!pushStatusEl) return;
       if (!pushSupported()) {
-        pushPanelEl.style.display = 'none';
+        setPushStatus('No disponible', 'Este navegador no soporta notificaciones.');
+        if (pushEnableEl) pushEnableEl.disabled = true;
+        if (pushDisableEl) pushDisableEl.disabled = true;
         return;
       }
-      pushPanelEl.style.display = '';
       if (!tokenEl || !tokenEl.value) {
         setPushStatus('Inactivo', 'Iniciá sesión para activar.');
         if (pushEnableEl) pushEnableEl.disabled = true;
@@ -7943,6 +8327,9 @@ app.get("/admin/ui", (req, res) => {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'load failed');
         state.config = data.config || {};
+        if (Array.isArray(data.allowed_brands)) {
+          authBrands = data.allowed_brands;
+        }
         renderConfig(state.config);
         if (authRole === 'admin') {
           renderUserBrandList(getSelectedUserBrands());
@@ -7950,6 +8337,7 @@ app.get("/admin/ui", (req, res) => {
         }
         lastLoadError = '';
         setStatus('Loaded (' + (data.source || 'defaults') + ')');
+        syncPortalToken();
         return true;
       } catch (err) {
         lastLoadError = err.message || '';
@@ -9964,6 +10352,40 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function restoreSession() {
+      let storedToken = '';
+      let storedRole = '';
+      let storedBrands = [];
+      try {
+        storedToken = localStorage.getItem(AUTH_TOKEN_KEY) || localStorage.getItem('portalToken') || '';
+        storedRole = localStorage.getItem(AUTH_ROLE_KEY) || '';
+        const rawBrands = localStorage.getItem(AUTH_BRANDS_KEY) || '[]';
+        storedBrands = JSON.parse(rawBrands);
+      } catch (err) {
+        storedToken = '';
+        storedRole = '';
+        storedBrands = [];
+      }
+      if (!storedToken) return false;
+      tokenEl.value = storedToken;
+      authRole = storedRole || 'viewer';
+      authBrands = Array.isArray(storedBrands) ? storedBrands : [];
+      const ok = await loadConfig();
+      if (!ok) {
+        clearAuthState();
+        clearStoredAuth();
+        setLoggedInUI(false);
+        return false;
+      }
+      setLoggedInUI(true);
+      applyRoleAccess();
+      if (authRole === 'admin') loadUsers();
+      setActiveView(VIEW_CALLS);
+      refreshPushStatus();
+      loadMe();
+      return true;
+    }
+
     async function login() {
       if (loginMode === 'viewer') {
         const email = (loginEmailEl.value || '').trim();
@@ -9993,6 +10415,7 @@ app.get("/admin/ui", (req, res) => {
           if (authRole === 'admin') loadUsers();
           setActiveView(VIEW_CALLS);
           refreshPushStatus();
+          loadMe();
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
         }
@@ -10016,6 +10439,7 @@ app.get("/admin/ui", (req, res) => {
         applyRoleAccess();
         loadUsers();
         refreshPushStatus();
+        loadMe();
         if (pendingPortalView === VIEW_PORTAL) {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
@@ -10037,6 +10461,38 @@ app.get("/admin/ui", (req, res) => {
     loginModeAdminEl.onclick = () => setLoginMode('admin');
     loginModeViewerEl.onclick = () => setLoginMode('viewer');
     loginBtnEl.onclick = login;
+    if (userPanelToggleEl) userPanelToggleEl.onclick = openUserModal;
+    if (userModalCloseEl) userModalCloseEl.onclick = closeUserModal;
+    if (userModalEl) {
+      userModalEl.addEventListener('click', (event) => {
+        if (event.target === userModalEl) closeUserModal();
+      });
+    }
+    if (userSaveProfileEl) userSaveProfileEl.onclick = saveUserProfile;
+    if (userLogoutEl) userLogoutEl.onclick = logout;
+    if (userPhotoInputEl) {
+      userPhotoInputEl.addEventListener('change', async () => {
+        const file = userPhotoInputEl.files && userPhotoInputEl.files[0];
+        if (!file) return;
+        try {
+          const dataUrl = await portalFileToDataUrl(file);
+          pendingUserPhotoDataUrl = dataUrl;
+          pendingUserPhotoName = file.name || 'avatar';
+          pendingUserPhotoClear = false;
+          applyUserAvatar(dataUrl, currentUserProfile?.email || '');
+        } catch (err) {
+          setUserProfileStatus('No se pudo leer la foto.', true);
+        }
+      });
+    }
+    if (userPhotoClearEl) {
+      userPhotoClearEl.onclick = () => {
+        pendingUserPhotoDataUrl = '';
+        pendingUserPhotoName = '';
+        pendingUserPhotoClear = true;
+        applyUserAvatar('', currentUserProfile?.email || '');
+      };
+    }
     if (pushEnableEl) {
       pushEnableEl.onclick = () => {
         enablePush().catch((err) => setPushStatus('Error', err.message));
@@ -10334,16 +10790,21 @@ app.get("/admin/ui", (req, res) => {
       if (slugParam) portalPendingSlug = toSlug(slugParam);
     }
     const urlToken = urlParams ? urlParams.get('token') : '';
+    let autoLoginUsed = false;
     if (urlToken) {
       setLoginMode('admin');
       loginTokenEl.value = urlToken;
       login();
+      autoLoginUsed = true;
     }
     setLoginMode('admin');
     lockSystemPrompt();
     setAdminStatus('Bloqueado');
     initSidebarState();
     refreshPushStatus();
+    if (!autoLoginUsed) {
+      restoreSession();
+    }
     if (window.matchMedia) {
       const mq = window.matchMedia('(max-width: 980px)');
       if (mq.addEventListener) {
