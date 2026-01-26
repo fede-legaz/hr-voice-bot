@@ -13012,12 +13012,6 @@ async function sendWhatsappReport(call, opts = {}) {
     }
   }
   try {
-    await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
-  } catch (err) {
-    console.error("[whatsapp] failed sending text", err);
-    return;
-  }
-  try {
     const cvUrl = await getCallCvMediaUrl(call);
     if (cvUrl) {
       try {
@@ -13033,6 +13027,12 @@ async function sendWhatsappReport(call, opts = {}) {
     }
   } catch (err) {
     console.error("[whatsapp] failed sending cv", err);
+  }
+  try {
+    await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
+  } catch (err) {
+    console.error("[whatsapp] failed sending text", err);
+    return;
   }
   try {
     const mediaUrl = await getCallAudioMediaUrl(call);
