@@ -4607,26 +4607,35 @@ app.get("/admin/ui", (req, res) => {
       .results-table tbody tr.detail-row .detail-block { padding: 10px 0; }
       .cv-table tbody tr td[data-label="Candidato"],
       .results-table tbody tr td[data-label="Candidato"] {
-        order: -3;
+        order: -12;
         grid-template-columns: 1fr;
         align-items: flex-start;
-        padding-top: 10px;
+        padding-top: 8px;
+        padding-bottom: 10px;
       }
       .cv-table tbody tr td[data-label="Candidato"]::before,
       .results-table tbody tr td[data-label="Candidato"]::before { content: ""; }
       .results-table tbody tr td[data-label="Score"] { display: none; }
+      .results-table tbody tr td[data-label="Fecha"] { order: -10; }
+      .results-table tbody tr td[data-label="Local"] { order: -9; }
+      .results-table tbody tr td[data-label="Posición"] { order: -8; }
       .results-table .candidate-wrap {
         justify-content: space-between;
-        align-items: center;
+        align-items: flex-start;
         gap: 10px;
       }
       .results-table .candidate-name {
         flex: 1 1 auto;
         min-width: 0;
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        word-break: break-word;
       }
       .results-table .candidate-score-pill {
         display: inline-flex;
-        margin-left: auto;
+        margin-left: 8px;
+        flex: 0 0 auto;
       }
       .cv-table tbody tr td[data-label="Decisión"],
       .results-table tbody tr td[data-label="Decisión"],
