@@ -3275,6 +3275,124 @@ app.get("/admin/ui", (req, res) => {
       border-color: rgba(27, 122, 140, 0.45);
       color: #0f5563;
     }
+    .view-switch {
+      display: inline-flex;
+      gap: 6px;
+      margin-top: 8px;
+      padding: 4px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: #fff;
+    }
+    .view-switch button {
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: none;
+    }
+    .view-switch button.active {
+      background: rgba(27, 122, 140, 0.16);
+      border-color: rgba(27, 122, 140, 0.45);
+      color: var(--primary-dark);
+    }
+    .swipe-view {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .swipe-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--muted);
+      padding: 0 2px;
+    }
+    .swipe-hint { font-size: 11px; }
+    .swipe-card {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 14px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      touch-action: pan-y;
+    }
+    .swipe-card.is-new {
+      border-color: rgba(27, 122, 140, 0.55);
+      box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.16), var(--shadow);
+    }
+    .swipe-avatar {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+      background: #efe6d8;
+      flex: 0 0 72px;
+    }
+    .swipe-empty {
+      padding: 22px 16px;
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .swipe-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .swipe-title {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--ink);
+    }
+    .swipe-sub {
+      font-size: 12px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .swipe-section {
+      border-top: 1px solid rgba(228, 218, 200, 0.7);
+      padding-top: 8px;
+      margin-top: 4px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .swipe-row {
+      display: grid;
+      grid-template-columns: 110px minmax(0, 1fr);
+      gap: 8px;
+      align-items: center;
+    }
+    .swipe-label {
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      font-weight: 800;
+    }
+    .swipe-value {
+      font-size: 13.5px;
+      color: var(--ink);
+      font-weight: 600;
+      word-break: break-word;
+    }
+    .swipe-section .action-stack { flex-wrap: wrap; }
+    .swipe-controls {
+      display: flex;
+      gap: 8px;
+    }
+    .swipe-controls button { flex: 1; }
     .drop-zone {
       border: 1px dashed var(--border);
       border-radius: 16px;
@@ -4314,6 +4432,9 @@ app.get("/admin/ui", (req, res) => {
       .panel { padding: 18px; }
       .grid { grid-template-columns: 1fr; }
       .inline { align-items: stretch; }
+      .view-switch { display: flex; width: 100%; }
+      .view-switch button { flex: 1; text-align: center; }
+      .swipe-row { grid-template-columns: 96px minmax(0, 1fr); }
       .table-wrapper { max-height: none; }
     }
     @media (max-width: 760px) {
@@ -4373,6 +4494,10 @@ app.get("/admin/ui", (req, res) => {
       .panel { padding: 16px; border-radius: 16px; }
       .panel-title { font-size: 16px; }
       .tab-pill { padding: 6px 10px; }
+      .swipe-card { padding: 12px; border-radius: 16px; }
+      .swipe-row { grid-template-columns: 90px minmax(0, 1fr); }
+      .swipe-title { font-size: 15px; }
+      .swipe-avatar { width: 64px; height: 64px; border-radius: 16px; flex-basis: 64px; }
       th, td { padding: 8px 10px; font-size: 11.5px; }
       .audio-player { min-width: 0; flex-wrap: wrap; gap: 6px; }
       .audio-progress { width: 70px; }
@@ -4740,6 +4865,10 @@ app.get("/admin/ui", (req, res) => {
         <div class="panel" id="cv-list-panel" style="--delay:.08s;">
       <div class="panel-title">CVs guardados</div>
       <div class="panel-sub">Podés guardar CVs sin llamar y usarlos después.</div>
+          <div class="view-switch" id="cv-view-switch">
+            <button type="button" data-mode="table" class="active">Tabla</button>
+            <button type="button" data-mode="swipe">Swipe</button>
+          </div>
           <div class="grid">
             <div>
               <label>Local</label>
@@ -4759,7 +4888,7 @@ app.get("/admin/ui", (req, res) => {
             <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
             <button class="tab-pill" data-filter="all" type="button">Todos</button>
           </div>
-          <div class="table-wrapper" style="margin-top:10px;">
+          <div class="table-wrapper" id="cv-table-wrapper" style="margin-top:10px;">
             <table class="cv-table">
               <thead>
                 <tr>
@@ -4777,6 +4906,17 @@ app.get("/admin/ui", (req, res) => {
               <tbody id="cv-list-body"></tbody>
             </table>
           </div>
+          <div class="swipe-view" id="cv-swipe-view" style="display:none;">
+            <div class="swipe-meta">
+              <div id="cv-swipe-count">0 / 0</div>
+              <div class="swipe-hint">Deslizá para cambiar</div>
+            </div>
+            <div class="swipe-card" id="cv-swipe-card"></div>
+            <div class="swipe-controls">
+              <button class="secondary" type="button" id="cv-swipe-prev">Anterior</button>
+              <button class="secondary" type="button" id="cv-swipe-next">Siguiente</button>
+            </div>
+          </div>
           <div class="small" id="cv-list-count" style="margin-top:8px;"></div>
         </div>
       </section>
@@ -4785,6 +4925,10 @@ app.get("/admin/ui", (req, res) => {
         <div class="panel" id="results-panel" style="--delay:.06s;">
           <div class="panel-title">Entrevistas</div>
           <div class="panel-sub">Listado general con filtros por local, posición y score.</div>
+          <div class="view-switch" id="results-view-switch">
+            <button type="button" data-mode="table" class="active">Tabla</button>
+            <button type="button" data-mode="swipe">Swipe</button>
+          </div>
           <div class="grid">
             <div>
               <label>Local</label>
@@ -4835,7 +4979,7 @@ app.get("/admin/ui", (req, res) => {
             <button class="tab-pill" data-decision="maybe" type="button">Indecisos</button>
             <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
           </div>
-          <div class="table-wrapper" style="margin-top:14px;">
+          <div class="table-wrapper" id="results-table-wrapper" style="margin-top:14px;">
             <table class="results-table">
               <thead>
                 <tr>
@@ -4854,6 +4998,17 @@ app.get("/admin/ui", (req, res) => {
               </thead>
               <tbody id="results-body"></tbody>
             </table>
+          </div>
+          <div class="swipe-view" id="results-swipe-view" style="display:none;">
+            <div class="swipe-meta">
+              <div id="results-swipe-count">0 / 0</div>
+              <div class="swipe-hint">Deslizá para cambiar</div>
+            </div>
+            <div class="swipe-card" id="results-swipe-card"></div>
+            <div class="swipe-controls">
+              <button class="secondary" type="button" id="results-swipe-prev">Anterior</button>
+              <button class="secondary" type="button" id="results-swipe-next">Siguiente</button>
+            </div>
           </div>
           <div class="small" id="results-count" style="margin-top:8px;"></div>
         </div>
@@ -5735,6 +5890,13 @@ app.get("/admin/ui", (req, res) => {
     const cvTabsEl = document.getElementById('cv-tabs');
     const cvListBodyEl = document.getElementById('cv-list-body');
     const cvListCountEl = document.getElementById('cv-list-count');
+    const cvViewSwitchEl = document.getElementById('cv-view-switch');
+    const cvTableWrapperEl = document.getElementById('cv-table-wrapper');
+    const cvSwipeViewEl = document.getElementById('cv-swipe-view');
+    const cvSwipeCardEl = document.getElementById('cv-swipe-card');
+    const cvSwipeCountEl = document.getElementById('cv-swipe-count');
+    const cvSwipePrevEl = document.getElementById('cv-swipe-prev');
+    const cvSwipeNextEl = document.getElementById('cv-swipe-next');
     const cvModalEl = document.getElementById('cv-modal');
     const cvModalTextEl = document.getElementById('cv-modal-text');
     const cvModalCloseEl = document.getElementById('cv-modal-close');
@@ -5755,6 +5917,13 @@ app.get("/admin/ui", (req, res) => {
     const resultsDecisionTabsEl = document.getElementById('results-decision-tabs');
     const resultsBodyEl = document.getElementById('results-body');
     const resultsCountEl = document.getElementById('results-count');
+    const resultsViewSwitchEl = document.getElementById('results-view-switch');
+    const resultsTableWrapperEl = document.getElementById('results-table-wrapper');
+    const resultsSwipeViewEl = document.getElementById('results-swipe-view');
+    const resultsSwipeCardEl = document.getElementById('results-swipe-card');
+    const resultsSwipeCountEl = document.getElementById('results-swipe-count');
+    const resultsSwipePrevEl = document.getElementById('results-swipe-prev');
+    const resultsSwipeNextEl = document.getElementById('results-swipe-next');
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
@@ -5778,6 +5947,12 @@ app.get("/admin/ui", (req, res) => {
     let lastCvList = [];
     let lastResultsRaw = [];
     let lastResults = [];
+    let lastCvFiltered = [];
+    let lastResultsFiltered = [];
+    let cvViewMode = 'table';
+    let resultsViewMode = 'table';
+    let cvSwipeIndex = 0;
+    let resultsSwipeIndex = 0;
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
     let currentCvPhotoDataUrl = '';
@@ -5853,6 +6028,8 @@ app.get("/admin/ui", (req, res) => {
     const AUTH_EMAIL_KEY = 'hrbot_auth_email';
     const CANDIDATES_SEEN_KEY = 'hrbot_candidates_seen_at';
     const INTERVIEWS_SEEN_KEY = 'hrbot_interviews_seen_at';
+    const CV_VIEW_MODE_KEY = 'hrbot_cv_view_mode';
+    const RESULTS_VIEW_MODE_KEY = 'hrbot_results_view_mode';
 
     function stopPolling() {
       if (resultsTimer) {
@@ -5926,6 +6103,22 @@ app.get("/admin/ui", (req, res) => {
         navInterviewsBadgeEl.textContent = '';
         navInterviewsBadgeEl.style.display = 'none';
       }
+      lastCvRaw = [];
+      lastCvList = [];
+      lastCvFiltered = [];
+      lastResultsRaw = [];
+      lastResults = [];
+      lastResultsFiltered = [];
+      cvSwipeIndex = 0;
+      resultsSwipeIndex = 0;
+      if (cvListBodyEl) cvListBodyEl.innerHTML = '';
+      if (resultsBodyEl) resultsBodyEl.innerHTML = '';
+      setCvListCount('');
+      setResultsCount('');
+      cvViewMode = 'table';
+      resultsViewMode = 'table';
+      applyCvViewMode('table', { persist: false });
+      applyResultsViewMode('table', { persist: false });
       if (pushEnableEl) pushEnableEl.disabled = true;
       if (pushDisableEl) pushDisableEl.disabled = true;
       setPushStatus('Inactivo', 'Iniciá sesión para activar.');
@@ -6141,6 +6334,9 @@ app.get("/admin/ui", (req, res) => {
         if (email && email !== authEmail) {
           authEmail = email;
           syncPortalToken();
+        }
+        if (email) {
+          refreshViewModesFromStorage();
         }
         if (userEmailTextEl) userEmailTextEl.textContent = user.email || 'Admin';
         if (userRoleTextEl) userRoleTextEl.textContent = user.role ? ('Rol: ' + user.role) : '';
@@ -8081,6 +8277,10 @@ app.get("/admin/ui", (req, res) => {
       return baseKey + ':' + suffix;
     }
 
+    function resolveUserScopedKey(baseKey) {
+      return resolveSeenKey(baseKey);
+    }
+
     function getSeenTimestamp(key) {
       try {
         const raw = localStorage.getItem(resolveSeenKey(key));
@@ -8094,6 +8294,444 @@ app.get("/admin/ui", (req, res) => {
       try {
         localStorage.setItem(resolveSeenKey(key), String(ts || Date.now()));
       } catch (err) {}
+    }
+
+    function loadViewMode(baseKey, fallback = 'table') {
+      try {
+        const raw = localStorage.getItem(resolveUserScopedKey(baseKey)) || '';
+        return raw === 'swipe' ? 'swipe' : fallback;
+      } catch (err) {
+        return fallback;
+      }
+    }
+
+    function saveViewMode(baseKey, mode) {
+      try {
+        localStorage.setItem(resolveUserScopedKey(baseKey), mode === 'swipe' ? 'swipe' : 'table');
+      } catch (err) {}
+    }
+
+    function updateViewSwitch(el, mode) {
+      if (!el) return;
+      el.querySelectorAll('button[data-mode]').forEach((btn) => {
+        const btnMode = btn.dataset.mode === 'swipe' ? 'swipe' : 'table';
+        btn.classList.toggle('active', btnMode === mode);
+      });
+    }
+
+    function isUnseenPortalItem(createdAt, source, lastSeen) {
+      const created = createdAt ? new Date(createdAt).getTime() : 0;
+      if (!created || created <= lastSeen) return false;
+      return isPortalSource(source);
+    }
+
+    function applyCvViewMode(mode, { persist = true } = {}) {
+      cvViewMode = mode === 'swipe' ? 'swipe' : 'table';
+      if (persist) saveViewMode(CV_VIEW_MODE_KEY, cvViewMode);
+      updateViewSwitch(cvViewSwitchEl, cvViewMode);
+      if (cvTableWrapperEl) cvTableWrapperEl.style.display = cvViewMode === 'table' ? '' : 'none';
+      if (cvSwipeViewEl) cvSwipeViewEl.style.display = cvViewMode === 'swipe' ? '' : 'none';
+      if (cvViewMode === 'swipe') {
+        renderCvSwipe();
+      } else if (lastCvRaw.length) {
+        renderCvList(lastCvRaw);
+      }
+    }
+
+    function applyResultsViewMode(mode, { persist = true } = {}) {
+      resultsViewMode = mode === 'swipe' ? 'swipe' : 'table';
+      if (persist) saveViewMode(RESULTS_VIEW_MODE_KEY, resultsViewMode);
+      updateViewSwitch(resultsViewSwitchEl, resultsViewMode);
+      if (resultsTableWrapperEl) resultsTableWrapperEl.style.display = resultsViewMode === 'table' ? '' : 'none';
+      if (resultsSwipeViewEl) resultsSwipeViewEl.style.display = resultsViewMode === 'swipe' ? '' : 'none';
+      if (resultsViewMode === 'swipe') {
+        renderResultsSwipe();
+      } else if (lastResultsRaw.length) {
+        renderResults(lastResultsRaw);
+      }
+    }
+
+    function refreshViewModesFromStorage() {
+      const cvMode = loadViewMode(CV_VIEW_MODE_KEY, 'table');
+      const resultsMode = loadViewMode(RESULTS_VIEW_MODE_KEY, 'table');
+      applyCvViewMode(cvMode, { persist: false });
+      applyResultsViewMode(resultsMode, { persist: false });
+    }
+
+    function buildSwipeRow(label, value) {
+      const row = document.createElement('div');
+      row.className = 'swipe-row';
+      const labelEl = document.createElement('div');
+      labelEl.className = 'swipe-label';
+      labelEl.textContent = label;
+      row.appendChild(labelEl);
+      const valueEl = document.createElement('div');
+      valueEl.className = 'swipe-value';
+      if (value instanceof Node) {
+        valueEl.appendChild(value);
+      } else {
+        valueEl.textContent = value || '—';
+      }
+      row.appendChild(valueEl);
+      return row;
+    }
+
+    function attachSwipeNavigation(el, onPrev, onNext) {
+      if (!el || el._swipeBound) return;
+      let startX = 0;
+      let startY = 0;
+      el.addEventListener('touchstart', (event) => {
+        const touch = event.touches && event.touches[0];
+        if (!touch) return;
+        startX = touch.clientX;
+        startY = touch.clientY;
+      }, { passive: true });
+      el.addEventListener('touchend', (event) => {
+        const touch = event.changedTouches && event.changedTouches[0];
+        if (!touch) return;
+        const dx = touch.clientX - startX;
+        const dy = touch.clientY - startY;
+        if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy)) return;
+        if (dx > 0) onPrev();
+        else onNext();
+      });
+      el._swipeBound = true;
+    }
+
+    function renderCvSwipe() {
+      if (!cvSwipeCardEl) return;
+      const list = Array.isArray(lastCvFiltered) ? lastCvFiltered : [];
+      const total = list.length;
+      if (!total) {
+        if (cvSwipeCountEl) cvSwipeCountEl.textContent = '0 / 0';
+        cvSwipeCardEl.innerHTML = '<div class="swipe-empty">No hay candidates para este filtro.</div>';
+        return;
+      }
+      if (cvSwipeIndex >= total) cvSwipeIndex = total - 1;
+      if (cvSwipeIndex < 0) cvSwipeIndex = 0;
+      const item = list[cvSwipeIndex];
+      const lastSeen = getSeenTimestamp(CANDIDATES_SEEN_KEY);
+      const isNew = isUnseenPortalItem(item.created_at, item.source, lastSeen);
+      if (cvSwipeCountEl) cvSwipeCountEl.textContent = (cvSwipeIndex + 1) + ' / ' + total;
+
+      const card = document.createElement('div');
+      card.className = 'swipe-card' + (isNew ? ' is-new' : '');
+
+      const top = document.createElement('div');
+      top.className = 'swipe-top';
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'swipe-title';
+      title.textContent = item.applicant || 'Sin nombre';
+      titleWrap.appendChild(title);
+      const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
+      const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
+      const sub = document.createElement('div');
+      sub.className = 'swipe-sub';
+      sub.textContent = [brandLabel, roleLabel].filter(Boolean).join(' • ');
+      titleWrap.appendChild(sub);
+      top.appendChild(titleWrap);
+      if (item.cv_photo_url) {
+        const avatar = document.createElement('img');
+        avatar.src = item.cv_photo_url;
+        avatar.alt = '';
+        avatar.className = 'swipe-avatar';
+        avatar.style.objectPosition = '50% 30%';
+        attachAvatarHandlers(avatar, item.cv_photo_url);
+        top.appendChild(avatar);
+      }
+      card.appendChild(top);
+
+      const infoSection = document.createElement('div');
+      infoSection.className = 'swipe-section';
+      infoSection.appendChild(buildSwipeRow('Fecha', formatDate(item.created_at)));
+      infoSection.appendChild(buildSwipeRow('Local', brandLabel));
+      infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
+      infoSection.appendChild(buildSwipeRow('Teléfono', item.phone || '—'));
+      const info = cvStatusInfo(item);
+      infoSection.appendChild(buildSwipeRow('Estado', info.statusText || '—'));
+      card.appendChild(infoSection);
+
+      const decisionSection = document.createElement('div');
+      decisionSection.className = 'swipe-section';
+      const decisionWrap = document.createElement('div');
+      decisionWrap.className = 'decision-buttons';
+      const decisionOptions = [
+        { key: 'approved', label: '✓', title: 'Aprobado' },
+        { key: 'declined', label: '✕', title: 'Declinado' },
+        { key: 'maybe', label: '?', title: 'Indeciso' }
+      ];
+      decisionOptions.forEach((opt) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'decision-btn ' + opt.key;
+        btn.dataset.decision = opt.key;
+        btn.textContent = opt.label;
+        btn.title = opt.title;
+        btn.setAttribute('aria-label', opt.title);
+        btn.disabled = authRole === 'viewer';
+        btn.onclick = async (event) => {
+          event.stopPropagation();
+          if (authRole === 'viewer') return;
+          const ids = Array.isArray(item.cvIds) && item.cvIds.length
+            ? item.cvIds
+            : (item.id ? [item.id] : []);
+          if (!ids.length) return;
+          const next = item.decision === opt.key ? '' : opt.key;
+          decisionWrap.classList.add('is-loading');
+          try {
+            const updated = await updateCvDecision(ids, next);
+            item.decision = updated || '';
+            renderCvList(lastCvRaw);
+          } catch (err) {
+            console.error('decision update failed', err);
+            setCvListCount('Error: ' + err.message);
+          } finally {
+            decisionWrap.classList.remove('is-loading');
+          }
+        };
+        decisionWrap.appendChild(btn);
+      });
+      setDecisionButtonsActive(decisionWrap, item.decision || '');
+      decisionSection.appendChild(buildSwipeRow('Decisión', decisionWrap));
+      card.appendChild(decisionSection);
+
+      const actionSection = document.createElement('div');
+      actionSection.className = 'swipe-section';
+      const cvActions = document.createElement('div');
+      cvActions.className = 'action-stack';
+      if (item.cv_url) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary btn-compact';
+        btn.textContent = 'Ver CV';
+        btn.onclick = () => window.open(item.cv_url, '_blank', 'noopener');
+        cvActions.appendChild(btn);
+      } else if (item.cv_text) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary btn-compact';
+        btn.textContent = 'Ver CV';
+        btn.onclick = () => openCvModal(item.cv_text || '');
+        cvActions.appendChild(btn);
+      }
+      const canWrite = authRole !== 'viewer';
+      if (canWrite) {
+        const callBtn = document.createElement('button');
+        callBtn.type = 'button';
+        callBtn.className = 'btn-compact';
+        callBtn.textContent = info.hasCalls ? 'Volver a llamar' : 'Llamar';
+        callBtn.onclick = () => {
+          if (info.hasCalls) {
+            const name = item.applicant ? item.applicant.trim() : '';
+            const label = name || 'este candidato';
+            if (!confirm('¿Seguro que querés volver a llamar a ' + label + '?')) return;
+          }
+          currentCvId = item.id || '';
+          callBrandEl.value = item.brandKey || item.brand || '';
+          updateCallRoleOptions(callBrandEl.value);
+          const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
+          if (item.role && roleOptions.includes(item.role)) {
+            callRoleEl.value = item.role;
+          } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
+            callRoleEl.value = item.roleKey;
+          } else {
+            callRoleEl.value = item.role || item.roleKey || '';
+          }
+          callNameEl.value = item.applicant || '';
+          callPhoneEl.value = item.phone || '';
+          callCvTextEl.value = item.cv_text || '';
+          currentCvSource = item.source || '';
+          placeCall({
+            to: item.phone || '',
+            brand: item.brandKey || item.brand || '',
+            role: callRoleEl.value || item.role || item.roleKey || '',
+            applicant: item.applicant || '',
+            cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
+            cv_text: item.cv_text || '',
+            cv_id: item.id || ''
+          });
+        };
+        cvActions.appendChild(callBtn);
+      }
+      if (info.hasCalls) {
+        const viewBtn = document.createElement('button');
+        viewBtn.type = 'button';
+        viewBtn.className = 'secondary btn-compact';
+        viewBtn.textContent = 'Ver entrevista';
+        viewBtn.onclick = () => goToInterviewFromCv(item);
+        cvActions.appendChild(viewBtn);
+      }
+      if (authRole === 'admin') {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'secondary btn-compact icon-only';
+        delBtn.textContent = '🗑';
+        delBtn.title = 'Eliminar';
+        delBtn.setAttribute('aria-label', 'Eliminar');
+        delBtn.onclick = () => deleteCandidateGroup(item);
+        cvActions.appendChild(delBtn);
+      }
+      actionSection.appendChild(buildSwipeRow('Acción', cvActions));
+      card.appendChild(actionSection);
+
+      cvSwipeCardEl.innerHTML = '';
+      cvSwipeCardEl.appendChild(card);
+      attachSwipeNavigation(card, () => {
+        cvSwipeIndex = (cvSwipeIndex - 1 + total) % total;
+        renderCvSwipe();
+      }, () => {
+        cvSwipeIndex = (cvSwipeIndex + 1) % total;
+        renderCvSwipe();
+      });
+    }
+
+    function renderResultsSwipe() {
+      if (!resultsSwipeCardEl) return;
+      const list = Array.isArray(lastResultsFiltered) ? lastResultsFiltered : [];
+      const total = list.length;
+      if (!total) {
+        if (resultsSwipeCountEl) resultsSwipeCountEl.textContent = '0 / 0';
+        resultsSwipeCardEl.innerHTML = '<div class="swipe-empty">No hay entrevistas para este filtro.</div>';
+        return;
+      }
+      if (resultsSwipeIndex >= total) resultsSwipeIndex = total - 1;
+      if (resultsSwipeIndex < 0) resultsSwipeIndex = 0;
+      const call = list[resultsSwipeIndex];
+      const lastSeen = getSeenTimestamp(INTERVIEWS_SEEN_KEY);
+      const isNew = isUnseenPortalItem(call.created_at, call.source, lastSeen);
+      if (resultsSwipeCountEl) resultsSwipeCountEl.textContent = (resultsSwipeIndex + 1) + ' / ' + total;
+
+      const card = document.createElement('div');
+      card.className = 'swipe-card' + (isNew ? ' is-new' : '');
+
+      const top = document.createElement('div');
+      top.className = 'swipe-top';
+      const titleWrap = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'swipe-title';
+      title.textContent = call.applicant || 'Sin nombre';
+      titleWrap.appendChild(title);
+      const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+      const sub = document.createElement('div');
+      sub.className = 'swipe-sub';
+      sub.textContent = [brandLabel, roleLabel].filter(Boolean).join(' • ');
+      titleWrap.appendChild(sub);
+      top.appendChild(titleWrap);
+      const scoreWrap = document.createElement('div');
+      scoreWrap.appendChild(scorePill(call.score));
+      top.appendChild(scoreWrap);
+      card.appendChild(top);
+
+      const infoSection = document.createElement('div');
+      infoSection.className = 'swipe-section';
+      infoSection.appendChild(buildSwipeRow('Fecha', formatDate(call.created_at)));
+      infoSection.appendChild(buildSwipeRow('Local', brandLabel));
+      infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
+      infoSection.appendChild(buildSwipeRow('Teléfono', call.phone || '—'));
+      infoSection.appendChild(buildSwipeRow('Estado', formatInterviewSummary(call)));
+      card.appendChild(infoSection);
+
+      const decisionSection = document.createElement('div');
+      decisionSection.className = 'swipe-section';
+      const decisionWrap = document.createElement('div');
+      decisionWrap.className = 'decision-buttons';
+      const decisionOptions = [
+        { key: 'approved', label: '✓', title: 'Aprobado' },
+        { key: 'declined', label: '✕', title: 'Descartado' },
+        { key: 'maybe', label: '?', title: 'Indeciso' }
+      ];
+      const decisionIds = Array.isArray(call.cvIds) && call.cvIds.length
+        ? call.cvIds
+        : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
+      const canUpdateDecision = authRole !== 'viewer' && decisionIds.length;
+      decisionOptions.forEach((opt) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'decision-btn ' + opt.key;
+        btn.dataset.decision = opt.key;
+        btn.textContent = opt.label;
+        btn.title = opt.title;
+        btn.setAttribute('aria-label', opt.title);
+        btn.disabled = !canUpdateDecision;
+        btn.onclick = async (event) => {
+          event.stopPropagation();
+          if (!canUpdateDecision) return;
+          const next = call.decision === opt.key ? '' : opt.key;
+          decisionWrap.classList.add('is-loading');
+          try {
+            const updated = await updateCvDecision(decisionIds, next);
+            call.decision = updated || '';
+            renderResults(lastResultsRaw);
+          } catch (err) {
+            console.error('decision update failed', err);
+            setResultsCount('Error: ' + err.message);
+          } finally {
+            decisionWrap.classList.remove('is-loading');
+          }
+        };
+        decisionWrap.appendChild(btn);
+      });
+      setDecisionButtonsActive(decisionWrap, call.decision || '');
+      decisionSection.appendChild(buildSwipeRow('Decisión', decisionWrap));
+      card.appendChild(decisionSection);
+
+      const mediaSection = document.createElement('div');
+      mediaSection.className = 'swipe-section';
+      const mediaWrap = document.createElement('div');
+      mediaWrap.className = 'action-stack';
+      if (call.cv_url) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary btn-compact';
+        btn.textContent = 'Ver CV';
+        btn.onclick = () => window.open(call.cv_url, '_blank', 'noopener');
+        mediaWrap.appendChild(btn);
+      }
+      if (call.audio_url) {
+        const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
+        const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
+        const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
+        mediaWrap.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
+      }
+      mediaSection.appendChild(buildSwipeRow('Audio', mediaWrap));
+      card.appendChild(mediaSection);
+
+      const actionSection = document.createElement('div');
+      actionSection.className = 'swipe-section';
+      const actionWrap = document.createElement('div');
+      actionWrap.className = 'action-stack';
+      if (authRole === 'admin' && call.callId) {
+        const waBtn = document.createElement('button');
+        waBtn.type = 'button';
+        waBtn.className = 'secondary btn-compact';
+        waBtn.textContent = 'WhatsApp';
+        waBtn.onclick = () => sendInterviewWhatsapp(call);
+        actionWrap.appendChild(waBtn);
+      }
+      if (authRole === 'admin' && call.callId) {
+        const delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'secondary btn-compact icon-only';
+        delBtn.textContent = '🗑';
+        delBtn.title = 'Eliminar';
+        delBtn.setAttribute('aria-label', 'Eliminar');
+        delBtn.onclick = () => deleteInterviewGroup(call);
+        actionWrap.appendChild(delBtn);
+      }
+      actionSection.appendChild(buildSwipeRow('Acción', actionWrap));
+      card.appendChild(actionSection);
+
+      resultsSwipeCardEl.innerHTML = '';
+      resultsSwipeCardEl.appendChild(card);
+      attachSwipeNavigation(card, () => {
+        resultsSwipeIndex = (resultsSwipeIndex - 1 + total) % total;
+        renderResultsSwipe();
+      }, () => {
+        resultsSwipeIndex = (resultsSwipeIndex + 1) % total;
+        renderResultsSwipe();
+      });
     }
 
     function updateBadge(el, count) {
@@ -10271,6 +10909,7 @@ app.get("/admin/ui", (req, res) => {
         if (resultsDecisionMode === 'maybe') return call.decision === 'maybe';
         return true;
       });
+      lastResultsFiltered = filtered.slice();
       resultsBodyEl.innerHTML = '';
       filtered.forEach((call) => {
         const tr = document.createElement('tr');
@@ -10436,6 +11075,9 @@ app.get("/admin/ui", (req, res) => {
       if (activeView === 'interviews') {
         markInterviewsSeen(raw);
       }
+      if (resultsViewMode === 'swipe') {
+        renderResultsSwipe();
+      }
     }
 
     async function loadResults() {
@@ -10519,6 +11161,7 @@ app.get("/admin/ui", (req, res) => {
         if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
         return true;
       });
+      lastCvFiltered = filtered.slice();
       cvListBodyEl.innerHTML = '';
       let hasActiveCall = false;
       filtered.forEach((item) => {
@@ -10750,6 +11393,9 @@ app.get("/admin/ui", (req, res) => {
       updateCandidatesBadge(raw);
       if (activeView === 'calls') {
         markCandidatesSeen(raw);
+      }
+      if (cvViewMode === 'swipe') {
+        renderCvSwipe();
       }
     }
 
@@ -11227,6 +11873,48 @@ app.get("/admin/ui", (req, res) => {
         };
       });
     }
+    if (cvViewSwitchEl) {
+      cvViewSwitchEl.querySelectorAll('button[data-mode]').forEach((btn) => {
+        btn.onclick = () => applyCvViewMode(btn.dataset.mode || 'table');
+      });
+    }
+    if (resultsViewSwitchEl) {
+      resultsViewSwitchEl.querySelectorAll('button[data-mode]').forEach((btn) => {
+        btn.onclick = () => applyResultsViewMode(btn.dataset.mode || 'table');
+      });
+    }
+    if (cvSwipePrevEl) {
+      cvSwipePrevEl.onclick = () => {
+        const total = lastCvFiltered.length;
+        if (!total) return;
+        cvSwipeIndex = (cvSwipeIndex - 1 + total) % total;
+        renderCvSwipe();
+      };
+    }
+    if (cvSwipeNextEl) {
+      cvSwipeNextEl.onclick = () => {
+        const total = lastCvFiltered.length;
+        if (!total) return;
+        cvSwipeIndex = (cvSwipeIndex + 1) % total;
+        renderCvSwipe();
+      };
+    }
+    if (resultsSwipePrevEl) {
+      resultsSwipePrevEl.onclick = () => {
+        const total = lastResultsFiltered.length;
+        if (!total) return;
+        resultsSwipeIndex = (resultsSwipeIndex - 1 + total) % total;
+        renderResultsSwipe();
+      };
+    }
+    if (resultsSwipeNextEl) {
+      resultsSwipeNextEl.onclick = () => {
+        const total = lastResultsFiltered.length;
+        if (!total) return;
+        resultsSwipeIndex = (resultsSwipeIndex + 1) % total;
+        renderResultsSwipe();
+      };
+    }
     cvDropEl.addEventListener('click', () => cvFileEl.click());
     cvFileEl.addEventListener('change', (event) => handleCvFile(event.target.files[0]));
     cvDropEl.addEventListener('dragover', (event) => {
@@ -11303,6 +11991,7 @@ app.get("/admin/ui", (req, res) => {
       collapsedLabel: 'Mostrar filtros',
       expandedLabel: 'Ocultar filtros'
     });
+    refreshViewModesFromStorage();
     initSidebarState();
     refreshPushStatus();
     if (!autoLoginUsed) {
