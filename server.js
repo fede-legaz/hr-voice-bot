@@ -3314,6 +3314,14 @@ app.get("/admin/ui", (req, res) => {
       padding: 0 2px;
     }
     .swipe-hint { font-size: 11px; }
+    @keyframes swipe-pop {
+      0% { opacity: 0; transform: translateY(8px) scale(0.985); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes swipe-float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+    }
     .swipe-card {
       border: 1px solid var(--border);
       border-radius: 18px;
@@ -3324,10 +3332,15 @@ app.get("/admin/ui", (req, res) => {
       flex-direction: column;
       gap: 10px;
       touch-action: pan-y;
+      animation: swipe-pop 240ms ease-out;
     }
+    .swipe-card:active { animation-play-state: paused; }
     .swipe-card.is-new {
       border-color: rgba(27, 122, 140, 0.55);
       box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.16), var(--shadow);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .swipe-card { animation: none !important; }
     }
     .swipe-avatar {
       width: 72px;
@@ -4494,6 +4507,11 @@ app.get("/admin/ui", (req, res) => {
       .cv-table tbody tr:nth-child(even) td,
       .results-table tbody tr:nth-child(even) td { background: transparent !important; }
       .candidate-wrap { gap: 8px; }
+      .candidate-name {
+        font-size: 15px;
+        font-weight: 800;
+        max-width: none;
+      }
       .candidate-avatar {
         width: 36px;
         height: 36px;
@@ -4503,6 +4521,83 @@ app.get("/admin/ui", (req, res) => {
       .action-stack { justify-content: flex-start; flex-wrap: wrap; }
       .decision-buttons { flex-wrap: wrap; }
       .decision-cell { white-space: normal; }
+      .audio-player {
+        width: 100%;
+        min-width: 0;
+        flex-wrap: wrap;
+        gap: 6px 8px;
+        border-radius: 16px;
+        padding: 8px 10px;
+      }
+      .audio-play,
+      .audio-menu-btn,
+      .audio-download {
+        width: 32px;
+        height: 32px;
+      }
+      .audio-progress {
+        order: 10;
+        flex: 1 1 100%;
+        width: 100%;
+        min-width: 0;
+        margin-top: 2px;
+      }
+      .audio-time {
+        order: 1;
+        margin-left: auto;
+        min-width: 0;
+        font-weight: 800;
+        color: var(--ink);
+        text-align: right;
+      }
+      .audio-menu { order: 2; }
+      .audio-download { order: 3; }
+      .cv-table tbody tr td[data-label="Candidato"],
+      .results-table tbody tr td[data-label="Candidato"] {
+        order: -3;
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+        padding-top: 10px;
+      }
+      .cv-table tbody tr td[data-label="Candidato"]::before,
+      .results-table tbody tr td[data-label="Candidato"]::before { content: ""; }
+      .results-table tbody tr td[data-label="Score"] {
+        order: -2;
+        grid-template-columns: 1fr;
+        justify-items: center;
+        text-align: center;
+      }
+      .results-table tbody tr td[data-label="Score"]::before { margin-bottom: 4px; }
+      .cv-table tbody tr td[data-label="Decisión"],
+      .results-table tbody tr td[data-label="Decisión"],
+      .cv-table tbody tr td[data-label="Acción"],
+      .results-table tbody tr td[data-label="Acción"],
+      .results-table tbody tr td[data-label="Audio"],
+      .cv-table tbody tr td[data-label="CV"],
+      .results-table tbody tr td[data-label="CV"] {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+      }
+      .action-stack { gap: 8px; }
+      .action-stack > button,
+      .action-stack > a {
+        flex: 1 1 calc(50% - 6px);
+        justify-content: center;
+        text-align: center;
+      }
+      .decision-buttons { gap: 8px; }
+      .decision-buttons .decision-btn {
+        flex: 1 1 calc(33.333% - 6px);
+        min-width: 0;
+      }
+      .results-table .audio-player {
+        width: 100%;
+        min-width: 0;
+      }
+      .results-table .audio-progress {
+        flex: 1;
+        min-width: 96px;
+      }
       #cv-tabs, #results-tabs, #results-decision-tabs {
         display: flex;
         flex-wrap: nowrap;
@@ -4518,7 +4613,12 @@ app.get("/admin/ui", (req, res) => {
       #cv-tabs .tab-pill,
       #results-tabs .tab-pill,
       #results-decision-tabs .tab-pill { flex: 0 0 auto; }
-      .swipe-card { border-radius: 20px; padding: 16px; }
+      .swipe-card {
+        border-radius: 20px;
+        padding: 16px;
+        animation: swipe-pop 240ms ease-out, swipe-float 4.6s ease-in-out 320ms infinite;
+      }
+      .swipe-card:active { animation-play-state: paused; }
       .swipe-meta { font-weight: 700; }
       .swipe-section {
         border-top: none;
@@ -4546,9 +4646,8 @@ app.get("/admin/ui", (req, res) => {
       .swipe-title { font-size: 15px; }
       .swipe-avatar { width: 64px; height: 64px; border-radius: 16px; flex-basis: 64px; }
       th, td { padding: 8px 10px; font-size: 11.5px; }
-      .audio-player { min-width: 0; flex-wrap: wrap; gap: 6px; }
-      .audio-progress { width: 70px; }
-      .audio-time { min-width: 56px; }
+      .audio-player { gap: 6px 8px; }
+      .audio-time { font-size: 11px; }
       .detail-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
     }
     @media (max-width: 520px) {
