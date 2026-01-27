@@ -3810,6 +3810,8 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 10px;
       font-size: 12px;
     }
+    .prompt-tools.compact select { min-width: 160px; flex: 1 1 160px; }
+    .prompt-tools.compact .btn-compact { white-space: nowrap; }
     .prompt-tools.compact button {
       padding: 8px 12px;
       border-radius: 10px;
@@ -5270,8 +5272,6 @@ app.get("/admin/ui", (req, res) => {
               <select id="prompt-template-select"></select>
               <button class="secondary btn-compact" id="prompt-template-restore" type="button">Restaurar</button>
               <button class="secondary btn-compact" id="prompt-template-delete" type="button">Eliminar</button>
-            </div>
-            <div class="prompt-tools-row">
               <select id="prompt-history-select"></select>
               <button class="secondary btn-compact" id="prompt-history-restore" type="button">Restaurar versión</button>
             </div>
