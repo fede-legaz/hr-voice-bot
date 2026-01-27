@@ -193,6 +193,16 @@ const LATE_CLOSING_QUESTION_EN = "If required, are you able to work the night sh
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
 const ENGLISH_LEVEL_QUESTION_EN = "For this role we need conversational English. What is your English level?";
 const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
+const DEFAULT_RECORDING_INTRO_ES = "{opener} Soy Mariana. Si preferís en inglés, decí English.";
+const DEFAULT_RECORDING_INTRO_EN = "Hi {name}, I'm Mariana from {brand}. I'm calling about your application for {spoken_role}.";
+const DEFAULT_RECORDING_CONSENT_ES = "Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.";
+const DEFAULT_RECORDING_CONSENT_EN = "To share the result with the team, is it okay if we record this call? Say yes or no. Or press 1 for yes, 2 for no.";
+const DEFAULT_RECORDING_CONFIRM_ES = "Para confirmar: ¿sí o no a grabar la llamada? También podés presionar 1 para sí, o 2 para no.";
+const DEFAULT_RECORDING_CONFIRM_EN = "To confirm: yes or no to recording? You can also press 1 for yes or 2 for no.";
+const DEFAULT_RECORDING_NO_RESPONSE_ES = "No te escuché, gracias por tu tiempo. Que tengas un buen día.";
+const DEFAULT_RECORDING_NO_RESPONSE_EN = "I didn't catch that. Thanks for your time.";
+const DEFAULT_RECORDING_DECLINE_ES = "Perfecto, no hay problema. Gracias por tu tiempo. Que tengas un buen día.";
+const DEFAULT_RECORDING_DECLINE_EN = "Understood, no problem. Thanks for your time. Goodbye.";
 const HUNG_UP_THRESHOLD_SEC = 20;
 const OUTCOME_LABELS = {
   NO_ANSWER: "No contestó",
@@ -601,6 +611,36 @@ function renderPromptTemplate(template, vars) {
   });
 }
 
+function buildRecordingVars({ brand, role, applicant, lang }) {
+  const brandDisplay = resolveBrandDisplay(brand);
+  const spokenRole = displayRole(role, brand);
+  const firstName = (applicant || "").split(/\s+/)[0] || "";
+  const openerEs = buildMetaOpener({ brand, role, applicant, lang: "es" });
+  const openerEn = buildMetaOpener({ brand, role, applicant, lang: "en" });
+  const opener = lang === "en" ? openerEn : openerEs;
+  return {
+    name: firstName,
+    first_name: firstName,
+    first_name_or_blank: firstName ? ` ${firstName}` : "",
+    first_name_or_there: firstName || (lang === "en" ? "there" : "allí"),
+    brand: brandDisplay,
+    brand_display: brandDisplay,
+    role,
+    spoken_role: spokenRole,
+    opener,
+    opener_es: openerEs,
+    opener_en: openerEn
+  };
+}
+
+function getRecordingCopy(lang, key, fallback, vars) {
+  const meta = roleConfig?.meta || {};
+  const field = `${key}_${lang}`;
+  const template = typeof meta[field] === "string" ? meta[field] : "";
+  const selected = template && template.trim() ? template : fallback;
+  return renderPromptTemplate(selected, vars).trim();
+}
+
 function buildMetaOpener({ brand, role, applicant, lang }) {
   const metaCfg = roleConfig?.meta || {};
   const brandDisplay = resolveBrandDisplay(brand);
@@ -704,7 +744,8 @@ function buildInstructions(ctx) {
     late_closing_rule_line: lateClosingRule ? `- ${lateClosingRule}` : "",
     specific_questions: specificQs.map(q => `- ${q}`).join("\n"),
     specific_questions_inline: specificQs.join("; "),
-    custom_question: customQuestion
+    custom_question: customQuestion,
+    runtime_instructions: metaCfg.runtime_instructions || ""
   };
   const rendered = renderPromptTemplate(promptTemplate, promptVars).trim();
   const mandatoryBlock = buildMandatoryBlock({
@@ -715,7 +756,9 @@ function buildInstructions(ctx) {
     langPref,
     customQuestion
   });
-  return mandatoryBlock ? `${rendered}\n\n${mandatoryBlock}`.trim() : rendered;
+  const runtimeExtraRaw = (metaCfg.runtime_instructions || "").trim();
+  const runtimeExtra = runtimeExtraRaw ? renderPromptTemplate(runtimeExtraRaw, promptVars).trim() : "";
+  return [rendered, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
 }
 
 function parseEnglishRequired(value) {
@@ -3701,17 +3744,36 @@ app.get("/admin/ui", (req, res) => {
     .drop-file { display: none; }
     .preview-output { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
     .system-prompt { min-height: 260px; }
+    .prompt-split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .prompt-col { min-width: 0; }
     .prompt-tools {
       display: flex;
       flex-direction: column;
       gap: 10px;
       margin-top: 10px;
-      padding: 10px;
+      padding: 12px;
       border-radius: 14px;
       border: 1px dashed rgba(178, 164, 132, 0.6);
       background: #fcfaf6;
     }
     .prompt-tools .inline { flex-wrap: wrap; }
+    .prompt-side .prompt-assistant-card {
+      border-radius: 16px;
+      padding: 14px;
+      border: 1px solid rgba(27, 122, 140, 0.2);
+      background: linear-gradient(180deg, rgba(27, 122, 140, 0.08), rgba(255, 255, 255, 0.9));
+      box-shadow: 0 12px 24px rgba(19, 55, 66, 0.12);
+      display: grid;
+      gap: 10px;
+    }
+    .prompt-side .prompt-assistant-card .panel-title {
+      font-size: 16px;
+    }
     .prompt-preview {
       border: 1px solid var(--border);
       border-radius: 12px;
@@ -3728,14 +3790,11 @@ app.get("/admin/ui", (req, res) => {
       padding: 0 2px;
       border-radius: 4px;
     }
-    .prompt-assistant {
-      display: grid;
-      gap: 8px;
-    }
-    .prompt-assistant textarea {
-      min-height: 72px;
-    }
+    #prompt-assistant-input { min-height: 120px; }
     textarea.locked { background: #f2f0ea; color: #6b7280; }
+    @media (max-width: 980px) {
+      .prompt-split { grid-template-columns: 1fr; }
+    }
     .table-wrapper {
       border: 1px solid var(--border);
       border-radius: 16px;
@@ -5142,32 +5201,88 @@ app.get("/admin/ui", (req, res) => {
           <div class="divider"></div>
           <div class="panel-title">System prompt</div>
           <div class="panel-sub">Solo editable con clave ADMIN.</div>
-          <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
-          <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
-          <div class="prompt-tools" id="prompt-tools">
-            <div class="small">Templates y versiones</div>
-            <div class="inline">
-              <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
-              <button class="secondary" id="prompt-template-save" type="button">Guardar template</button>
-            </div>
-            <div class="inline">
-              <select id="prompt-template-select"></select>
-              <button class="secondary" id="prompt-template-restore" type="button">Restaurar template</button>
-              <button class="secondary" id="prompt-template-delete" type="button">Eliminar</button>
-            </div>
-            <div class="inline">
-              <select id="prompt-history-select"></select>
-              <button class="secondary" id="prompt-history-restore" type="button">Restaurar versión</button>
-            </div>
-            <div class="divider" style="margin:4px 0;"></div>
-            <div class="small">Asistente IA para editar el prompt</div>
-            <div class="prompt-assistant">
-              <textarea id="prompt-assistant-input" placeholder="Ej: agregá una pregunta sobre papeles, sin ser invasivo."></textarea>
-              <div class="inline">
-                <button class="secondary" id="prompt-assistant-run" type="button">Aplicar sugerencia</button>
-                <span class="small" id="prompt-assistant-status"></span>
+          <div class="prompt-split">
+            <div class="prompt-col">
+              <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
+              <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {opener}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
+              <div class="prompt-tools" id="prompt-tools">
+                <div class="small">Templates y versiones</div>
+                <div class="inline">
+                  <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
+                  <button class="secondary" id="prompt-template-save" type="button">Guardar template</button>
+                </div>
+                <div class="inline">
+                  <select id="prompt-template-select"></select>
+                  <button class="secondary" id="prompt-template-restore" type="button">Restaurar template</button>
+                  <button class="secondary" id="prompt-template-delete" type="button">Eliminar</button>
+                </div>
+                <div class="inline">
+                  <select id="prompt-history-select"></select>
+                  <button class="secondary" id="prompt-history-restore" type="button">Restaurar versión</button>
+                </div>
               </div>
-              <div class="prompt-preview" id="prompt-assistant-preview" style="display:none;"></div>
+            </div>
+            <div class="prompt-col prompt-side">
+              <div class="prompt-assistant-card">
+                <div class="panel-title">Asistente IA</div>
+                <div class="panel-sub">Pedile cambios al prompt y se aplican automáticamente.</div>
+                <textarea id="prompt-assistant-input" placeholder="Ej: agregá una pregunta sobre papeles, sin ser invasivo."></textarea>
+                <div class="inline">
+                  <button class="secondary" id="prompt-assistant-run" type="button">Aplicar sugerencia</button>
+                  <span class="small" id="prompt-assistant-status"></span>
+                </div>
+                <div class="prompt-preview" id="prompt-assistant-preview" style="display:none;"></div>
+              </div>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-title">Runtime (se inyecta al ejecutar)</div>
+          <div class="panel-sub">Este bloque se agrega automáticamente a cada llamada, además del checklist obligatorio. Úsalo para reglas operativas del momento.</div>
+          <textarea id="runtime-instructions" placeholder="Ej: preguntá si puede cubrir turnos de cierre o si maneja café manual."></textarea>
+          <div class="small">Placeholders útiles: {brand}, {spoken_role}, {address}, {name}.</div>
+          <div class="divider"></div>
+          <div class="panel-title">Grabación / Consentimiento</div>
+          <div class="panel-sub">Texto leído antes de iniciar la entrevista y para confirmar grabación. Podés usar {opener}, {brand}, {spoken_role}, {name}.</div>
+          <div class="grid">
+            <div>
+              <label>Intro grabación (ES)</label>
+              <textarea id="recording-intro-es"></textarea>
+            </div>
+            <div>
+              <label>Intro grabación (EN)</label>
+              <textarea id="recording-intro-en"></textarea>
+            </div>
+            <div>
+              <label>Consentimiento (ES)</label>
+              <textarea id="recording-consent-es"></textarea>
+            </div>
+            <div>
+              <label>Consentimiento (EN)</label>
+              <textarea id="recording-consent-en"></textarea>
+            </div>
+            <div>
+              <label>Confirmación (ES)</label>
+              <textarea id="recording-confirm-es"></textarea>
+            </div>
+            <div>
+              <label>Confirmación (EN)</label>
+              <textarea id="recording-confirm-en"></textarea>
+            </div>
+            <div>
+              <label>No respuesta / cierre (ES)</label>
+              <textarea id="recording-no-response-es"></textarea>
+            </div>
+            <div>
+              <label>No respuesta / cierre (EN)</label>
+              <textarea id="recording-no-response-en"></textarea>
+            </div>
+            <div>
+              <label>Rechazo a grabación (ES)</label>
+              <textarea id="recording-decline-es"></textarea>
+            </div>
+            <div>
+              <label>Rechazo a grabación (EN)</label>
+              <textarea id="recording-decline-en"></textarea>
             </div>
           </div>
           <div class="inline" style="margin-top:12px;">
@@ -6402,6 +6517,17 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     const systemPromptEl = document.getElementById('system-prompt');
+    const runtimeInstructionsEl = document.getElementById('runtime-instructions');
+    const recordingIntroEsEl = document.getElementById('recording-intro-es');
+    const recordingIntroEnEl = document.getElementById('recording-intro-en');
+    const recordingConsentEsEl = document.getElementById('recording-consent-es');
+    const recordingConsentEnEl = document.getElementById('recording-consent-en');
+    const recordingConfirmEsEl = document.getElementById('recording-confirm-es');
+    const recordingConfirmEnEl = document.getElementById('recording-confirm-en');
+    const recordingNoResponseEsEl = document.getElementById('recording-no-response-es');
+    const recordingNoResponseEnEl = document.getElementById('recording-no-response-en');
+    const recordingDeclineEsEl = document.getElementById('recording-decline-es');
+    const recordingDeclineEnEl = document.getElementById('recording-decline-en');
     const promptTemplateNameEl = document.getElementById('prompt-template-name');
     const promptTemplateSaveEl = document.getElementById('prompt-template-save');
     const promptTemplateSelectEl = document.getElementById('prompt-template-select');
@@ -6505,6 +6631,8 @@ app.get("/admin/ui", (req, res) => {
     let authEmail = '';
     let adminToken = '';
     let systemPromptUnlocked = false;
+    let systemPromptOriginal = '';
+    let systemPromptDirty = false;
     let promptStore = { templates: [], history: [] };
     let pendingCvQuestionId = '';
     let lastLoadError = '';
@@ -6559,12 +6687,33 @@ app.get("/admin/ui", (req, res) => {
     const OCR_MAX_DIM = 1700;
     const OCR_JPEG_QUALITY = 0.82;
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
+    const defaultRecordingIntroEs = ${JSON.stringify(DEFAULT_RECORDING_INTRO_ES)};
+    const defaultRecordingIntroEn = ${JSON.stringify(DEFAULT_RECORDING_INTRO_EN)};
+    const defaultRecordingConsentEs = ${JSON.stringify(DEFAULT_RECORDING_CONSENT_ES)};
+    const defaultRecordingConsentEn = ${JSON.stringify(DEFAULT_RECORDING_CONSENT_EN)};
+    const defaultRecordingConfirmEs = ${JSON.stringify(DEFAULT_RECORDING_CONFIRM_ES)};
+    const defaultRecordingConfirmEn = ${JSON.stringify(DEFAULT_RECORDING_CONFIRM_EN)};
+    const defaultRecordingNoResponseEs = ${JSON.stringify(DEFAULT_RECORDING_NO_RESPONSE_ES)};
+    const defaultRecordingNoResponseEn = ${JSON.stringify(DEFAULT_RECORDING_NO_RESPONSE_EN)};
+    const defaultRecordingDeclineEs = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_ES)};
+    const defaultRecordingDeclineEn = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_EN)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
       lang_rules: "Si responde en inglés, mantener toda la entrevista en inglés.",
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
-      system_prompt: defaultSystemPrompt
+      system_prompt: defaultSystemPrompt,
+      runtime_instructions: "",
+      recording_intro_es: defaultRecordingIntroEs,
+      recording_intro_en: defaultRecordingIntroEn,
+      recording_consent_es: defaultRecordingConsentEs,
+      recording_consent_en: defaultRecordingConsentEn,
+      recording_confirm_es: defaultRecordingConfirmEs,
+      recording_confirm_en: defaultRecordingConfirmEn,
+      recording_no_response_es: defaultRecordingNoResponseEs,
+      recording_no_response_en: defaultRecordingNoResponseEn,
+      recording_decline_es: defaultRecordingDeclineEs,
+      recording_decline_en: defaultRecordingDeclineEn
     };
     const OUTCOME_LABELS = {
       NO_ANSWER: "No contestó",
@@ -6597,6 +6746,10 @@ app.get("/admin/ui", (req, res) => {
     }
     function setResultsCount(msg) { resultsCountEl.textContent = msg || ''; }
     function setCvListCount(msg) { cvListCountEl.textContent = msg || ''; }
+    function setSystemPromptBaseline(value) {
+      systemPromptOriginal = value || '';
+      systemPromptDirty = false;
+    }
     const SIDEBAR_STATE_KEY = 'hrbot_sidebar_collapsed';
     const AUTH_TOKEN_KEY = 'hrbot_auth_token';
     const AUTH_ROLE_KEY = 'hrbot_auth_role';
@@ -6651,6 +6804,8 @@ app.get("/admin/ui", (req, res) => {
       authBrands = [];
       authEmail = '';
       systemPromptUnlocked = false;
+      systemPromptOriginal = '';
+      systemPromptDirty = false;
       lockSystemPrompt();
       setAdminStatus('Bloqueado');
       setStatus('');
@@ -7394,6 +7549,7 @@ app.get("/admin/ui", (req, res) => {
       const found = list.find((t) => t.id === id);
       if (!found) return;
       systemPromptEl.value = found.prompt || '';
+      systemPromptDirty = systemPromptEl.value !== systemPromptOriginal;
       renderPromptPreview('', found.prompt || '', []);
     }
 
@@ -7437,6 +7593,7 @@ app.get("/admin/ui", (req, res) => {
         const updated = data.updated_prompt || '';
         const oldPrompt = systemPromptEl.value || '';
         systemPromptEl.value = updated;
+        systemPromptDirty = systemPromptEl.value !== systemPromptOriginal;
         renderPromptPreview(oldPrompt, updated, data.added_lines || []);
         setPromptAssistStatus(data.summary || 'Listo.', false);
       } catch (err) {
@@ -10113,6 +10270,22 @@ app.get("/admin/ui", (req, res) => {
       langRulesEl.value = typeof meta.lang_rules === "string" && meta.lang_rules.trim() ? meta.lang_rules : defaults.lang_rules;
       mustAskEl.value = typeof meta.must_ask === "string" && meta.must_ask.trim() ? meta.must_ask : defaults.must_ask;
       systemPromptEl.value = typeof meta.system_prompt === "string" && meta.system_prompt.trim() ? meta.system_prompt : defaults.system_prompt;
+      if (runtimeInstructionsEl) {
+        runtimeInstructionsEl.value = typeof meta.runtime_instructions === "string"
+          ? meta.runtime_instructions
+          : defaults.runtime_instructions;
+      }
+      if (recordingIntroEsEl) recordingIntroEsEl.value = typeof meta.recording_intro_es === "string" && meta.recording_intro_es.trim() ? meta.recording_intro_es : defaults.recording_intro_es;
+      if (recordingIntroEnEl) recordingIntroEnEl.value = typeof meta.recording_intro_en === "string" && meta.recording_intro_en.trim() ? meta.recording_intro_en : defaults.recording_intro_en;
+      if (recordingConsentEsEl) recordingConsentEsEl.value = typeof meta.recording_consent_es === "string" && meta.recording_consent_es.trim() ? meta.recording_consent_es : defaults.recording_consent_es;
+      if (recordingConsentEnEl) recordingConsentEnEl.value = typeof meta.recording_consent_en === "string" && meta.recording_consent_en.trim() ? meta.recording_consent_en : defaults.recording_consent_en;
+      if (recordingConfirmEsEl) recordingConfirmEsEl.value = typeof meta.recording_confirm_es === "string" && meta.recording_confirm_es.trim() ? meta.recording_confirm_es : defaults.recording_confirm_es;
+      if (recordingConfirmEnEl) recordingConfirmEnEl.value = typeof meta.recording_confirm_en === "string" && meta.recording_confirm_en.trim() ? meta.recording_confirm_en : defaults.recording_confirm_en;
+      if (recordingNoResponseEsEl) recordingNoResponseEsEl.value = typeof meta.recording_no_response_es === "string" && meta.recording_no_response_es.trim() ? meta.recording_no_response_es : defaults.recording_no_response_es;
+      if (recordingNoResponseEnEl) recordingNoResponseEnEl.value = typeof meta.recording_no_response_en === "string" && meta.recording_no_response_en.trim() ? meta.recording_no_response_en : defaults.recording_no_response_en;
+      if (recordingDeclineEsEl) recordingDeclineEsEl.value = typeof meta.recording_decline_es === "string" && meta.recording_decline_es.trim() ? meta.recording_decline_es : defaults.recording_decline_es;
+      if (recordingDeclineEnEl) recordingDeclineEnEl.value = typeof meta.recording_decline_en === "string" && meta.recording_decline_en.trim() ? meta.recording_decline_en : defaults.recording_decline_en;
+      setSystemPromptBaseline(systemPromptEl.value || '');
       if (!systemPromptUnlocked) {
         lockSystemPrompt();
         setAdminStatus('Bloqueado');
@@ -10226,7 +10399,18 @@ app.get("/admin/ui", (req, res) => {
           opener_en: openerEnEl.value || '',
           lang_rules: langRulesEl.value || '',
           must_ask: mustAskEl.value || '',
-          system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt
+          system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt,
+          runtime_instructions: runtimeInstructionsEl?.value || '',
+          recording_intro_es: recordingIntroEsEl?.value || '',
+          recording_intro_en: recordingIntroEnEl?.value || '',
+          recording_consent_es: recordingConsentEsEl?.value || '',
+          recording_consent_en: recordingConsentEnEl?.value || '',
+          recording_confirm_es: recordingConfirmEsEl?.value || '',
+          recording_confirm_en: recordingConfirmEnEl?.value || '',
+          recording_no_response_es: recordingNoResponseEsEl?.value || '',
+          recording_no_response_en: recordingNoResponseEnEl?.value || '',
+          recording_decline_es: recordingDeclineEsEl?.value || '',
+          recording_decline_en: recordingDeclineEnEl?.value || ''
         }
       };
       getBrandCards().forEach((bCard) => {
@@ -10272,6 +10456,7 @@ app.get("/admin/ui", (req, res) => {
 
     async function saveSystemPrompt() {
       if (!systemPromptUnlocked || !adminToken) return;
+      if (systemPromptDirty && !confirm('¿Guardar cambios del System Prompt?')) return;
       const body = JSON.stringify({ system_prompt: systemPromptEl.value || '' });
       const resp = await fetch('/admin/system-prompt', {
         method: 'POST',
@@ -10282,6 +10467,7 @@ app.get("/admin/ui", (req, res) => {
       if (!resp.ok) throw new Error(data.error || 'system prompt save failed');
       if (!state.config.meta) state.config.meta = {};
       state.config.meta.system_prompt = systemPromptEl.value || '';
+      setSystemPromptBaseline(systemPromptEl.value || '');
       loadPromptStore();
     }
 
@@ -10326,6 +10512,7 @@ app.get("/admin/ui", (req, res) => {
         } else if (!systemPromptEl.value || !systemPromptEl.value.trim()) {
           systemPromptEl.value = defaults.system_prompt;
         }
+        setSystemPromptBaseline(systemPromptEl.value || '');
         loadPromptStore();
         setAdminStatus('Admin OK');
       } catch (err) {
@@ -11521,6 +11708,7 @@ app.get("/admin/ui", (req, res) => {
         if (!entry) {
           entry = {
             ...item,
+            custom_question: item.custom_question || "",
             cvIds: [],
             call_count: Number(item.call_count || 0),
             active_call: !!item.active_call,
@@ -11543,12 +11731,16 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_text = item.cv_text;
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
+          entry.custom_question = item.custom_question || entry.custom_question || "";
           entry.decision = item.decision || entry.decision || "";
           entry.created_at = item.created_at;
           entry.source = item.source;
         }
         if (!entry.decision && item.decision) {
           entry.decision = item.decision;
+        }
+        if (!entry.custom_question && item.custom_question) {
+          entry.custom_question = item.custom_question;
         }
         if (item.active_call) {
           entry.active_call = true;
@@ -12419,6 +12611,11 @@ app.get("/admin/ui", (req, res) => {
     };
     document.getElementById('preview-generate').onclick = generatePreview;
     adminUnlockEl.onclick = unlockAdmin;
+    if (systemPromptEl) {
+      systemPromptEl.addEventListener('input', () => {
+        systemPromptDirty = systemPromptEl.value !== systemPromptOriginal;
+      });
+    }
     if (promptTemplateSaveEl) promptTemplateSaveEl.onclick = savePromptTemplate;
     if (promptTemplateRestoreEl) {
       promptTemplateRestoreEl.onclick = () => restorePromptFromStore(promptTemplateSelectEl?.value || '', 'template');
@@ -12979,15 +13176,17 @@ app.post("/voice", (req, res) => {
     attempt: "1",
     lang: "es"
   }).toString();
-  const openerLine = buildMetaOpener({ brand, role, applicant, lang: "es" });
-  const introLine = `${openerLine} Soy Mariana. Si preferís en inglés, decí English.`;
+  const recVarsEs = buildRecordingVars({ brand, role, applicant, lang: "es" });
+  const introLine = getRecordingCopy("es", "recording_intro", DEFAULT_RECORDING_INTRO_ES, recVarsEs);
+  const consentLine = getRecordingCopy("es", "recording_consent", DEFAULT_RECORDING_CONSENT_ES, recVarsEs);
+  const noResponseLine = getRecordingCopy("es", "recording_no_response", DEFAULT_RECORDING_NO_RESPONSE_ES, recVarsEs);
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(introLine)}</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, de acuerdo, 1, 2, english">
-    <Say language="es-US" voice="Polly.Lupe-Neural">Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.</Say>
+    <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(consentLine)}</Say>
   </Gather>
-  <Say language="es-US" voice="Polly.Lupe-Neural">No te escuché, gracias por tu tiempo. Que tengas un buen día.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
   <Hangup/>
 </Response>`;
 
@@ -13033,15 +13232,17 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
 
   if (wantsEnglish && !yes && !no) {
     const consentParams = new URLSearchParams({ token, attempt: String(attempt + 1), lang: "en" }).toString();
-    const introName = (payload.applicant || "").split(/\s+/)[0] || "there";
-    const brandDisplay = resolveBrandDisplay(payload.brand || DEFAULT_BRAND);
+    const recVarsEn = buildRecordingVars({ brand: payload.brand || DEFAULT_BRAND, role: payload.role || DEFAULT_ROLE, applicant: payload.applicant || "", lang: "en" });
+    const introLine = getRecordingCopy("en", "recording_intro", DEFAULT_RECORDING_INTRO_EN, recVarsEn);
+    const consentLine = getRecordingCopy("en", "recording_consent", DEFAULT_RECORDING_CONSENT_EN, recVarsEn);
+    const noResponseLine = getRecordingCopy("en", "recording_no_response", DEFAULT_RECORDING_NO_RESPONSE_EN, recVarsEn);
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US" voice="Polly.Joanna-Neural">Hi ${xmlEscapeAttr(introName)}, I'm Mariana from ${xmlEscapeAttr(brandDisplay)}. I'm calling about your application for ${xmlEscapeAttr(displayRole(payload.role || DEFAULT_ROLE, payload.brand || DEFAULT_BRAND))}.</Say>
+  <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(introLine)}</Say>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="en-US" hints="yes, no, 1, 2, sure, ok">
-    <Say language="en-US" voice="Polly.Joanna-Neural">To share the result with the team, is it okay if we record this call? Say yes or no. Or press 1 for yes, 2 for no.</Say>
+    <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(consentLine)}</Say>
   </Gather>
-  <Say language="en-US" voice="Polly.Joanna-Neural">I didn't catch that. Thanks for your time.</Say>
+  <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
   <Hangup/>
 </Response>`;
     return res.type("text/xml").send(twiml);
@@ -13097,15 +13298,17 @@ ${paramTags}
       if (callSid) noAnswerSentBySid.set(callSid, Date.now() + CALL_TTL_MS);
     }
     const es = lang !== "en";
+    const recVars = buildRecordingVars({ brand: payload.brand || DEFAULT_BRAND, role: payload.role || DEFAULT_ROLE, applicant: payload.applicant || "", lang: es ? "es" : "en" });
+    const declineLine = getRecordingCopy(es ? "es" : "en", "recording_decline", es ? DEFAULT_RECORDING_DECLINE_ES : DEFAULT_RECORDING_DECLINE_EN, recVars);
     const twiml = es
       ? `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="es-US" voice="Polly.Lupe-Neural">Perfecto, no hay problema. Gracias por tu tiempo. Que tengas un buen día.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(declineLine)}</Say>
   <Hangup/>
 </Response>`
       : `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="en-US" voice="Polly.Joanna-Neural">Understood, no problem. Thanks for your time. Goodbye.</Say>
+  <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(declineLine)}</Say>
   <Hangup/>
 </Response>`;
     return res.type("text/xml").send(twiml);
@@ -13113,21 +13316,24 @@ ${paramTags}
 
   const consentParams = new URLSearchParams({ token, attempt: String(attempt + 1), lang }).toString();
   const es = lang !== "en";
+  const recVars = buildRecordingVars({ brand: payload.brand || DEFAULT_BRAND, role: payload.role || DEFAULT_ROLE, applicant: payload.applicant || "", lang: es ? "es" : "en" });
+  const confirmLine = getRecordingCopy(es ? "es" : "en", "recording_confirm", es ? DEFAULT_RECORDING_CONFIRM_ES : DEFAULT_RECORDING_CONFIRM_EN, recVars);
+  const noResponseLine = getRecordingCopy(es ? "es" : "en", "recording_no_response", es ? DEFAULT_RECORDING_NO_RESPONSE_ES : DEFAULT_RECORDING_NO_RESPONSE_EN, recVars);
   const twiml = es
     ? `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="5">
-    <Say language="es-US" voice="Polly.Lupe-Neural">Para confirmar: ¿sí o no a grabar la llamada? También podés presionar 1 para sí, o 2 para no.</Say>
+    <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(confirmLine)}</Say>
   </Gather>
-  <Say language="es-US" voice="Polly.Lupe-Neural">No te escuché, gracias por tu tiempo.</Say>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
   <Hangup/>
 </Response>`
     : `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="5">
-    <Say language="en-US" voice="Polly.Joanna-Neural">To confirm: yes or no to recording? You can also press 1 for yes or 2 for no.</Say>
+    <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(confirmLine)}</Say>
   </Gather>
-  <Say language="en-US" voice="Polly.Joanna-Neural">I didn't catch that. Thanks for your time.</Say>
+  <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
   <Hangup/>
 </Response>`;
   return res.type("text/xml").send(twiml);
