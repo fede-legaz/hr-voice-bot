@@ -3766,6 +3766,7 @@ app.get("/admin/ui", (req, res) => {
       width: 100%;
       min-height: 32px;
     }
+    .candidate-score-pill { display: none; }
     .candidate-avatar {
       width: 32px;
       height: 32px;
@@ -4577,7 +4578,7 @@ app.get("/admin/ui", (req, res) => {
         border: none;
         box-shadow: none;
         padding: 0;
-        margin: -2px 0 12px;
+        margin: -8px 0 12px;
       }
       .results-table tbody tr.detail-row td {
         display: block;
@@ -4587,9 +4588,16 @@ app.get("/admin/ui", (req, res) => {
       }
       .results-table tbody tr.detail-row td::before { content: ""; }
       .results-table tbody tr.detail-row .detail-card {
-        border-radius: 16px;
+        border-top: none;
+        border-radius: 0 0 18px 18px;
         padding: 14px;
+        box-shadow: var(--shadow);
       }
+      .results-table tbody tr.row-clickable.expanded {
+        margin-bottom: 0;
+        border-radius: 18px 18px 8px 8px;
+      }
+      .results-table tbody tr.row-clickable.expanded td:last-child { border-bottom: none; }
       .results-table tbody tr.detail-row .detail-grid {
         grid-template-columns: 1fr;
         gap: 8px;
@@ -4606,13 +4614,20 @@ app.get("/admin/ui", (req, res) => {
       }
       .cv-table tbody tr td[data-label="Candidato"]::before,
       .results-table tbody tr td[data-label="Candidato"]::before { content: ""; }
-      .results-table tbody tr td[data-label="Score"] {
-        order: -2;
-        grid-template-columns: 1fr;
-        justify-items: center;
-        text-align: center;
+      .results-table tbody tr td[data-label="Score"] { display: none; }
+      .results-table .candidate-wrap {
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
       }
-      .results-table tbody tr td[data-label="Score"]::before { margin-bottom: 4px; }
+      .results-table .candidate-name {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .results-table .candidate-score-pill {
+        display: inline-flex;
+        margin-left: auto;
+      }
       .cv-table tbody tr td[data-label="Decisión"],
       .results-table tbody tr td[data-label="Decisión"],
       .cv-table tbody tr td[data-label="Acción"],
@@ -11156,7 +11171,21 @@ app.get("/admin/ui", (req, res) => {
         addCell(brandLabel, 'Local', 'cell-compact', brandLabel);
         const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
         addCell(roleLabel, 'Posición', 'cell-compact', roleLabel);
-        addCell(call.applicant, 'Candidato');
+        const candidateTd = document.createElement('td');
+        candidateTd.className = 'candidate-cell';
+        candidateTd.dataset.label = 'Candidato';
+        const candidateWrap = document.createElement('div');
+        candidateWrap.className = 'candidate-wrap';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'candidate-name';
+        nameSpan.textContent = call.applicant || '—';
+        if (call.applicant) nameSpan.title = call.applicant;
+        candidateWrap.appendChild(nameSpan);
+        const scoreMini = scorePill(call.score);
+        scoreMini.classList.add('candidate-score-pill');
+        candidateWrap.appendChild(scoreMini);
+        candidateTd.appendChild(candidateWrap);
+        tr.appendChild(candidateTd);
         addCell(call.phone, 'Teléfono');
         const statusText = formatInterviewSummary(call);
         const statusTd = document.createElement('td');
