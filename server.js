@@ -3393,6 +3393,14 @@ app.get("/admin/ui", (req, res) => {
       gap: 8px;
     }
     .swipe-controls button { flex: 1; }
+    .swipe-value .audio-player {
+      width: 100%;
+      min-width: 0;
+    }
+    .swipe-value .audio-progress {
+      flex: 1;
+      min-width: 90px;
+    }
     .drop-zone {
       border: 1px dashed var(--border);
       border-radius: 16px;
@@ -4249,7 +4257,15 @@ app.get("/admin/ui", (req, res) => {
       font-size: 15px;
       color: var(--ink);
     }
-    .panel.has-mobile-toggle .panel-body { margin-top: 12px; }
+    .panel.has-mobile-toggle .panel-body {
+      margin-top: 12px;
+      margin-bottom: 10px;
+    }
+    .panel-filters {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
     .panel-toggle {
       display: none;
       padding: 6px 12px;
@@ -4487,6 +4503,37 @@ app.get("/admin/ui", (req, res) => {
       .action-stack { justify-content: flex-start; flex-wrap: wrap; }
       .decision-buttons { flex-wrap: wrap; }
       .decision-cell { white-space: normal; }
+      #cv-tabs, #results-tabs, #results-decision-tabs {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+      }
+      #cv-tabs::-webkit-scrollbar,
+      #results-tabs::-webkit-scrollbar,
+      #results-decision-tabs::-webkit-scrollbar { display: none; }
+      #cv-tabs .tab-pill,
+      #results-tabs .tab-pill,
+      #results-decision-tabs .tab-pill { flex: 0 0 auto; }
+      .swipe-card { border-radius: 20px; padding: 16px; }
+      .swipe-meta { font-weight: 700; }
+      .swipe-section {
+        border-top: none;
+        padding-top: 4px;
+        margin-top: 2px;
+        gap: 8px;
+      }
+      .swipe-row {
+        grid-template-columns: 1fr;
+        gap: 2px;
+        align-items: flex-start;
+      }
+      .swipe-label { font-size: 10px; opacity: 0.72; }
+      .swipe-value { font-size: 14.25px; font-weight: 700; }
+      .swipe-top { align-items: flex-start; }
     }
     @media (max-width: 640px) {
       body { font-size: 14px; }
@@ -4494,8 +4541,8 @@ app.get("/admin/ui", (req, res) => {
       .panel { padding: 16px; border-radius: 16px; }
       .panel-title { font-size: 16px; }
       .tab-pill { padding: 6px 10px; }
-      .swipe-card { padding: 12px; border-radius: 16px; }
-      .swipe-row { grid-template-columns: 90px minmax(0, 1fr); }
+      .swipe-card { padding: 14px; border-radius: 18px; }
+      .swipe-row { grid-template-columns: 1fr; }
       .swipe-title { font-size: 15px; }
       .swipe-avatar { width: 64px; height: 64px; border-radius: 16px; flex-basis: 64px; }
       th, td { padding: 8px 10px; font-size: 11.5px; }
@@ -4869,24 +4916,26 @@ app.get("/admin/ui", (req, res) => {
             <button type="button" data-mode="table" class="active">Tabla</button>
             <button type="button" data-mode="swipe">Swipe</button>
           </div>
-          <div class="grid">
-            <div>
-              <label>Local</label>
-              <select id="cv-filter-brand"></select>
+          <div id="cv-filters" class="panel-filters">
+            <div class="grid">
+              <div>
+                <label>Local</label>
+                <select id="cv-filter-brand"></select>
+              </div>
+              <div>
+                <label>Buscar</label>
+                <input type="text" id="cv-filter-search" placeholder="Nombre o teléfono" />
+              </div>
+              <div style="display:flex; align-items:flex-end;">
+                <button class="secondary" id="cv-refresh" type="button">Refresh</button>
+              </div>
             </div>
-            <div>
-              <label>Buscar</label>
-              <input type="text" id="cv-filter-search" placeholder="Nombre o teléfono" />
+            <div class="inline" id="cv-tabs" style="margin-top:8px;">
+              <button class="tab-pill active" data-filter="no_calls" type="button">No llamados</button>
+              <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
+              <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
+              <button class="tab-pill" data-filter="all" type="button">Todos</button>
             </div>
-            <div style="display:flex; align-items:flex-end;">
-              <button class="secondary" id="cv-refresh" type="button">Refresh</button>
-            </div>
-          </div>
-          <div class="inline" id="cv-tabs" style="margin-top:8px;">
-            <button class="tab-pill active" data-filter="no_calls" type="button">No llamados</button>
-            <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
-            <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
-            <button class="tab-pill" data-filter="all" type="button">Todos</button>
           </div>
           <div class="table-wrapper" id="cv-table-wrapper" style="margin-top:10px;">
             <table class="cv-table">
@@ -4929,55 +4978,57 @@ app.get("/admin/ui", (req, res) => {
             <button type="button" data-mode="table" class="active">Tabla</button>
             <button type="button" data-mode="swipe">Swipe</button>
           </div>
-          <div class="grid">
-            <div>
-              <label>Local</label>
-              <select id="results-brand"></select>
-            </div>
-            <div>
-              <label>Posición</label>
-              <select id="results-role"></select>
-            </div>
-            <div>
-              <label>Recomendación</label>
-              <select id="results-rec">
-                <option value="">Todas</option>
-                <option value="advance">Avanzar</option>
-                <option value="review">Revisar</option>
-                <option value="reject">No avanzar</option>
-              </select>
-            </div>
-            <div>
-              <label>Puntaje mín.</label>
-              <input type="text" id="results-score-min" placeholder="0" />
-            </div>
-            <div>
-              <label>Puntaje máx.</label>
-              <input type="text" id="results-score-max" placeholder="100" />
-            </div>
-            <div>
-              <label>Buscar</label>
-              <div class="inline">
-                <input type="text" id="results-search" placeholder="Nombre o teléfono" />
-                <button class="secondary icon-btn" id="results-refresh" type="button" aria-label="Refresh" title="Refresh">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-                    <polyline points="21 3 21 9 15 9" />
-                  </svg>
-                </button>
+          <div id="results-filters" class="panel-filters">
+            <div class="grid">
+              <div>
+                <label>Local</label>
+                <select id="results-brand"></select>
+              </div>
+              <div>
+                <label>Posición</label>
+                <select id="results-role"></select>
+              </div>
+              <div>
+                <label>Recomendación</label>
+                <select id="results-rec">
+                  <option value="">Todas</option>
+                  <option value="advance">Avanzar</option>
+                  <option value="review">Revisar</option>
+                  <option value="reject">No avanzar</option>
+                </select>
+              </div>
+              <div>
+                <label>Puntaje mín.</label>
+                <input type="text" id="results-score-min" placeholder="0" />
+              </div>
+              <div>
+                <label>Puntaje máx.</label>
+                <input type="text" id="results-score-max" placeholder="100" />
+              </div>
+              <div>
+                <label>Buscar</label>
+                <div class="inline">
+                  <input type="text" id="results-search" placeholder="Nombre o teléfono" />
+                  <button class="secondary icon-btn" id="results-refresh" type="button" aria-label="Refresh" title="Refresh">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                      <polyline points="21 3 21 9 15 9" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
-          </div>
-          <div class="inline" id="results-tabs" style="margin-top:8px;">
-            <button class="tab-pill active" data-filter="completed" type="button">Completadas</button>
-            <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
-            <button class="tab-pill" data-filter="all" type="button">Todas</button>
-          </div>
-          <div class="inline" id="results-decision-tabs" style="margin-top:8px;">
-            <button class="tab-pill active" data-decision="all" type="button">Todas</button>
-            <button class="tab-pill" data-decision="approved" type="button">Aprobados</button>
-            <button class="tab-pill" data-decision="maybe" type="button">Indecisos</button>
-            <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
+            <div class="inline" id="results-tabs" style="margin-top:8px;">
+              <button class="tab-pill active" data-filter="completed" type="button">Completadas</button>
+              <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
+              <button class="tab-pill" data-filter="all" type="button">Todas</button>
+            </div>
+            <div class="inline" id="results-decision-tabs" style="margin-top:8px;">
+              <button class="tab-pill active" data-decision="all" type="button">Todas</button>
+              <button class="tab-pill" data-decision="approved" type="button">Aprobados</button>
+              <button class="tab-pill" data-decision="maybe" type="button">Indecisos</button>
+              <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
+            </div>
           </div>
           <div class="table-wrapper" id="results-table-wrapper" style="margin-top:14px;">
             <table class="results-table">
@@ -6186,14 +6237,34 @@ app.get("/admin/ui", (req, res) => {
       const title = panel.querySelector(':scope > .panel-title');
       const sub = panel.querySelector(':scope > .panel-sub');
       if (!title || !sub) return;
+      const contentSelector = typeof opts.contentSelector === 'string' ? opts.contentSelector.trim() : '';
+      const directChildren = Array.from(panel.children);
+      const defaultChildren = directChildren.filter((child) => child !== title && child !== sub);
+      let bodyChildren = [];
+      if (contentSelector) {
+        bodyChildren = directChildren.filter((child) => child.matches && child.matches(contentSelector));
+      }
+      if (!bodyChildren.length) {
+        bodyChildren = defaultChildren;
+      }
+      if (!bodyChildren.length) return;
       const body = document.createElement('div');
       body.className = 'panel-body';
-      const children = Array.from(panel.children);
-      children.forEach((child) => {
-        if (child === title || child === sub) return;
+      const bodySet = new Set(bodyChildren);
+      let anchor = null;
+      const firstIdx = directChildren.indexOf(bodyChildren[0]);
+      for (let i = firstIdx + 1; i < directChildren.length; i += 1) {
+        const candidate = directChildren[i];
+        if (!bodySet.has(candidate)) {
+          anchor = candidate;
+          break;
+        }
+      }
+      bodyChildren.forEach((child) => {
         body.appendChild(child);
       });
-      panel.appendChild(body);
+      if (anchor) panel.insertBefore(body, anchor);
+      else panel.appendChild(body);
       panel.classList.add('has-mobile-toggle');
       const toggle = document.createElement('button');
       toggle.type = 'button';
@@ -11983,11 +12054,13 @@ app.get("/admin/ui", (req, res) => {
     });
     enableMobilePanelToggle('cv-list-panel', {
       defaultCollapsed: false,
+      contentSelector: '#cv-filters',
       collapsedLabel: 'Mostrar filtros',
       expandedLabel: 'Ocultar filtros'
     });
     enableMobilePanelToggle('results-panel', {
       defaultCollapsed: true,
+      contentSelector: '#results-filters',
       collapsedLabel: 'Mostrar filtros',
       expandedLabel: 'Ocultar filtros'
     });
