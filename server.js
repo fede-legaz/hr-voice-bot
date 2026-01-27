@@ -1107,6 +1107,24 @@ async function loadPromptStore() {
   }
 }
 
+async function loadPromptStoreWithSource() {
+  if (dbPool) {
+    try {
+      const resp = await dbPool.query("SELECT value FROM app_config WHERE key = $1", [SYSTEM_PROMPT_STORE_KEY]);
+      const raw = resp.rows?.[0]?.value;
+      return { store: normalizePromptStore(raw || {}), source: "db" };
+    } catch (err) {
+      console.error("[prompt-store] failed to load from db", err.message);
+    }
+  }
+  try {
+    const raw = await fs.promises.readFile(systemPromptStorePath, "utf8");
+    return { store: normalizePromptStore(JSON.parse(raw)), source: "file" };
+  } catch (err) {
+    return { store: normalizePromptStore({}), source: "memory" };
+  }
+}
+
 async function savePromptStore(store) {
   const normalized = normalizePromptStore(store);
   if (dbPool) {
@@ -2481,8 +2499,8 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
 
 app.get("/admin/system-prompt/store", requireAdmin, async (req, res) => {
   try {
-    const store = await loadPromptStore();
-    return res.json({ ok: true, store });
+    const { store, source } = await loadPromptStoreWithSource();
+    return res.json({ ok: true, store, source });
   } catch (err) {
     return res.status(400).json({ error: "prompt_store_failed", detail: err.message });
   }
@@ -2498,7 +2516,8 @@ app.post("/admin/system-prompt/templates", requireAdmin, async (req, res) => {
     const template = { id: randomToken(), name, prompt, created_at: new Date().toISOString() };
     store.templates = Array.isArray(store.templates) ? store.templates : [];
     store.templates.unshift(template);
-    await savePromptStore(store);
+    const saved = await savePromptStore(store);
+    if (!saved) return res.status(500).json({ error: "template_save_failed" });
     return res.json({ ok: true, template });
   } catch (err) {
     return res.status(400).json({ error: "template_save_failed", detail: err.message });
@@ -3777,6 +3796,25 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 14px;
       border: 1px dashed rgba(178, 164, 132, 0.6);
       background: #fcfaf6;
+    }
+    .prompt-tools.compact { gap: 6px; padding: 10px; }
+    .prompt-tools-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .prompt-tools.compact input,
+    .prompt-tools.compact select {
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    .prompt-tools.compact button {
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 12px;
+      box-shadow: none;
     }
     .prompt-tools .inline { flex-wrap: wrap; }
     .prompt-side .prompt-assistant-card {
@@ -5222,22 +5260,22 @@ app.get("/admin/ui", (req, res) => {
             <div class="prompt-col">
               <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
               <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {opener}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
-              <div class="prompt-tools" id="prompt-tools">
-                <div class="small">Templates y versiones</div>
-                <div class="inline">
-                  <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
-                  <button class="secondary" id="prompt-template-save" type="button">Guardar template</button>
-                </div>
-                <div class="inline">
-                  <select id="prompt-template-select"></select>
-                  <button class="secondary" id="prompt-template-restore" type="button">Restaurar template</button>
-                  <button class="secondary" id="prompt-template-delete" type="button">Eliminar</button>
-                </div>
-                <div class="inline">
-                  <select id="prompt-history-select"></select>
-                  <button class="secondary" id="prompt-history-restore" type="button">Restaurar versión</button>
-                </div>
-              </div>
+          <div class="prompt-tools compact" id="prompt-tools">
+            <div class="small">Templates y versiones</div>
+            <div class="prompt-tools-row">
+              <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
+              <button class="secondary btn-compact" id="prompt-template-save" type="button">Guardar</button>
+            </div>
+            <div class="prompt-tools-row">
+              <select id="prompt-template-select"></select>
+              <button class="secondary btn-compact" id="prompt-template-restore" type="button">Restaurar</button>
+              <button class="secondary btn-compact" id="prompt-template-delete" type="button">Eliminar</button>
+            </div>
+            <div class="prompt-tools-row">
+              <select id="prompt-history-select"></select>
+              <button class="secondary btn-compact" id="prompt-history-restore" type="button">Restaurar versión</button>
+            </div>
+          </div>
             </div>
             <div class="prompt-col prompt-side">
               <div class="prompt-assistant-card">
@@ -7576,13 +7614,19 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'prompt_store_failed');
         promptStore = data.store || { templates: [], history: [] };
         renderPromptStore();
+        if (data.source && adminStatusEl) {
+          adminStatusEl.textContent = 'Admin OK · store: ' + data.source;
+        }
       } catch (err) {
         console.error('prompt store failed', err);
       }
     }
 
     async function savePromptTemplate() {
-      if (!adminToken || !promptTemplateNameEl) return;
+      if (!adminToken || !promptTemplateNameEl) {
+        setAdminStatus('Desbloqueá con ADMIN para guardar templates');
+        return;
+      }
       const name = (promptTemplateNameEl.value || '').trim();
       if (!name) {
         setAdminStatus('Ingresá un nombre para el template');
