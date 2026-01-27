@@ -7311,7 +7311,7 @@ app.get("/admin/ui", (req, res) => {
           : (!!norm && !oldSet.has(norm));
         const safe = escapeHtml(line);
         return isAdded ? '<mark>' + safe + '</mark>' : safe;
-      }).join('\n');
+      }).join('\\n');
       promptAssistPreviewEl.innerHTML = html;
       promptAssistPreviewEl.style.display = html ? 'block' : 'none';
     }
