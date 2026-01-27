@@ -436,10 +436,10 @@ function needsLateClosingQuestion(brandK, brandName, roleK) {
   return false;
 }
 
-function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref) {
+function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref, overrideQuestion) {
   const list = Array.isArray(questions) ? [...questions] : [];
   if (!needsLateClosingQuestion(brandK, brandName, roleK)) return list;
-  const question = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+  const question = overrideQuestion || (langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES);
   const hasClosing = list.some((q) => {
     const norm = normalizeKey(q || "");
     return norm.includes("hora de cierre")
@@ -464,22 +464,27 @@ function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref) 
   return list;
 }
 
-function withEnglishRequiredQuestions(questions, needsEnglish, langPref = "es") {
+function withEnglishRequiredQuestions(questions, needsEnglish, levelQuestion, checkQuestion) {
   const list = Array.isArray(questions) ? [...questions] : [];
   if (!needsEnglish) return list;
-  const hasLevel = list.some((q) => normalizeKey(q || "").includes("ingles"));
+  const levelQ = levelQuestion || ENGLISH_LEVEL_QUESTION;
+  const checkQ = checkQuestion || ENGLISH_CHECK_QUESTION;
+  const hasLevel = list.some((q) => {
+    const norm = normalizeKey(q || "");
+    return norm.includes("ingles") || norm.includes("english");
+  });
   const hasEnglishQuestion = list.some((q) => {
     const norm = normalizeKey(q || "");
     return norm.includes("can you")
       || norm.includes("in english")
       || norm.includes("describe your last job");
   });
-  if (!hasLevel) list.push(langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION);
-  if (!hasEnglishQuestion) list.push(ENGLISH_CHECK_QUESTION);
+  if (!hasLevel) list.push(levelQ);
+  if (!hasEnglishQuestion) list.push(checkQ);
   return list;
 }
 
-function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosing, langPref, customQuestion }) {
+function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosing, langPref, customQuestion, englishLevelQuestion, englishCheckQuestion, lateClosingQuestion }) {
   const lines = [];
   const header = langPref === "en"
     ? "MANDATORY — do not skip these. Integrate naturally in the conversation:"
@@ -489,12 +494,12 @@ function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosi
     lines.push(langPref === "en" ? `- Checklist: ${mustAsk}` : `- Checklist: ${mustAsk}`);
   }
   if (needsLateClosing) {
-    const q = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+    const q = lateClosingQuestion || (langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES);
     lines.push(`- ${q}`);
   }
   if (needsEnglish) {
-    lines.push(`- ${langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION}`);
-    lines.push(`- ${ENGLISH_CHECK_QUESTION}`);
+    lines.push(`- ${englishLevelQuestion || (langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION)}`);
+    lines.push(`- ${englishCheckQuestion || ENGLISH_CHECK_QUESTION}`);
   }
   if (Array.isArray(specificQs) && specificQs.length) {
     lines.push(langPref === "en"
@@ -641,6 +646,13 @@ function getRecordingCopy(lang, key, fallback, vars) {
   return renderPromptTemplate(selected, vars).trim();
 }
 
+function getMandatoryCopy(lang, key, fallback) {
+  const meta = roleConfig?.meta || {};
+  const field = `${key}_${lang}`;
+  const value = typeof meta[field] === "string" ? meta[field].trim() : "";
+  return value || fallback;
+}
+
 function buildMetaOpener({ brand, role, applicant, lang }) {
   const metaCfg = roleConfig?.meta || {};
   const brandDisplay = resolveBrandDisplay(brand);
@@ -685,7 +697,9 @@ function buildInstructions(ctx) {
     : roleNeedsEnglish(rKey, ctx.brand);
   const langPref = ctx.lang === "en" ? "en" : "es";
   const needsLateClosing = needsLateClosingQuestion(bKey, ctx.brand, rKey);
-  const lateClosingQuestion = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+  const lateClosingQuestion = getMandatoryCopy(langPref, "late_closing_question", langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES);
+  const englishLevelQuestion = getMandatoryCopy(langPref, "english_level_question", langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION);
+  const englishCheckQuestion = getMandatoryCopy(langPref, "english_check_question", ENGLISH_CHECK_QUESTION);
   const lateClosingRule = needsLateClosing
     ? `OBLIGATORIO: preguntá exactamente: "${lateClosingQuestion}"`
     : "";
@@ -703,8 +717,8 @@ function buildInstructions(ctx) {
   const hasCv = !!cvSummaryClean;
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
-  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref);
-  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, langPref);
+  const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref, lateClosingQuestion);
+  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, englishLevelQuestion, englishCheckQuestion);
   const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
   const customQuestion = (ctx.customQuestion || ctx.custom_question || "").toString().trim();
   const promptVars = {
@@ -754,7 +768,10 @@ function buildInstructions(ctx) {
     needsEnglish,
     needsLateClosing,
     langPref,
-    customQuestion
+    customQuestion,
+    englishLevelQuestion,
+    englishCheckQuestion,
+    lateClosingQuestion
   });
   const runtimeExtraRaw = (metaCfg.runtime_instructions || "").trim();
   const runtimeExtra = runtimeExtraRaw ? renderPromptTemplate(runtimeExtraRaw, promptVars).trim() : "";
@@ -5236,6 +5253,35 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="divider"></div>
+          <div class="panel-title">Bloque obligatorio (editable)</div>
+          <div class="panel-sub">Estos textos se usan cuando corresponde (inglés requerido / cierre tarde). Podés dejar el default o personalizar.</div>
+          <div class="grid">
+            <div>
+              <label>Inglés - nivel (ES)</label>
+              <textarea id="english-level-es"></textarea>
+            </div>
+            <div>
+              <label>Inglés - nivel (EN)</label>
+              <textarea id="english-level-en"></textarea>
+            </div>
+            <div>
+              <label>Pregunta en inglés (ES)</label>
+              <textarea id="english-check-es"></textarea>
+            </div>
+            <div>
+              <label>Pregunta en inglés (EN)</label>
+              <textarea id="english-check-en"></textarea>
+            </div>
+            <div>
+              <label>Cierre tarde (ES)</label>
+              <textarea id="late-closing-es"></textarea>
+            </div>
+            <div>
+              <label>Cierre tarde (EN)</label>
+              <textarea id="late-closing-en"></textarea>
+            </div>
+          </div>
+          <div class="divider"></div>
           <div class="panel-title">Runtime (se inyecta al ejecutar)</div>
           <div class="panel-sub">Este bloque se agrega automáticamente a cada llamada, además del checklist obligatorio. Úsalo para reglas operativas del momento.</div>
           <textarea id="runtime-instructions" placeholder="Ej: preguntá si puede cubrir turnos de cierre o si maneja café manual."></textarea>
@@ -6517,6 +6563,12 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     const systemPromptEl = document.getElementById('system-prompt');
+    const englishLevelEsEl = document.getElementById('english-level-es');
+    const englishLevelEnEl = document.getElementById('english-level-en');
+    const englishCheckEsEl = document.getElementById('english-check-es');
+    const englishCheckEnEl = document.getElementById('english-check-en');
+    const lateClosingEsEl = document.getElementById('late-closing-es');
+    const lateClosingEnEl = document.getElementById('late-closing-en');
     const runtimeInstructionsEl = document.getElementById('runtime-instructions');
     const recordingIntroEsEl = document.getElementById('recording-intro-es');
     const recordingIntroEnEl = document.getElementById('recording-intro-en');
@@ -6687,6 +6739,11 @@ app.get("/admin/ui", (req, res) => {
     const OCR_MAX_DIM = 1700;
     const OCR_JPEG_QUALITY = 0.82;
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
+    const defaultEnglishLevelQuestionEs = ${JSON.stringify(ENGLISH_LEVEL_QUESTION)};
+    const defaultEnglishLevelQuestionEn = ${JSON.stringify(ENGLISH_LEVEL_QUESTION_EN)};
+    const defaultEnglishCheckQuestion = ${JSON.stringify(ENGLISH_CHECK_QUESTION)};
+    const defaultLateClosingQuestionEs = ${JSON.stringify(LATE_CLOSING_QUESTION_ES)};
+    const defaultLateClosingQuestionEn = ${JSON.stringify(LATE_CLOSING_QUESTION_EN)};
     const defaultRecordingIntroEs = ${JSON.stringify(DEFAULT_RECORDING_INTRO_ES)};
     const defaultRecordingIntroEn = ${JSON.stringify(DEFAULT_RECORDING_INTRO_EN)};
     const defaultRecordingConsentEs = ${JSON.stringify(DEFAULT_RECORDING_CONSENT_ES)};
@@ -6704,6 +6761,12 @@ app.get("/admin/ui", (req, res) => {
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
       system_prompt: defaultSystemPrompt,
       runtime_instructions: "",
+      english_level_question_es: defaultEnglishLevelQuestionEs,
+      english_level_question_en: defaultEnglishLevelQuestionEn,
+      english_check_question_es: defaultEnglishCheckQuestion,
+      english_check_question_en: defaultEnglishCheckQuestion,
+      late_closing_question_es: defaultLateClosingQuestionEs,
+      late_closing_question_en: defaultLateClosingQuestionEn,
       recording_intro_es: defaultRecordingIntroEs,
       recording_intro_en: defaultRecordingIntroEn,
       recording_consent_es: defaultRecordingConsentEs,
@@ -7375,7 +7438,7 @@ app.get("/admin/ui", (req, res) => {
 
     function openCvQuestionModal(item) {
       if (!cvQuestionModalEl || !cvQuestionTextEl) return;
-      pendingCvQuestionId = item?.id || '';
+      pendingCvQuestionId = item?.id || (Array.isArray(item?.cvIds) ? item.cvIds[0] : '') || '';
       cvQuestionTextEl.value = item?.custom_question || '';
       setCvQuestionStatus('');
       cvQuestionModalEl.style.display = 'flex';
@@ -9435,10 +9498,10 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = async (event) => {
           event.stopPropagation();
           if (authRole === 'viewer') return;
-          const ids = Array.isArray(item.cvIds) && item.cvIds.length
-            ? item.cvIds
-            : (item.id ? [item.id] : []);
-          if (!ids.length) return;
+        const ids = Array.isArray(item.cvIds) && item.cvIds.length
+          ? item.cvIds
+          : (item.id ? [item.id] : []);
+        if (!ids.length) return;
           const next = item.decision === opt.key ? '' : opt.key;
           decisionWrap.classList.add('is-loading');
           try {
@@ -9511,7 +9574,7 @@ app.get("/admin/ui", (req, res) => {
             applicant: item.applicant || '',
             cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
             cv_text: item.cv_text || '',
-            cv_id: item.id || '',
+            cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
             custom_question: item.custom_question || ''
           });
         };
@@ -10275,6 +10338,12 @@ app.get("/admin/ui", (req, res) => {
           ? meta.runtime_instructions
           : defaults.runtime_instructions;
       }
+      if (englishLevelEsEl) englishLevelEsEl.value = typeof meta.english_level_question_es === "string" && meta.english_level_question_es.trim() ? meta.english_level_question_es : defaults.english_level_question_es;
+      if (englishLevelEnEl) englishLevelEnEl.value = typeof meta.english_level_question_en === "string" && meta.english_level_question_en.trim() ? meta.english_level_question_en : defaults.english_level_question_en;
+      if (englishCheckEsEl) englishCheckEsEl.value = typeof meta.english_check_question_es === "string" && meta.english_check_question_es.trim() ? meta.english_check_question_es : defaults.english_check_question_es;
+      if (englishCheckEnEl) englishCheckEnEl.value = typeof meta.english_check_question_en === "string" && meta.english_check_question_en.trim() ? meta.english_check_question_en : defaults.english_check_question_en;
+      if (lateClosingEsEl) lateClosingEsEl.value = typeof meta.late_closing_question_es === "string" && meta.late_closing_question_es.trim() ? meta.late_closing_question_es : defaults.late_closing_question_es;
+      if (lateClosingEnEl) lateClosingEnEl.value = typeof meta.late_closing_question_en === "string" && meta.late_closing_question_en.trim() ? meta.late_closing_question_en : defaults.late_closing_question_en;
       if (recordingIntroEsEl) recordingIntroEsEl.value = typeof meta.recording_intro_es === "string" && meta.recording_intro_es.trim() ? meta.recording_intro_es : defaults.recording_intro_es;
       if (recordingIntroEnEl) recordingIntroEnEl.value = typeof meta.recording_intro_en === "string" && meta.recording_intro_en.trim() ? meta.recording_intro_en : defaults.recording_intro_en;
       if (recordingConsentEsEl) recordingConsentEsEl.value = typeof meta.recording_consent_es === "string" && meta.recording_consent_es.trim() ? meta.recording_consent_es : defaults.recording_consent_es;
@@ -10401,6 +10470,12 @@ app.get("/admin/ui", (req, res) => {
           must_ask: mustAskEl.value || '',
           system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt,
           runtime_instructions: runtimeInstructionsEl?.value || '',
+          english_level_question_es: englishLevelEsEl?.value || '',
+          english_level_question_en: englishLevelEnEl?.value || '',
+          english_check_question_es: englishCheckEsEl?.value || '',
+          english_check_question_en: englishCheckEnEl?.value || '',
+          late_closing_question_es: lateClosingEsEl?.value || '',
+          late_closing_question_en: lateClosingEnEl?.value || '',
           recording_intro_es: recordingIntroEsEl?.value || '',
           recording_intro_en: recordingIntroEnEl?.value || '',
           recording_consent_es: recordingConsentEsEl?.value || '',
@@ -12359,7 +12434,7 @@ app.get("/admin/ui", (req, res) => {
               applicant: item.applicant || '',
               cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
               cv_text: item.cv_text || '',
-              cv_id: item.id || '',
+              cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
               custom_question: item.custom_question || ''
             });
           };
@@ -13443,11 +13518,11 @@ app.post("/call", requireWrite, async (req, res) => {
       applicant = "",
       cv_summary = "",
       cv_text = "",
-      custom_question = "",
       cv_id: cvIdRaw = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
     } = body;
+    let customQuestion = (body.custom_question || body.customQuestion || "").toString().trim();
 
     const cvSummary = (cv_summary || cv_text || "").trim();
     let cvId = cvIdRaw || "";
@@ -13483,6 +13558,19 @@ app.post("/call", requireWrite, async (req, res) => {
 
     const resolvedAddress = address || resolveAddress(brand, null);
 
+    if (!customQuestion && cvId) {
+      const fromMem = cvStoreById.get(cvId);
+      if (fromMem?.custom_question) {
+        customQuestion = fromMem.custom_question;
+      } else if (dbPool) {
+        try {
+          const resp = await dbQuery("SELECT custom_question FROM cvs WHERE id = $1 LIMIT 1", [cvId]);
+          const row = resp?.rows?.[0];
+          if (row?.custom_question) customQuestion = row.custom_question;
+        } catch {}
+      }
+    }
+
     if (cvId && resume_url) {
       const cvEntry = buildCvEntry({
         id: cvId,
@@ -13492,7 +13580,7 @@ app.post("/call", requireWrite, async (req, res) => {
         phone: toNorm,
         cv_text: cv_text || cvSummary,
         resume_url,
-        custom_question
+        custom_question: customQuestion
       });
       recordCvEntry(cvEntry);
     }
@@ -13504,7 +13592,7 @@ app.post("/call", requireWrite, async (req, res) => {
         phone: toNorm,
         cv_text: cv_text || cvSummary,
         resume_url,
-        custom_question
+        custom_question: customQuestion
       });
       recordCvEntry(cvEntry);
       cvId = cvEntry.id;
@@ -13523,7 +13611,7 @@ app.post("/call", requireWrite, async (req, res) => {
         cv_summary: cvSummary,
         cv_id: cvId,
         resume_url,
-        custom_question
+        custom_question: customQuestion
       },
       expiresAt: Date.now() + CALL_TTL_MS
     });
@@ -13541,7 +13629,7 @@ app.post("/call", requireWrite, async (req, res) => {
         cv_summary: cvSummary,
         cv_id: cvId,
         resume_url,
-        custom_question
+        custom_question: customQuestion
       },
       expiresAt: Date.now() + CALL_TTL_MS
     });
@@ -13582,7 +13670,7 @@ app.post("/call", requireWrite, async (req, res) => {
           cv_summary: cvSummary,
           cv_id: cvId,
           resume_url,
-          custom_question
+          custom_question: customQuestion
         },
         { callSid: data.sid, to: toNorm }
       );
