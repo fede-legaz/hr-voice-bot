@@ -191,6 +191,7 @@ const ROLE_QUESTIONS = {
 const LATE_CLOSING_QUESTION_ES = "En caso de ser requerido, ¿podes trabajar el turno de noche, que puede ser hasta la 1 o 2 de la madrugada?";
 const LATE_CLOSING_QUESTION_EN = "If required, are you able to work the night shift, which may go until 1 or 2am?";
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
+const ENGLISH_LEVEL_QUESTION_EN = "For this role we need conversational English. What is your English level?";
 const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
 const HUNG_UP_THRESHOLD_SEC = 20;
 const OUTCOME_LABELS = {
@@ -453,7 +454,7 @@ function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref) 
   return list;
 }
 
-function withEnglishRequiredQuestions(questions, needsEnglish) {
+function withEnglishRequiredQuestions(questions, needsEnglish, langPref = "es") {
   const list = Array.isArray(questions) ? [...questions] : [];
   if (!needsEnglish) return list;
   const hasLevel = list.some((q) => normalizeKey(q || "").includes("ingles"));
@@ -463,9 +464,42 @@ function withEnglishRequiredQuestions(questions, needsEnglish) {
       || norm.includes("in english")
       || norm.includes("describe your last job");
   });
-  if (!hasLevel) list.push(ENGLISH_LEVEL_QUESTION);
+  if (!hasLevel) list.push(langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION);
   if (!hasEnglishQuestion) list.push(ENGLISH_CHECK_QUESTION);
   return list;
+}
+
+function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosing, langPref, customQuestion }) {
+  const lines = [];
+  const header = langPref === "en"
+    ? "MANDATORY — do not skip these. Integrate naturally in the conversation:"
+    : "OBLIGATORIO — no omitas estos puntos. Integralos de forma natural en la conversación:";
+  lines.push(header);
+  if (mustAsk) {
+    lines.push(langPref === "en" ? `- Checklist: ${mustAsk}` : `- Checklist: ${mustAsk}`);
+  }
+  if (needsLateClosing) {
+    const q = langPref === "en" ? LATE_CLOSING_QUESTION_EN : LATE_CLOSING_QUESTION_ES;
+    lines.push(`- ${q}`);
+  }
+  if (needsEnglish) {
+    lines.push(`- ${langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION}`);
+    lines.push(`- ${ENGLISH_CHECK_QUESTION}`);
+  }
+  if (Array.isArray(specificQs) && specificQs.length) {
+    lines.push(langPref === "en"
+      ? "- Role-specific questions (ask if not covered yet):"
+      : "- Preguntas específicas del rol (si no salieron antes):");
+    specificQs.forEach((q) => {
+      if (q) lines.push(`  - ${q}`);
+    });
+  }
+  if (customQuestion) {
+    lines.push(langPref === "en"
+      ? `- Candidate custom question (ask after experience and before closing): ${customQuestion}`
+      : `- Pregunta personalizada del candidato (hacerla después de experiencia y antes del cierre): ${customQuestion}`);
+  }
+  return lines.join("\n");
 }
 
 const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `
@@ -630,8 +664,9 @@ function buildInstructions(ctx) {
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
   const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref);
-  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish);
+  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, langPref);
   const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
+  const customQuestion = (ctx.customQuestion || ctx.custom_question || "").toString().trim();
   const promptVars = {
     name: firstName,
     first_name: firstName,
@@ -668,9 +703,19 @@ function buildInstructions(ctx) {
     late_closing_rule: lateClosingRule,
     late_closing_rule_line: lateClosingRule ? `- ${lateClosingRule}` : "",
     specific_questions: specificQs.map(q => `- ${q}`).join("\n"),
-    specific_questions_inline: specificQs.join("; ")
+    specific_questions_inline: specificQs.join("; "),
+    custom_question: customQuestion
   };
-  return renderPromptTemplate(promptTemplate, promptVars).trim();
+  const rendered = renderPromptTemplate(promptTemplate, promptVars).trim();
+  const mandatoryBlock = buildMandatoryBlock({
+    mustAsk: metaCfg.must_ask || "",
+    specificQs,
+    needsEnglish,
+    needsLateClosing,
+    langPref,
+    customQuestion
+  });
+  return mandatoryBlock ? `${rendered}\n\n${mandatoryBlock}`.trim() : rendered;
 }
 
 function parseEnglishRequired(value) {
@@ -733,6 +778,7 @@ function buildCallFromPayload(payload, extra = {}) {
     cvSummary: payload?.cv_summary || payload?.cvSummary || "",
     cvText: payload?.cv_text || payload?.cvText || payload?.cv_summary || "",
     cvId: payload?.cv_id || payload?.cvId || "",
+    customQuestion: payload?.custom_question || payload?.customQuestion || "",
     resumeUrl,
     recordingStarted: false,
     transcriptText: "",
@@ -837,6 +883,8 @@ const recordingsDir = path.join("/tmp", "recordings");
 fs.mkdirSync(recordingsDir, { recursive: true });
 const rolesConfigPath = path.join(__dirname, "config", "roles.json");
 const ROLE_CONFIG_DB_KEY = "roles_config";
+const SYSTEM_PROMPT_STORE_KEY = "system_prompt_store";
+const systemPromptStorePath = path.join(__dirname, "system_prompts.json");
 function buildDbSslConfig() {
   if (!DATABASE_SSL) return undefined;
   let ca = "";
@@ -971,6 +1019,73 @@ async function persistRoleConfig(config) {
     console.error("[config] failed to save roles.json", err.message);
     return false;
   }
+}
+
+function normalizePromptStore(store) {
+  return {
+    templates: Array.isArray(store?.templates) ? store.templates : [],
+    history: Array.isArray(store?.history) ? store.history : []
+  };
+}
+
+async function loadPromptStore() {
+  if (dbPool) {
+    try {
+      const resp = await dbPool.query("SELECT value FROM app_config WHERE key = $1", [SYSTEM_PROMPT_STORE_KEY]);
+      const raw = resp.rows?.[0]?.value;
+      return normalizePromptStore(raw || {});
+    } catch (err) {
+      console.error("[prompt-store] failed to load from db", err.message);
+    }
+    return normalizePromptStore({});
+  }
+  try {
+    const raw = await fs.promises.readFile(systemPromptStorePath, "utf8");
+    return normalizePromptStore(JSON.parse(raw));
+  } catch (err) {
+    return normalizePromptStore({});
+  }
+}
+
+async function savePromptStore(store) {
+  const normalized = normalizePromptStore(store);
+  if (dbPool) {
+    try {
+      await dbPool.query(
+        `
+        INSERT INTO app_config (key, value, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value,
+            updated_at = NOW()
+      `,
+        [SYSTEM_PROMPT_STORE_KEY, normalized]
+      );
+      return true;
+    } catch (err) {
+      console.error("[prompt-store] failed to save to db", err.message);
+      return false;
+    }
+  }
+  try {
+    await fs.promises.writeFile(systemPromptStorePath, JSON.stringify(normalized, null, 2), "utf8");
+    return true;
+  } catch (err) {
+    console.error("[prompt-store] failed to save file", err.message);
+    return false;
+  }
+}
+
+async function appendPromptHistory(prompt) {
+  const clean = (prompt || "").trim();
+  if (!clean) return null;
+  const store = await loadPromptStore();
+  const history = Array.isArray(store.history) ? store.history : [];
+  if (history.length && history[0]?.prompt === clean) return store;
+  history.unshift({ id: randomToken(), prompt: clean, created_at: new Date().toISOString() });
+  store.history = history.slice(0, 10);
+  await savePromptStore(store);
+  return store;
 }
 
 function ensureDirForFile(filePath) {
@@ -1566,11 +1681,13 @@ async function initDb() {
         cv_text TEXT,
         cv_url TEXT,
         cv_photo_url TEXT,
+        custom_question TEXT,
         decision TEXT,
         source TEXT
       );
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
@@ -2294,10 +2411,106 @@ app.post("/admin/system-prompt", requireAdmin, async (req, res) => {
     if (!roleConfig.meta) roleConfig.meta = {};
     roleConfig.meta.system_prompt = prompt;
     await persistRoleConfig(roleConfig);
+    await appendPromptHistory(prompt);
     return res.json({ ok: true });
   } catch (err) {
     console.error("[admin/system-prompt] failed", err);
     return res.status(400).json({ error: "system_prompt_failed", detail: err.message });
+  }
+});
+
+app.get("/admin/system-prompt/store", requireAdmin, async (req, res) => {
+  try {
+    const store = await loadPromptStore();
+    return res.json({ ok: true, store });
+  } catch (err) {
+    return res.status(400).json({ error: "prompt_store_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/system-prompt/templates", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const name = (body.name || "").toString().trim();
+    const prompt = (body.prompt || "").toString().trim();
+    if (!name || !prompt) return res.status(400).json({ error: "missing_name_or_prompt" });
+    const store = await loadPromptStore();
+    const template = { id: randomToken(), name, prompt, created_at: new Date().toISOString() };
+    store.templates = Array.isArray(store.templates) ? store.templates : [];
+    store.templates.unshift(template);
+    await savePromptStore(store);
+    return res.json({ ok: true, template });
+  } catch (err) {
+    return res.status(400).json({ error: "template_save_failed", detail: err.message });
+  }
+});
+
+app.delete("/admin/system-prompt/templates/:id", requireAdmin, async (req, res) => {
+  try {
+    const id = (req.params.id || "").toString().trim();
+    if (!id) return res.status(400).json({ error: "missing_id" });
+    const store = await loadPromptStore();
+    store.templates = (store.templates || []).filter((t) => t.id !== id);
+    await savePromptStore(store);
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(400).json({ error: "template_delete_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/system-prompt/assist", requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const instruction = (body.instruction || "").toString().trim();
+    const currentPrompt = (body.current_prompt || "").toString();
+    if (!instruction) return res.status(400).json({ error: "missing_instruction" });
+    const payload = {
+      model: OPENAI_MODEL_SCORING,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content: "You edit recruiter system prompts. Return ONLY strict JSON with keys: updated_prompt (string), added_lines (array of strings), summary (string). Preserve existing content unless instruction asks otherwise. Integrate changes naturally."
+        },
+        {
+          role: "user",
+          content: `Current prompt:\n\"\"\"\n${currentPrompt}\n\"\"\"\n\nInstruction:\n${instruction}\n\nReturn JSON only.`
+        }
+      ]
+    };
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error?.message || "assist_failed");
+    const text = data?.choices?.[0]?.message?.content || "";
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        parsed = JSON.parse(text.slice(start, end + 1));
+      }
+    }
+    if (!parsed || typeof parsed.updated_prompt !== "string") {
+      throw new Error("invalid_assist_response");
+    }
+    return res.json({
+      ok: true,
+      updated_prompt: parsed.updated_prompt,
+      added_lines: Array.isArray(parsed.added_lines) ? parsed.added_lines : [],
+      summary: parsed.summary || ""
+    });
+  } catch (err) {
+    console.error("[admin/system-prompt] assist failed", err);
+    return res.status(400).json({ error: "assist_failed", detail: err.message });
   }
 });
 
@@ -2682,6 +2895,22 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
       }
     }
     const entry = buildCvEntry(body);
+    if (!Object.prototype.hasOwnProperty.call(body, "custom_question")
+        && !Object.prototype.hasOwnProperty.call(body, "customQuestion")
+        && entry.id) {
+      let existingQuestion = "";
+      const existing = cvStoreById.get(entry.id);
+      if (existing && existing.custom_question) {
+        existingQuestion = existing.custom_question;
+      } else if (dbPool) {
+        try {
+          const resp = await dbQuery("SELECT custom_question FROM cvs WHERE id = $1 LIMIT 1", [entry.id]);
+          const row = resp?.rows?.[0];
+          if (row?.custom_question) existingQuestion = row.custom_question;
+        } catch {}
+      }
+      if (existingQuestion) entry.custom_question = existingQuestion;
+    }
     if (!entry.cv_text) {
       return res.status(400).json({ error: "missing_cv_text" });
     }
@@ -2724,6 +2953,40 @@ app.post("/admin/cv/status", requireWrite, async (req, res) => {
     }
   }
   return res.json({ ok: true, decision });
+});
+
+app.post("/admin/cv/question", requireWrite, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const id = (body.id || "").toString().trim();
+    const question = typeof body.question === "string" ? body.question.trim() : "";
+    if (!id) return res.status(400).json({ error: "missing_id" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+
+    if (dbPool) {
+      const check = await dbQuery("SELECT brand_key FROM cvs WHERE id = $1 LIMIT 1", [id]);
+      const row = check?.rows?.[0];
+      if (!row) return res.status(404).json({ error: "not_found" });
+      if (allowedBrands.length && row.brand_key && !allowedBrands.includes(row.brand_key)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+      await dbQuery("UPDATE cvs SET custom_question = $1 WHERE id = $2", [question, id]);
+    }
+
+    const entry = cvStoreById.get(id);
+    if (entry) {
+      const brandKeyValue = entry.brandKey || brandKey(entry.brand || "");
+      if (allowedBrands.length && brandKeyValue && !allowedBrands.includes(brandKeyValue)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+      entry.custom_question = question;
+      scheduleCvStoreSave();
+    }
+    return res.json({ ok: true, id, question });
+  } catch (err) {
+    console.error("[admin/cv] question update failed", err);
+    return res.status(400).json({ error: "question_update_failed", detail: err.message });
+  }
 });
 
 app.delete("/admin/cv/:id", requireAdminUser, async (req, res) => {
@@ -3438,6 +3701,40 @@ app.get("/admin/ui", (req, res) => {
     .drop-file { display: none; }
     .preview-output { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
     .system-prompt { min-height: 260px; }
+    .prompt-tools {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 14px;
+      border: 1px dashed rgba(178, 164, 132, 0.6);
+      background: #fcfaf6;
+    }
+    .prompt-tools .inline { flex-wrap: wrap; }
+    .prompt-preview {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+      background: #fff;
+      font-size: 12px;
+      line-height: 1.45;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+    .prompt-preview mark {
+      background: rgba(245, 200, 86, 0.4);
+      padding: 0 2px;
+      border-radius: 4px;
+    }
+    .prompt-assistant {
+      display: grid;
+      gap: 8px;
+    }
+    .prompt-assistant textarea {
+      min-height: 72px;
+    }
     textarea.locked { background: #f2f0ea; color: #6b7280; }
     .table-wrapper {
       border: 1px solid var(--border);
@@ -4846,7 +5143,33 @@ app.get("/admin/ui", (req, res) => {
           <div class="panel-title">System prompt</div>
           <div class="panel-sub">Solo editable con clave ADMIN.</div>
           <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
-          <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {first_name_or_blank}.</div>
+          <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
+          <div class="prompt-tools" id="prompt-tools">
+            <div class="small">Templates y versiones</div>
+            <div class="inline">
+              <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
+              <button class="secondary" id="prompt-template-save" type="button">Guardar template</button>
+            </div>
+            <div class="inline">
+              <select id="prompt-template-select"></select>
+              <button class="secondary" id="prompt-template-restore" type="button">Restaurar template</button>
+              <button class="secondary" id="prompt-template-delete" type="button">Eliminar</button>
+            </div>
+            <div class="inline">
+              <select id="prompt-history-select"></select>
+              <button class="secondary" id="prompt-history-restore" type="button">Restaurar versión</button>
+            </div>
+            <div class="divider" style="margin:4px 0;"></div>
+            <div class="small">Asistente IA para editar el prompt</div>
+            <div class="prompt-assistant">
+              <textarea id="prompt-assistant-input" placeholder="Ej: agregá una pregunta sobre papeles, sin ser invasivo."></textarea>
+              <div class="inline">
+                <button class="secondary" id="prompt-assistant-run" type="button">Aplicar sugerencia</button>
+                <span class="small" id="prompt-assistant-status"></span>
+              </div>
+              <div class="prompt-preview" id="prompt-assistant-preview" style="display:none;"></div>
+            </div>
+          </div>
           <div class="inline" style="margin-top:12px;">
             <div style="flex:1; min-width:220px;">
               <label>Clave ADMIN</label>
@@ -5887,6 +6210,21 @@ app.get("/admin/ui", (req, res) => {
       <textarea id="cv-modal-text" readonly></textarea>
     </div>
   </div>
+  <div id="cv-question-modal" class="cv-modal">
+    <div class="cv-modal-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">Pregunta personalizada</div>
+        <button class="secondary" id="cv-question-close" type="button">Cerrar</button>
+      </div>
+      <div class="small" style="margin:6px 0 8px;">Se integra de forma natural en la llamada (no al inicio).</div>
+      <textarea id="cv-question-text" placeholder="Ej: ¿Tenés disponibilidad para turnos de cierre?"></textarea>
+      <div class="inline" style="justify-content:flex-end; margin-top:10px;">
+        <button class="secondary" id="cv-question-clear" type="button">Limpiar</button>
+        <button id="cv-question-save" type="button">Guardar</button>
+        <span class="small" id="cv-question-status"></span>
+      </div>
+    </div>
+  </div>
   <div id="interview-modal" class="cv-modal">
     <div class="cv-modal-card">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
@@ -6064,6 +6402,17 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     const systemPromptEl = document.getElementById('system-prompt');
+    const promptTemplateNameEl = document.getElementById('prompt-template-name');
+    const promptTemplateSaveEl = document.getElementById('prompt-template-save');
+    const promptTemplateSelectEl = document.getElementById('prompt-template-select');
+    const promptTemplateRestoreEl = document.getElementById('prompt-template-restore');
+    const promptTemplateDeleteEl = document.getElementById('prompt-template-delete');
+    const promptHistorySelectEl = document.getElementById('prompt-history-select');
+    const promptHistoryRestoreEl = document.getElementById('prompt-history-restore');
+    const promptAssistInputEl = document.getElementById('prompt-assistant-input');
+    const promptAssistRunEl = document.getElementById('prompt-assistant-run');
+    const promptAssistStatusEl = document.getElementById('prompt-assistant-status');
+    const promptAssistPreviewEl = document.getElementById('prompt-assistant-preview');
     const adminTokenEl = document.getElementById('admin-token');
     const adminUnlockEl = document.getElementById('admin-unlock');
     const adminStatusEl = document.getElementById('admin-status');
@@ -6119,6 +6468,12 @@ app.get("/admin/ui", (req, res) => {
     const cvModalEl = document.getElementById('cv-modal');
     const cvModalTextEl = document.getElementById('cv-modal-text');
     const cvModalCloseEl = document.getElementById('cv-modal-close');
+    const cvQuestionModalEl = document.getElementById('cv-question-modal');
+    const cvQuestionTextEl = document.getElementById('cv-question-text');
+    const cvQuestionSaveEl = document.getElementById('cv-question-save');
+    const cvQuestionClearEl = document.getElementById('cv-question-clear');
+    const cvQuestionCloseEl = document.getElementById('cv-question-close');
+    const cvQuestionStatusEl = document.getElementById('cv-question-status');
     const interviewModalEl = document.getElementById('interview-modal');
     const interviewModalTextEl = document.getElementById('interview-modal-text');
     const interviewModalCloseEl = document.getElementById('interview-modal-close');
@@ -6150,6 +6505,8 @@ app.get("/admin/ui", (req, res) => {
     let authEmail = '';
     let adminToken = '';
     let systemPromptUnlocked = false;
+    let promptStore = { templates: [], history: [] };
+    let pendingCvQuestionId = '';
     let lastLoadError = '';
     let activeView = 'general';
     let activeBrandKey = '';
@@ -6855,6 +7212,46 @@ app.get("/admin/ui", (req, res) => {
       cvModalEl.style.display = 'none';
     }
 
+    function setCvQuestionStatus(msg, isError) {
+      if (!cvQuestionStatusEl) return;
+      cvQuestionStatusEl.textContent = msg || '';
+      cvQuestionStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
+
+    function openCvQuestionModal(item) {
+      if (!cvQuestionModalEl || !cvQuestionTextEl) return;
+      pendingCvQuestionId = item?.id || '';
+      cvQuestionTextEl.value = item?.custom_question || '';
+      setCvQuestionStatus('');
+      cvQuestionModalEl.style.display = 'flex';
+    }
+
+    function closeCvQuestionModal() {
+      if (!cvQuestionModalEl) return;
+      cvQuestionModalEl.style.display = 'none';
+      pendingCvQuestionId = '';
+    }
+
+    async function saveCvQuestion() {
+      if (!pendingCvQuestionId) return;
+      const question = (cvQuestionTextEl.value || '').trim();
+      setCvQuestionStatus('Guardando...');
+      try {
+        const resp = await fetch('/admin/cv/question', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify({ id: pendingCvQuestionId, question })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'save_failed');
+        lastCvRaw = lastCvRaw.map((c) => c.id === pendingCvQuestionId ? { ...c, custom_question: question } : c);
+        setCvQuestionStatus('Guardado.');
+        renderCvList(lastCvRaw);
+      } catch (err) {
+        setCvQuestionStatus('Error: ' + err.message, true);
+      }
+    }
+
     function openInterviewModal(call) {
       if (!interviewModalEl || !interviewModalTextEl) return;
       interviewModalTextEl.value = formatInterviewDetails(call || {});
@@ -6876,6 +7273,175 @@ app.get("/admin/ui", (req, res) => {
       systemPromptUnlocked = true;
       systemPromptEl.readOnly = false;
       systemPromptEl.classList.remove('locked');
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function setPromptAssistStatus(msg, isError) {
+      if (!promptAssistStatusEl) return;
+      promptAssistStatusEl.textContent = msg || '';
+      promptAssistStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
+
+    function renderPromptPreview(oldPrompt, newPrompt, addedLines = []) {
+      if (!promptAssistPreviewEl) return;
+      const oldSet = new Set(
+        String(oldPrompt || '')
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter(Boolean)
+      );
+      const addedSet = new Set(
+        Array.isArray(addedLines)
+          ? addedLines.map((l) => String(l || '').trim()).filter(Boolean)
+          : []
+      );
+      const lines = String(newPrompt || '').split(/\r?\n/);
+      const html = lines.map((line) => {
+        const norm = line.trim();
+        const isAdded = addedSet.size
+          ? addedSet.has(norm)
+          : (!!norm && !oldSet.has(norm));
+        const safe = escapeHtml(line);
+        return isAdded ? '<mark>' + safe + '</mark>' : safe;
+      }).join('\n');
+      promptAssistPreviewEl.innerHTML = html;
+      promptAssistPreviewEl.style.display = html ? 'block' : 'none';
+    }
+
+    function renderPromptStore() {
+      const templates = Array.isArray(promptStore.templates) ? promptStore.templates : [];
+      const history = Array.isArray(promptStore.history) ? promptStore.history : [];
+      if (promptTemplateSelectEl) {
+        promptTemplateSelectEl.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Templates guardados';
+        promptTemplateSelectEl.appendChild(opt);
+        templates.forEach((t) => {
+          const o = document.createElement('option');
+          o.value = t.id;
+          o.textContent = t.name || t.id;
+          promptTemplateSelectEl.appendChild(o);
+        });
+      }
+      if (promptHistorySelectEl) {
+        promptHistorySelectEl.innerHTML = '';
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Historial reciente';
+        promptHistorySelectEl.appendChild(opt);
+        history.forEach((h) => {
+          const o = document.createElement('option');
+          o.value = h.id;
+          const stamp = h.created_at ? new Date(h.created_at).toLocaleString() : '';
+          o.textContent = stamp || 'Versión';
+          promptHistorySelectEl.appendChild(o);
+        });
+      }
+    }
+
+    async function loadPromptStore() {
+      if (!adminToken) return;
+      try {
+        const resp = await fetch('/admin/system-prompt/store', {
+          headers: { Authorization: 'Bearer ' + adminToken }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'prompt_store_failed');
+        promptStore = data.store || { templates: [], history: [] };
+        renderPromptStore();
+      } catch (err) {
+        console.error('prompt store failed', err);
+      }
+    }
+
+    async function savePromptTemplate() {
+      if (!adminToken || !promptTemplateNameEl) return;
+      const name = (promptTemplateNameEl.value || '').trim();
+      if (!name) {
+        setAdminStatus('Ingresá un nombre para el template');
+        return;
+      }
+      try {
+        const resp = await fetch('/admin/system-prompt/templates', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + adminToken
+          },
+          body: JSON.stringify({ name, prompt: systemPromptEl.value || '' })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'template_failed');
+        promptTemplateNameEl.value = '';
+        await loadPromptStore();
+      } catch (err) {
+        setAdminStatus('Error: ' + err.message);
+      }
+    }
+
+    function restorePromptFromStore(id, kind) {
+      if (!id) return;
+      const list = kind === 'history' ? (promptStore.history || []) : (promptStore.templates || []);
+      const found = list.find((t) => t.id === id);
+      if (!found) return;
+      systemPromptEl.value = found.prompt || '';
+      renderPromptPreview('', found.prompt || '', []);
+    }
+
+    async function deletePromptTemplate(id) {
+      if (!adminToken || !id) return;
+      try {
+        const resp = await fetch('/admin/system-prompt/templates/' + encodeURIComponent(id), {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + adminToken }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'template_delete_failed');
+        await loadPromptStore();
+      } catch (err) {
+        setAdminStatus('Error: ' + err.message);
+      }
+    }
+
+    async function runPromptAssistant() {
+      if (!adminToken || !promptAssistInputEl) return;
+      const instruction = (promptAssistInputEl.value || '').trim();
+      if (!instruction) {
+        setPromptAssistStatus('Escribí una instrucción.', true);
+        return;
+      }
+      setPromptAssistStatus('Procesando...', false);
+      try {
+        const resp = await fetch('/admin/system-prompt/assist', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + adminToken
+          },
+          body: JSON.stringify({
+            instruction,
+            current_prompt: systemPromptEl.value || ''
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'assist_failed');
+        const updated = data.updated_prompt || '';
+        const oldPrompt = systemPromptEl.value || '';
+        systemPromptEl.value = updated;
+        renderPromptPreview(oldPrompt, updated, data.added_lines || []);
+        setPromptAssistStatus(data.summary || 'Listo.', false);
+      } catch (err) {
+        setPromptAssistStatus('Error: ' + err.message, true);
+      }
     }
 
     function getBrandLabel(wrapper) {
@@ -8788,10 +9354,17 @@ app.get("/admin/ui", (req, res) => {
             applicant: item.applicant || '',
             cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
             cv_text: item.cv_text || '',
-            cv_id: item.id || ''
+            cv_id: item.id || '',
+            custom_question: item.custom_question || ''
           });
         };
         cvActions.appendChild(callBtn);
+        const qBtn = document.createElement('button');
+        qBtn.type = 'button';
+        qBtn.className = 'secondary btn-compact';
+        qBtn.textContent = item.custom_question ? 'Pregunta ✓' : 'Pregunta';
+        qBtn.onclick = () => openCvQuestionModal(item);
+        cvActions.appendChild(qBtn);
       }
       if (info.hasCalls) {
         const viewBtn = document.createElement('button');
@@ -9709,6 +10282,7 @@ app.get("/admin/ui", (req, res) => {
       if (!resp.ok) throw new Error(data.error || 'system prompt save failed');
       if (!state.config.meta) state.config.meta = {};
       state.config.meta.system_prompt = systemPromptEl.value || '';
+      loadPromptStore();
     }
 
     async function saveConfig() {
@@ -9747,9 +10321,12 @@ app.get("/admin/ui", (req, res) => {
         if (!resp.ok) throw new Error(data.error || 'admin inválido');
         adminToken = key;
         unlockSystemPrompt();
-        if (typeof data.system_prompt === "string") {
+        if (typeof data.system_prompt === "string" && data.system_prompt.trim()) {
           systemPromptEl.value = data.system_prompt;
+        } else if (!systemPromptEl.value || !systemPromptEl.value.trim()) {
+          systemPromptEl.value = defaults.system_prompt;
         }
+        loadPromptStore();
         setAdminStatus('Admin OK');
       } catch (err) {
         setAdminStatus('Error: ' + err.message);
@@ -11590,10 +12167,17 @@ app.get("/admin/ui", (req, res) => {
               applicant: item.applicant || '',
               cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
               cv_text: item.cv_text || '',
-              cv_id: item.id || ''
+              cv_id: item.id || '',
+              custom_question: item.custom_question || ''
             });
           };
           actionWrap.appendChild(callBtn);
+          const qBtn = document.createElement('button');
+          qBtn.type = 'button';
+          qBtn.className = 'secondary btn-compact';
+          qBtn.textContent = item.custom_question ? 'Pregunta ✓' : 'Pregunta';
+          qBtn.onclick = () => openCvQuestionModal(item);
+          actionWrap.appendChild(qBtn);
         }
         if (info.hasCalls) {
           const viewBtn = document.createElement('button');
@@ -11835,6 +12419,17 @@ app.get("/admin/ui", (req, res) => {
     };
     document.getElementById('preview-generate').onclick = generatePreview;
     adminUnlockEl.onclick = unlockAdmin;
+    if (promptTemplateSaveEl) promptTemplateSaveEl.onclick = savePromptTemplate;
+    if (promptTemplateRestoreEl) {
+      promptTemplateRestoreEl.onclick = () => restorePromptFromStore(promptTemplateSelectEl?.value || '', 'template');
+    }
+    if (promptTemplateDeleteEl) {
+      promptTemplateDeleteEl.onclick = () => deletePromptTemplate(promptTemplateSelectEl?.value || '');
+    }
+    if (promptHistoryRestoreEl) {
+      promptHistoryRestoreEl.onclick = () => restorePromptFromStore(promptHistorySelectEl?.value || '', 'history');
+    }
+    if (promptAssistRunEl) promptAssistRunEl.onclick = runPromptAssistant;
     loginModeAdminEl.onclick = () => setLoginMode('admin');
     loginModeViewerEl.onclick = () => setLoginMode('viewer');
     loginBtnEl.onclick = login;
@@ -12192,6 +12787,16 @@ app.get("/admin/ui", (req, res) => {
     cvModalEl.addEventListener('click', (event) => {
       if (event.target === cvModalEl) closeCvModal();
     });
+    if (cvQuestionCloseEl) cvQuestionCloseEl.addEventListener('click', closeCvQuestionModal);
+    if (cvQuestionClearEl) cvQuestionClearEl.addEventListener('click', () => {
+      if (cvQuestionTextEl) cvQuestionTextEl.value = '';
+    });
+    if (cvQuestionSaveEl) cvQuestionSaveEl.addEventListener('click', saveCvQuestion);
+    if (cvQuestionModalEl) {
+      cvQuestionModalEl.addEventListener('click', (event) => {
+        if (event.target === cvQuestionModalEl) closeCvQuestionModal();
+      });
+    }
     if (interviewModalCloseEl) {
       interviewModalCloseEl.addEventListener('click', closeInterviewModal);
     }
@@ -12455,6 +13060,7 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
       { name: "cv_summary", value: payload.cv_summary },
       { name: "cv_id", value: payload.cv_id },
       { name: "resume_url", value: payload.resume_url },
+      { name: "custom_question", value: payload.custom_question || payload.customQuestion },
       { name: "lang", value: lang }
     ]
       .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
@@ -12631,6 +13237,7 @@ app.post("/call", requireWrite, async (req, res) => {
       applicant = "",
       cv_summary = "",
       cv_text = "",
+      custom_question = "",
       cv_id: cvIdRaw = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
@@ -12678,7 +13285,8 @@ app.post("/call", requireWrite, async (req, res) => {
         applicant,
         phone: toNorm,
         cv_text: cv_text || cvSummary,
-        resume_url
+        resume_url,
+        custom_question
       });
       recordCvEntry(cvEntry);
     }
@@ -12689,7 +13297,8 @@ app.post("/call", requireWrite, async (req, res) => {
         applicant,
         phone: toNorm,
         cv_text: cv_text || cvSummary,
-        resume_url
+        resume_url,
+        custom_question
       });
       recordCvEntry(cvEntry);
       cvId = cvEntry.id;
@@ -12697,7 +13306,19 @@ app.post("/call", requireWrite, async (req, res) => {
 
     // Guarda payload para posible recall
     lastCallByNumber.set(toNorm, {
-      payload: { to: toNorm, from: fromNorm, brand, role: roleClean, englishRequired: englishReqBool ? "1" : "0", address: resolvedAddress, applicant, cv_summary: cvSummary, cv_id: cvId, resume_url },
+      payload: {
+        to: toNorm,
+        from: fromNorm,
+        brand,
+        role: roleClean,
+        englishRequired: englishReqBool ? "1" : "0",
+        address: resolvedAddress,
+        applicant,
+        cv_summary: cvSummary,
+        cv_id: cvId,
+        resume_url,
+        custom_question
+      },
       expiresAt: Date.now() + CALL_TTL_MS
     });
 
@@ -12713,7 +13334,8 @@ app.post("/call", requireWrite, async (req, res) => {
         applicant,
         cv_summary: cvSummary,
         cv_id: cvId,
-        resume_url
+        resume_url,
+        custom_question
       },
       expiresAt: Date.now() + CALL_TTL_MS
     });
@@ -12753,7 +13375,8 @@ app.post("/call", requireWrite, async (req, res) => {
           applicant,
           cv_summary: cvSummary,
           cv_id: cvId,
-          resume_url
+          resume_url,
+          custom_question
         },
         { callSid: data.sid, to: toNorm }
       );
@@ -12810,6 +13433,7 @@ wss.on("connection", (twilioWs, req) => {
     cvSummary,
     cvText: cvSummary,
     cvId,
+    customQuestion: "",
     resumeUrl,
     from: null,
     recordingStarted: false,
@@ -13074,6 +13698,7 @@ DECÍ ESTO Y CALLATE:
         cvSummary = sp.cv_summary || cvSummary;
         cvId = sp.cv_id || cvId;
         resumeUrl = sp.resume_url || resumeUrl;
+        call.customQuestion = sp.custom_question || sp.customQuestion || call.customQuestion || "";
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
       }
@@ -13123,6 +13748,7 @@ DECÍ ESTO Y CALLATE:
           if (!call.outcome) call.outcome = tracked.outcome || null;
           if (!call.outcome_detail) call.outcome_detail = tracked.outcome_detail || "";
           if (!call.startedAt && tracked.startedAt) call.startedAt = tracked.startedAt;
+          if (!call.customQuestion && tracked.customQuestion) call.customQuestion = tracked.customQuestion;
           if (tracked.expiresAt) call.expiresAt = Math.max(call.expiresAt || 0, tracked.expiresAt);
         }
         if (!call.callStatus) call.callStatus = "in-progress";
@@ -13495,6 +14121,7 @@ function buildCvEntry(payload = {}) {
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
+  const customQuestion = (payload.custom_question || payload.customQuestion || "").toString().trim();
   const decision = (payload.decision || payload.status || "").toString().trim();
   return {
     id,
@@ -13509,6 +14136,7 @@ function buildCvEntry(payload = {}) {
     cv_len: cvText.length,
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
+    custom_question: customQuestion,
     decision,
     source
   };
@@ -13518,10 +14146,14 @@ function recordCvEntry(entry) {
   if (!entry || !entry.id) return;
   const existing = cvStoreById.get(entry.id);
   if (existing) {
-    Object.assign(existing, entry);
+    const next = { ...entry };
+    if (!next.custom_question && existing.custom_question) {
+      next.custom_question = existing.custom_question;
+    }
+    Object.assign(existing, next);
     scheduleCvStoreSave();
     if (dbPool) {
-      upsertCvDb(entry).catch((err) => console.error("[cv-store] db upsert failed", err));
+      upsertCvDb(existing).catch((err) => console.error("[cv-store] db upsert failed", err));
     }
     return;
   }
@@ -13542,9 +14174,9 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, decision, source
+      cv_text, cv_url, cv_photo_url, custom_question, decision, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -13556,6 +14188,7 @@ async function upsertCvDb(entry) {
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
+      custom_question = EXCLUDED.custom_question,
       decision = EXCLUDED.decision,
       source = EXCLUDED.source
   `;
@@ -13571,6 +14204,7 @@ async function upsertCvDb(entry) {
     entry.cv_text || "",
     entry.cv_url || "",
     entry.cv_photo_url || "",
+    entry.custom_question || "",
     entry.decision || "",
     entry.source || ""
   ];
@@ -13959,7 +14593,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.decision, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.custom_question, c.decision, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -13992,6 +14626,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
+      custom_question: row.custom_question || "",
       decision: row.decision || "",
       source: row.source || "",
       call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
