@@ -4521,6 +4521,14 @@ app.get("/admin/ui", (req, res) => {
       .action-stack { justify-content: flex-start; flex-wrap: wrap; }
       .decision-buttons { flex-wrap: wrap; }
       .decision-cell { white-space: normal; }
+      .cell-compact {
+        white-space: normal;
+        max-width: none;
+      }
+      .summary-cell {
+        max-width: none;
+        -webkit-line-clamp: 3;
+      }
       .audio-player {
         width: 100%;
         min-width: 0;
@@ -4529,11 +4537,19 @@ app.get("/admin/ui", (req, res) => {
         border-radius: 16px;
         padding: 8px 10px;
       }
-      .audio-play,
-      .audio-menu-btn,
-      .audio-download {
-        width: 32px;
-        height: 32px;
+      .audio-play {
+        width: 36px;
+        height: 36px;
+        order: 1;
+        font-size: 14px;
+      }
+      .audio-time {
+        order: 2;
+        margin-left: auto;
+        min-width: 0;
+        font-weight: 800;
+        color: var(--ink);
+        text-align: right;
       }
       .audio-progress {
         order: 10;
@@ -4542,16 +4558,45 @@ app.get("/admin/ui", (req, res) => {
         min-width: 0;
         margin-top: 2px;
       }
-      .audio-time {
-        order: 1;
-        margin-left: auto;
-        min-width: 0;
-        font-weight: 800;
-        color: var(--ink);
-        text-align: right;
+      .audio-menu,
+      .audio-download {
+        order: 20;
+        flex: 1 1 calc(50% - 6px);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
-      .audio-menu { order: 2; }
-      .audio-download { order: 3; }
+      .audio-menu-btn,
+      .audio-download {
+        width: 32px;
+        height: 32px;
+      }
+      .results-table tbody tr.detail-row {
+        display: block;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        margin: -2px 0 12px;
+      }
+      .results-table tbody tr.detail-row td {
+        display: block;
+        padding: 6px 4px 0;
+        border-bottom: none;
+        background: transparent !important;
+      }
+      .results-table tbody tr.detail-row td::before { content: ""; }
+      .results-table tbody tr.detail-row .detail-card {
+        border-radius: 16px;
+        padding: 14px;
+      }
+      .results-table tbody tr.detail-row .detail-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      .results-table tbody tr.detail-row .detail-item { font-size: 13px; }
+      .results-table tbody tr.detail-row .detail-label { font-size: 10px; }
+      .results-table tbody tr.detail-row .detail-block { padding: 10px 0; }
       .cv-table tbody tr td[data-label="Candidato"],
       .results-table tbody tr td[data-label="Candidato"] {
         order: -3;
