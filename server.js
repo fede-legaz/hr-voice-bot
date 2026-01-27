@@ -7294,7 +7294,7 @@ app.get("/admin/ui", (req, res) => {
       if (!promptAssistPreviewEl) return;
       const oldSet = new Set(
         String(oldPrompt || '')
-          .split(/\r?\n/)
+          .split(/\\r?\\n/)
           .map((l) => l.trim())
           .filter(Boolean)
       );
@@ -7303,7 +7303,7 @@ app.get("/admin/ui", (req, res) => {
           ? addedLines.map((l) => String(l || '').trim()).filter(Boolean)
           : []
       );
-      const lines = String(newPrompt || '').split(/\r?\n/);
+      const lines = String(newPrompt || '').split(/\\r?\\n/);
       const html = lines.map((line) => {
         const norm = line.trim();
         const isAdded = addedSet.size
