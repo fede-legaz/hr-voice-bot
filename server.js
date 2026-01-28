@@ -601,6 +601,7 @@ function assistantPickCall(entry) {
     created_at: entry.created_at || "",
     score: typeof entry.score === "number" ? entry.score : null,
     recommendation: entry.recommendation || "",
+    summary: entry.summary || "",
     outcome: entry.outcome || "",
     duration_sec: typeof entry.duration_sec === "number" ? entry.duration_sec : null,
     decision: entry.decision || "",
@@ -3244,6 +3245,7 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
       "Use DATA.kb to explain what things are and how to change them. Provide links from DATA.links when relevant.",
       "If asked about 'qué cambió' del system prompt, use DATA.config.prompt_latest (if present).",
       "When you include a link, output the raw URL so it becomes clickable in the UI.",
+      "Format responses with short sections, bullets, and labels like **Entrevistas**, **Candidates**, **Portal** when helpful.",
       "Keep replies concise and actionable.",
       "Respond in the same language as the user's question (Spanish if unclear)."
     ].join(" ");
@@ -3275,7 +3277,17 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(data.error?.message || "assistant_failed");
     const answer = (data?.choices?.[0]?.message?.content || "").trim();
-    return res.json({ ok: true, answer });
+    let matches = null;
+    if (context?.search?.q) {
+      matches = {
+        query: context.search.q,
+        candidates: Array.isArray(context.candidates) ? context.candidates.slice(0, 5) : [],
+        interviews: Array.isArray(context.interviews) ? context.interviews.slice(0, 5) : [],
+        portal_apps: Array.isArray(context.portal_apps) ? context.portal_apps.slice(0, 5) : [],
+        portal_pages: Array.isArray(context.portal_pages) ? context.portal_pages.slice(0, 5) : []
+      };
+    }
+    return res.json({ ok: true, answer, matches });
   } catch (err) {
     console.error("[assistant/chat] failed", err);
     return res.status(400).json({ error: "assistant_failed", detail: err.message });
@@ -4586,6 +4598,28 @@ app.get("/admin/ui", (req, res) => {
     .assistant-title { font-size: 15px; font-weight: 800; }
     .assistant-sub { font-size: 11px; color: var(--muted); }
     .assistant-actions { display: flex; gap: 6px; }
+    .assistant-links {
+      display: flex;
+      gap: 6px;
+      padding: 8px 12px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border);
+      background: #fff;
+    }
+    .assistant-links a {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(27, 122, 140, 0.35);
+      color: var(--primary-dark);
+      font-weight: 700;
+      font-size: 11px;
+      text-decoration: none;
+      background: rgba(27, 122, 140, 0.08);
+    }
+    .assistant-links a:hover { box-shadow: var(--glow); }
     .assistant-messages {
       padding: 14px;
       overflow: auto;
@@ -4612,6 +4646,54 @@ app.get("/admin/ui", (req, res) => {
       align-self: flex-start;
       background: #fbfaf7;
       border: 1px solid var(--border);
+    }
+    .assistant-results {
+      display: grid;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .assistant-group {
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 8px;
+      background: #fff;
+    }
+    .assistant-group-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+    .assistant-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 10px;
+      display: grid;
+      gap: 4px;
+      background: #fbfaf7;
+    }
+    .assistant-card-title {
+      font-weight: 800;
+      font-size: 13px;
+    }
+    .assistant-card-sub {
+      font-size: 11.5px;
+      color: var(--muted);
+    }
+    .assistant-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      font-size: 11px;
+      color: #48504b;
+    }
+    .assistant-card-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 4px;
     }
     .assistant-msg a {
       color: var(--primary-dark);
@@ -7291,6 +7373,12 @@ app.get("/admin/ui", (req, res) => {
           <button class="secondary btn-compact" id="assistant-close" type="button">Cerrar</button>
         </div>
       </div>
+      <div class="assistant-links" id="assistant-links">
+        <a id="assistant-link-admin" href="#" target="_blank" rel="noopener">Admin</a>
+        <a id="assistant-link-candidates" href="#" target="_blank" rel="noopener">Candidates</a>
+        <a id="assistant-link-interviews" href="#" target="_blank" rel="noopener">Interviews</a>
+        <a id="assistant-link-portal" href="#" target="_blank" rel="noopener">Portal</a>
+      </div>
       <div class="assistant-messages" id="assistant-messages"></div>
       <div class="assistant-input">
         <textarea id="assistant-input" placeholder="Preguntá por candidatos, entrevistas, portales, configuración..."></textarea>
@@ -7565,6 +7653,10 @@ app.get("/admin/ui", (req, res) => {
     const assistantCloseEl = document.getElementById('assistant-close');
     const assistantScopeEl = document.getElementById('assistant-scope');
     const assistantStatusEl = document.getElementById('assistant-status');
+    const assistantLinkAdminEl = document.getElementById('assistant-link-admin');
+    const assistantLinkCandidatesEl = document.getElementById('assistant-link-candidates');
+    const assistantLinkInterviewsEl = document.getElementById('assistant-link-interviews');
+    const assistantLinkPortalEl = document.getElementById('assistant-link-portal');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -7635,6 +7727,7 @@ app.get("/admin/ui", (req, res) => {
     let portalPendingSlug = '';
     let portalLoaded = false;
     let pendingPortalView = '';
+    let pendingView = '';
     let currentUserProfile = null;
     let pendingUserPhotoDataUrl = '';
     let pendingUserPhotoName = '';
@@ -7783,6 +7876,14 @@ app.get("/admin/ui", (req, res) => {
       assistantStatusEl.style.color = isError ? '#a0362b' : '';
     }
 
+    function assistantSetQuickLinks() {
+      const base = window.location.origin || '';
+      if (assistantLinkAdminEl) assistantLinkAdminEl.href = base + '/admin/ui';
+      if (assistantLinkCandidatesEl) assistantLinkCandidatesEl.href = base + '/admin/ui?view=candidates';
+      if (assistantLinkInterviewsEl) assistantLinkInterviewsEl.href = base + '/admin/ui?view=interviews';
+      if (assistantLinkPortalEl) assistantLinkPortalEl.href = base + '/admin/ui?view=portal';
+    }
+
     function escapeHtml(text) {
       return String(text || '')
         .replace(/&/g, '&amp;')
@@ -7806,7 +7907,9 @@ app.get("/admin/ui", (req, res) => {
       if (assistantPanelEl) {
         assistantPanelEl.classList.toggle('open', assistantOpen);
       }
-      if (!assistantOpen) {
+      if (assistantOpen) {
+        assistantSetQuickLinks();
+      } else {
         assistantSetStatus('');
       }
     }
@@ -7817,6 +7920,149 @@ app.get("/admin/ui", (req, res) => {
       msg.className = 'assistant-msg ' + (role === 'user' ? 'user' : 'bot');
       msg.innerHTML = assistantFormatMessage(text || '');
       assistantMessagesEl.appendChild(msg);
+      assistantMessagesEl.scrollTop = assistantMessagesEl.scrollHeight;
+    }
+
+    function assistantRenderMatchGroup(title, items, buildCard) {
+      if (!assistantMessagesEl || !items || !items.length) return;
+      const group = document.createElement('div');
+      group.className = 'assistant-group';
+      const head = document.createElement('div');
+      head.className = 'assistant-group-title';
+      head.textContent = title;
+      group.appendChild(head);
+      items.forEach((item) => {
+        const card = buildCard(item);
+        if (card) group.appendChild(card);
+      });
+      assistantMessagesEl.appendChild(group);
+      assistantMessagesEl.scrollTop = assistantMessagesEl.scrollHeight;
+    }
+
+    function assistantBuildMetaLine(parts) {
+      return parts.filter(Boolean).join(' · ');
+    }
+
+    function assistantBuildActionLinks(actions = []) {
+      const wrap = document.createElement('div');
+      wrap.className = 'assistant-card-actions';
+      actions.forEach((action) => {
+        if (!action || !action.url) return;
+        const link = document.createElement('a');
+        link.href = action.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.textContent = action.label || 'Abrir';
+        wrap.appendChild(link);
+      });
+      return wrap;
+    }
+
+    function assistantAppendMatches(matches) {
+      if (!assistantMessagesEl || !matches) return;
+      const container = document.createElement('div');
+      container.className = 'assistant-results';
+      assistantMessagesEl.appendChild(container);
+      const mount = (title, items, builder) => {
+        if (!items || !items.length) return;
+        const group = document.createElement('div');
+        group.className = 'assistant-group';
+        const head = document.createElement('div');
+        head.className = 'assistant-group-title';
+        head.textContent = title;
+        group.appendChild(head);
+        items.forEach((item) => {
+          const card = builder(item);
+          if (card) group.appendChild(card);
+        });
+        container.appendChild(group);
+      };
+      mount('Interviews', matches.interviews || [], (item) => {
+        const card = document.createElement('div');
+        card.className = 'assistant-card';
+        const title = document.createElement('div');
+        title.className = 'assistant-card-title';
+        title.textContent = item.applicant || 'Sin nombre';
+        const sub = document.createElement('div');
+        sub.className = 'assistant-card-sub';
+        sub.textContent = assistantBuildMetaLine([item.brand, item.role]);
+        const meta = document.createElement('div');
+        meta.className = 'assistant-card-meta';
+        const score = item.score !== null && item.score !== undefined ? ('Score ' + item.score) : '';
+        const created = item.created_at ? new Date(item.created_at).toLocaleString() : '';
+        meta.textContent = assistantBuildMetaLine([score, item.recommendation, created]);
+        card.appendChild(title);
+        card.appendChild(sub);
+        card.appendChild(meta);
+        if (item.summary) {
+          const summary = document.createElement('div');
+          summary.className = 'assistant-card-sub';
+          summary.textContent = item.summary;
+          card.appendChild(summary);
+        }
+        const actions = [];
+        if (item.audio_url) actions.push({ label: 'Audio', url: item.audio_url });
+        if (item.cv_url) actions.push({ label: 'CV', url: item.cv_url });
+        if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
+        return card;
+      });
+      mount('Candidates', matches.candidates || [], (item) => {
+        const card = document.createElement('div');
+        card.className = 'assistant-card';
+        const title = document.createElement('div');
+        title.className = 'assistant-card-title';
+        title.textContent = item.applicant || 'Sin nombre';
+        const sub = document.createElement('div');
+        sub.className = 'assistant-card-sub';
+        sub.textContent = assistantBuildMetaLine([item.brand, item.role, item.phone]);
+        const meta = document.createElement('div');
+        meta.className = 'assistant-card-meta';
+        meta.textContent = assistantBuildMetaLine([item.decision || '', item.last_outcome || '', item.last_call_at || '']);
+        card.appendChild(title);
+        card.appendChild(sub);
+        if (meta.textContent) card.appendChild(meta);
+        const actions = [];
+        if (item.cv_url) actions.push({ label: 'CV', url: item.cv_url });
+        if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
+        return card;
+      });
+      mount('Portal postulaciones', matches.portal_apps || [], (item) => {
+        const card = document.createElement('div');
+        card.className = 'assistant-card';
+        const title = document.createElement('div');
+        title.className = 'assistant-card-title';
+        title.textContent = item.name || 'Sin nombre';
+        const sub = document.createElement('div');
+        sub.className = 'assistant-card-sub';
+        sub.textContent = assistantBuildMetaLine([item.brand, item.role, item.phone]);
+        const meta = document.createElement('div');
+        meta.className = 'assistant-card-meta';
+        meta.textContent = assistantBuildMetaLine([item.slug || '', item.created_at || '']);
+        card.appendChild(title);
+        card.appendChild(sub);
+        if (meta.textContent) card.appendChild(meta);
+        const actions = [];
+        if (item.resume_url) actions.push({ label: 'CV', url: item.resume_url });
+        if (item.photo_url) actions.push({ label: 'Foto', url: item.photo_url });
+        if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
+        return card;
+      });
+      mount('Portal páginas', matches.portal_pages || [], (item) => {
+        const card = document.createElement('div');
+        card.className = 'assistant-card';
+        const title = document.createElement('div');
+        title.className = 'assistant-card-title';
+        title.textContent = item.slug || 'Sin slug';
+        const sub = document.createElement('div');
+        sub.className = 'assistant-card-sub';
+        sub.textContent = assistantBuildMetaLine([item.brand, item.role, item.active ? 'Activa' : 'Inactiva']);
+        card.appendChild(title);
+        card.appendChild(sub);
+        const actions = [];
+        if (item.public_url) actions.push({ label: 'Abrir apply', url: item.public_url });
+        if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
+        return card;
+      });
       assistantMessagesEl.scrollTop = assistantMessagesEl.scrollHeight;
     }
 
@@ -7873,6 +8119,9 @@ app.get("/admin/ui", (req, res) => {
         assistantAppendMessage('assistant', answer);
         assistantHistory.push({ role: 'assistant', content: answer });
         assistantHistory = assistantHistory.slice(-8);
+        if (data.matches) {
+          assistantAppendMatches(data.matches);
+        }
         assistantSetStatus('');
       } catch (err) {
         assistantSetStatus('Error: ' + err.message, true);
@@ -8134,6 +8383,7 @@ app.get("/admin/ui", (req, res) => {
         setActiveView(VIEW_CALLS);
       }
       assistantUpdateScope();
+      assistantSetQuickLinks();
     }
 
     function initialsFromEmail(email) {
@@ -13639,7 +13889,17 @@ app.get("/admin/ui", (req, res) => {
       setLoggedInUI(true);
       applyRoleAccess();
       if (authRole === 'admin') loadUsers();
-      setActiveView(VIEW_CALLS);
+      if (pendingPortalView === VIEW_PORTAL) {
+        pendingPortalView = '';
+        setActiveView(VIEW_PORTAL);
+        ensurePortalLoaded(true);
+      } else if (pendingView) {
+        const nextView = pendingView;
+        pendingView = '';
+        setActiveView(nextView);
+      } else {
+        setActiveView(VIEW_CALLS);
+      }
       refreshPushStatus();
       loadMe();
       startBadgePolling();
@@ -13674,7 +13934,17 @@ app.get("/admin/ui", (req, res) => {
           syncPortalToken();
           applyRoleAccess();
           if (authRole === 'admin') loadUsers();
-          setActiveView(VIEW_CALLS);
+          if (pendingPortalView === VIEW_PORTAL) {
+            pendingPortalView = '';
+            setActiveView(VIEW_PORTAL);
+            ensurePortalLoaded(true);
+          } else if (pendingView) {
+            const nextView = pendingView;
+            pendingView = '';
+            setActiveView(nextView);
+          } else {
+            setActiveView(VIEW_CALLS);
+          }
           refreshPushStatus();
           loadMe();
           startBadgePolling();
@@ -13708,6 +13978,10 @@ app.get("/admin/ui", (req, res) => {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
           ensurePortalLoaded(true);
+        } else if (pendingView) {
+          const nextView = pendingView;
+          pendingView = '';
+          setActiveView(nextView);
         }
       } else {
         setLoginStatus(lastLoadError ? 'Error: ' + lastLoadError : 'Clave inválida');
@@ -14144,7 +14418,16 @@ app.get("/admin/ui", (req, res) => {
     } catch (err) {}
     if (urlParams) {
       const viewParam = urlParams.get('view');
-      if (viewParam === 'portal') pendingPortalView = VIEW_PORTAL;
+      if (viewParam === 'portal') {
+        pendingPortalView = VIEW_PORTAL;
+        pendingView = VIEW_PORTAL;
+      } else if (viewParam === 'interviews') {
+        pendingView = VIEW_INTERVIEWS;
+      } else if (viewParam === 'candidates' || viewParam === 'calls') {
+        pendingView = VIEW_CALLS;
+      } else if (viewParam === 'general') {
+        pendingView = '';
+      }
       const slugParam = urlParams.get('slug');
       if (slugParam) portalPendingSlug = toSlug(slugParam);
     }
