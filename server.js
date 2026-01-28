@@ -493,6 +493,31 @@ function assistantInferScopes(message) {
   };
 }
 
+function assistantExtractSearchTerm(message) {
+  const raw = String(message || "").toLowerCase();
+  const phoneMatch = raw.match(/(\+?\d[\d\s().-]{6,}\d)/);
+  if (phoneMatch && phoneMatch[1]) {
+    const phone = normalizePhone(phoneMatch[1]);
+    if (phone && phone.replace(/\D/g, "").length >= 7) {
+      return { q: phone, phone };
+    }
+  }
+  const cleaned = raw
+    .replace(/[\.,;:!?¿¡()"'`]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return { q: "" };
+  const stop = new Set([
+    "que","qué","paso","pasó","con","la","el","los","las","de","del","una","un","uno","una",
+    "entrevista","interview","llamada","call","candidato","candidata","candidatos","cv","resume","curriculum",
+    "postulacion","postulación","aplicacion","aplicación","application","portal","estado","resultado","resultados",
+    "system","prompt","cambio","cambios","modifico","modificó","modificar","y","para","por","sobre","me","de","al","a","mi"
+  ]);
+  const tokens = cleaned.split(" ").filter(Boolean).filter((t) => t.length > 1 && !stop.has(t));
+  const q = tokens.join(" ").trim();
+  return { q: q.length >= 2 ? q : "" };
+}
+
 function assistantFilterByBrands(list, brandFilters) {
   if (!Array.isArray(brandFilters) || !brandFilters.length) return list;
   return list.filter((item) => brandFilters.includes(item.brandKey || brandKey(item.brand || "")));
@@ -564,7 +589,7 @@ function assistantPickPortalPage(entry) {
   };
 }
 
-async function assistantFetchCandidates({ allowedBrands, brandFilters, limit }) {
+async function assistantFetchCandidates({ allowedBrands, brandFilters, limit, qParam }) {
   const max = Math.min(Number(limit) || ASSISTANT_MAX_CVS, ASSISTANT_MAX_CVS);
   let list = [];
   if (dbPool) {
@@ -573,7 +598,7 @@ async function assistantFetchCandidates({ allowedBrands, brandFilters, limit }) 
       list = await fetchCvFromDb({
         brandParam,
         roleParam: "",
-        qParam: "",
+        qParam: qParam || "",
         limit: Math.max(max, ASSISTANT_MAX_CVS),
         allowedBrands
       });
@@ -584,11 +609,18 @@ async function assistantFetchCandidates({ allowedBrands, brandFilters, limit }) 
   } else {
     list = cvStore.slice(0, ASSISTANT_MAX_CVS * 2);
   }
-  const filtered = assistantFilterByBrands(list, brandFilters);
+  let filtered = assistantFilterByBrands(list, brandFilters);
+  if (qParam) {
+    const needle = String(qParam).toLowerCase();
+    filtered = filtered.filter((entry) => {
+      return (entry.applicant || "").toLowerCase().includes(needle)
+        || (entry.phone || "").includes(needle);
+    });
+  }
   return filtered.slice(0, max).map(assistantPickCandidate);
 }
 
-async function assistantFetchCalls({ allowedBrands, brandFilters, limit }) {
+async function assistantFetchCalls({ allowedBrands, brandFilters, limit, qParam }) {
   const max = Math.min(Number(limit) || ASSISTANT_MAX_CALLS, ASSISTANT_MAX_CALLS);
   let list = [];
   if (dbPool) {
@@ -598,7 +630,7 @@ async function assistantFetchCalls({ allowedBrands, brandFilters, limit }) {
         brandParam,
         roleParam: "",
         recParam: "",
-        qParam: "",
+        qParam: qParam || "",
         minScore: NaN,
         maxScore: NaN,
         limit: Math.max(max, ASSISTANT_MAX_CALLS),
@@ -611,7 +643,14 @@ async function assistantFetchCalls({ allowedBrands, brandFilters, limit }) {
   } else {
     list = callHistory.slice(0, ASSISTANT_MAX_CALLS * 2);
   }
-  const filtered = assistantFilterByBrands(list, brandFilters);
+  let filtered = assistantFilterByBrands(list, brandFilters);
+  if (qParam) {
+    const needle = String(qParam).toLowerCase();
+    filtered = filtered.filter((entry) => {
+      return (entry.applicant || "").toLowerCase().includes(needle)
+        || (entry.phone || "").includes(needle);
+    });
+  }
   const trimmed = filtered.slice(0, max);
   const mapped = [];
   for (const entry of trimmed) {
@@ -675,7 +714,7 @@ async function assistantFetchPortalPages({ allowedBrands, brandFilters, limit })
   return allowed.slice(0, max).map(assistantPickPortalPage);
 }
 
-async function assistantFetchPortalApps({ allowedBrands, brandFilters, limit }) {
+async function assistantFetchPortalApps({ allowedBrands, brandFilters, limit, qParam }) {
   const max = Math.min(Number(limit) || ASSISTANT_MAX_PORTAL_APPS, ASSISTANT_MAX_PORTAL_APPS);
   let list = [];
   if (dbPool) {
@@ -738,7 +777,15 @@ async function assistantFetchPortalApps({ allowedBrands, brandFilters, limit }) 
       created_at: row.created_at || ""
     }));
   }
-  const filtered = assistantFilterByBrands(list, brandFilters);
+  let filtered = assistantFilterByBrands(list, brandFilters);
+  if (qParam) {
+    const needle = qParam.toLowerCase();
+    filtered = filtered.filter((app) => {
+      return (app.name || "").toLowerCase().includes(needle)
+        || (app.email || "").toLowerCase().includes(needle)
+        || (app.phone || "").includes(needle);
+    });
+  }
   const allowed = Array.isArray(allowedBrands) && allowedBrands.length
     ? filtered.filter((item) => allowedBrands.includes(item.brandKey || brandKey(item.brand || "")))
     : filtered;
@@ -789,9 +836,12 @@ async function assistantFetchCounts({ allowedBrands }) {
   };
 }
 
-function assistantConfigSummary(role) {
+async function assistantConfigSummary(role) {
   const meta = roleConfig?.meta || {};
   if (role === "admin") {
+    const store = await loadPromptStore();
+    const history = Array.isArray(store.history) ? store.history : [];
+    const latest = history[0] || null;
     return {
       opener_es: meta.opener_es || "",
       opener_en: meta.opener_en || "",
@@ -799,6 +849,12 @@ function assistantConfigSummary(role) {
       must_ask: meta.must_ask || "",
       system_prompt: meta.system_prompt || "",
       runtime_instructions: meta.runtime_instructions || "",
+      prompt_templates_count: Array.isArray(store.templates) ? store.templates.length : 0,
+      prompt_history_count: history.length,
+      prompt_latest: latest ? {
+        created_at: latest.created_at || "",
+        preview: (latest.prompt || "").slice(0, 220)
+      } : null,
       recording: {
         intro_es: meta.recording_intro_es || "",
         intro_en: meta.recording_intro_en || "",
@@ -831,6 +887,7 @@ function assistantConfigSummary(role) {
 
 async function assistantBuildContext({ message, role, allowedBrands }) {
   const scopes = assistantInferScopes(message || "");
+  const search = assistantExtractSearchTerm(message || "");
   const { filters: brandFilters, denied } = assistantResolveBrandFilters(message || "", allowedBrands);
   const brandIndex = assistantBuildBrandIndex();
   const visibleBrands = Array.isArray(allowedBrands) && allowedBrands.length
@@ -842,32 +899,49 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
       role: role || "viewer",
       allowed_brands: Array.isArray(allowedBrands) ? allowedBrands : [],
       requested_brands: brandFilters,
-      denied_brands: denied
+      denied_brands: denied,
+      system_prompt_visible: role === "admin"
     },
     brands: visibleBrands.map((b) => ({
       key: b.key,
       display: b.display,
       roles: b.roles
-    }))
+    })),
+    search: { q: search.q || "", phone: search.phone || "" }
   };
   if (scopes.wantsFaq || !message) {
     context.faq = ASSISTANT_FAQ;
   }
   if (scopes.wantsConfig) {
-    context.config = assistantConfigSummary(role);
+    context.config = await assistantConfigSummary(role);
   }
   if (scopes.wantsCounts || scopes.wantsCalls || scopes.wantsCvs || scopes.wantsPortal || scopes.wantsUsers) {
     context.counts = await assistantFetchCounts({ allowedBrands });
   }
   if (scopes.wantsCvs) {
-    context.candidates = await assistantFetchCandidates({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_CVS });
+    context.candidates = await assistantFetchCandidates({
+      allowedBrands,
+      brandFilters,
+      limit: ASSISTANT_MAX_CVS,
+      qParam: search.q || ""
+    });
   }
   if (scopes.wantsCalls) {
-    context.interviews = await assistantFetchCalls({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_CALLS });
+    context.interviews = await assistantFetchCalls({
+      allowedBrands,
+      brandFilters,
+      limit: ASSISTANT_MAX_CALLS,
+      qParam: search.q || ""
+    });
   }
   if (scopes.wantsPortal) {
     context.portal_pages = await assistantFetchPortalPages({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_PORTAL_PAGES });
-    context.portal_apps = await assistantFetchPortalApps({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_PORTAL_APPS });
+    context.portal_apps = await assistantFetchPortalApps({
+      allowedBrands,
+      brandFilters,
+      limit: ASSISTANT_MAX_PORTAL_APPS,
+      qParam: search.q || ""
+    });
   }
   if (!scopes.wantsCalls && !scopes.wantsCvs && !scopes.wantsPortal && !scopes.wantsConfig) {
     context.counts = context.counts || await assistantFetchCounts({ allowedBrands });
@@ -3103,7 +3177,9 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
       "You are HRBOT Assistant for the admin console.",
       "Answer ONLY using the provided DATA JSON.",
       "Never invent data; if missing, say so and suggest where to check in the UI.",
-      "Respect access: if the user asks about brands not allowed, state you don't have access.",
+      "If DATA.access.denied_brands has items, say you don't have access to those brands.",
+      "If the user asks about system prompt and DATA.access.system_prompt_visible is false, say it's admin-only.",
+      "If DATA.search.q is present, look for matches in interviews/candidates/portal_apps and answer based on them.",
       "Keep replies concise and actionable.",
       "Respond in the same language as the user's question (Spanish if unclear)."
     ].join(" ");
