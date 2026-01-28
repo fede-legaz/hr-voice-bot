@@ -213,6 +213,42 @@ const OUTCOME_LABELS = {
   CALL_DISCONNECTED: "Se desconectó la llamada",
   TRANSCRIPTION_FAILED: "No se pudo transcribir el audio"
 };
+const ASSISTANT_MAX_CVS = 40;
+const ASSISTANT_MAX_CALLS = 40;
+const ASSISTANT_MAX_PORTAL_APPS = 40;
+const ASSISTANT_MAX_PORTAL_PAGES = 40;
+const ASSISTANT_FAQ = [
+  {
+    q: "System Prompt, Asistente IA y Templates",
+    a: "El System Prompt define el comportamiento del bot. El Asistente IA propone cambios y los aplica al prompt. Templates/Versiones guardan snapshots para restaurar."
+  },
+  {
+    q: "Bloque obligatorio (editable)",
+    a: "Textos que se insertan automáticamente cuando aplica inglés requerido o cierre tarde. Se editan en General."
+  },
+  {
+    q: "Runtime (se inyecta al ejecutar)",
+    a: "Instrucciones temporales que se agregan al final del prompt en cada llamada."
+  },
+  {
+    q: "Grabación / Consentimiento",
+    a: "Texto que el bot lee antes de iniciar la entrevista para pedir permiso de grabación."
+  },
+  {
+    q: "Candidates / CVs guardados",
+    a: "Subís un CV, el sistema hace OCR y podés guardarlo o llamar. Ver CV abre el PDF/imagen."
+  },
+  {
+    q: "Interviews",
+    a: "Listado de entrevistas con score, resumen y audio. Se puede filtrar por local, rol, recomendación y estado."
+  },
+  {
+    q: "Portal",
+    a: "Editor de páginas públicas para aplicar y listado de postulaciones recibidas."
+  }
+];
+const PORTAL_PAGES_PATH = path.join(__dirname, "data", "portal-pages.json");
+const PORTAL_APPS_PATH = path.join(__dirname, "data", "portal-applications.json");
 
 const ADDRESS_BY_BRAND = {
   "new campo argentino": "6954 Collins Ave, Miami Beach, FL 33141, US",
@@ -382,6 +418,462 @@ function brandKey(brand) {
   if (b.includes("mexi")) return "mexi";
   if (b.includes("yes")) return "yes";
   return "general";
+}
+
+function assistantReadJsonFile(filePath) {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    console.error("[assistant] read json failed", err.message);
+    return null;
+  }
+}
+
+function assistantBuildBrandIndex() {
+  if (!roleConfig) return [];
+  const list = [];
+  for (const [key, val] of Object.entries(roleConfig)) {
+    if (key === "meta") continue;
+    const meta = val && val._meta;
+    const roles = [];
+    for (const [rk, entry] of Object.entries(val || {})) {
+      if (rk === "_meta") continue;
+      roles.push(entry?.displayName || rk);
+    }
+    list.push({
+      key,
+      display: meta?.displayName || key,
+      aliases: Array.isArray(meta?.aliases) ? meta.aliases : [],
+      roles: roles.slice(0, 50)
+    });
+  }
+  return list;
+}
+
+function assistantResolveBrandFilters(message, allowedBrands) {
+  const text = normalizeKey(message || "");
+  const brands = assistantBuildBrandIndex();
+  const requested = [];
+  for (const brand of brands) {
+    const tokens = [brand.key, brand.display, ...(brand.aliases || [])]
+      .map((val) => normalizeKey(val))
+      .filter(Boolean);
+    if (tokens.some((token) => token && text.includes(token))) {
+      requested.push(brand.key);
+    }
+  }
+  const unique = Array.from(new Set(requested));
+  const allowed = Array.isArray(allowedBrands) ? allowedBrands : [];
+  if (!unique.length) return { filters: [], denied: [] };
+  if (!allowed.length) return { filters: unique, denied: [] };
+  const filters = unique.filter((key) => allowed.includes(key));
+  const denied = unique.filter((key) => !allowed.includes(key));
+  return { filters, denied };
+}
+
+function assistantInferScopes(message) {
+  const text = (message || "").toLowerCase();
+  const wantsCalls = /(entrevista|interview|llamada|call|score|puntaje|audio|grabaci|recomendaci|whatsapp)/i.test(text);
+  const wantsCvs = /(cv|resume|curriculum|candidato|candidatos|postulaci|application|aplicaci)/i.test(text);
+  const wantsPortal = /(portal|apply|aplicar|postulaci|application)/i.test(text);
+  const wantsConfig = /(prompt|system|runtime|grabaci|consent|checklist|opener|config|settings|ajuste|regla)/i.test(text);
+  const wantsUsers = /(usuario|user|login|acceso|role|rol|perfil|password|contrase)/i.test(text);
+  const wantsFaq = /(faq|ayuda|help|como|qué|que|explic|donde|dónde)/i.test(text);
+  const wantsCounts = /(cuant|cantidad|total|stats|estad)/i.test(text);
+  return {
+    wantsCalls,
+    wantsCvs,
+    wantsPortal,
+    wantsConfig,
+    wantsUsers,
+    wantsFaq,
+    wantsCounts
+  };
+}
+
+function assistantFilterByBrands(list, brandFilters) {
+  if (!Array.isArray(brandFilters) || !brandFilters.length) return list;
+  return list.filter((item) => brandFilters.includes(item.brandKey || brandKey(item.brand || "")));
+}
+
+function assistantPickCandidate(entry) {
+  return {
+    id: entry.id || "",
+    applicant: entry.applicant || "",
+    phone: entry.phone || "",
+    brand: resolveBrandDisplay(entry.brand || entry.brandKey || ""),
+    brand_key: entry.brandKey || brandKey(entry.brand || ""),
+    role: entry.role || entry.roleKey || "",
+    created_at: entry.created_at || "",
+    decision: entry.decision || "",
+    last_call_at: entry.last_call_at || "",
+    last_outcome: entry.last_outcome || "",
+    has_cv: !!(entry.cv_url || entry.cv_text),
+    cv_url: entry.cv_url || ""
+  };
+}
+
+function assistantPickCall(entry) {
+  return {
+    call_id: entry.callId || entry.callSid || "",
+    applicant: entry.applicant || "",
+    phone: entry.phone || "",
+    brand: resolveBrandDisplay(entry.brand || entry.brandKey || ""),
+    brand_key: entry.brandKey || brandKey(entry.brand || ""),
+    role: entry.role || entry.roleKey || "",
+    created_at: entry.created_at || "",
+    score: typeof entry.score === "number" ? entry.score : null,
+    recommendation: entry.recommendation || "",
+    outcome: entry.outcome || "",
+    duration_sec: typeof entry.duration_sec === "number" ? entry.duration_sec : null,
+    decision: entry.decision || "",
+    has_audio: !!entry.audio_url,
+    audio_url: entry.audio_url || "",
+    has_cv: !!entry.cv_url,
+    cv_url: entry.cv_url || ""
+  };
+}
+
+function assistantPickPortalApp(entry) {
+  return {
+    id: entry.id || "",
+    slug: entry.slug || "",
+    brand: entry.brand || "",
+    role: entry.role || "",
+    name: entry.name || "",
+    email: entry.email || "",
+    phone: entry.phone || "",
+    consent: !!entry.consent,
+    resume_url: entry.resume_url || "",
+    photo_url: entry.photo_url || "",
+    locations: Array.isArray(entry.locations) ? entry.locations : [],
+    created_at: entry.created_at || ""
+  };
+}
+
+function assistantPickPortalPage(entry) {
+  return {
+    id: entry.id || "",
+    slug: entry.slug || "",
+    brand: entry.brand || "",
+    role: entry.role || "",
+    active: entry.active !== false,
+    updated_at: entry.updated_at || entry.created_at || ""
+  };
+}
+
+async function assistantFetchCandidates({ allowedBrands, brandFilters, limit }) {
+  const max = Math.min(Number(limit) || ASSISTANT_MAX_CVS, ASSISTANT_MAX_CVS);
+  let list = [];
+  if (dbPool) {
+    try {
+      const brandParam = brandFilters.length === 1 ? brandFilters[0] : "";
+      list = await fetchCvFromDb({
+        brandParam,
+        roleParam: "",
+        qParam: "",
+        limit: Math.max(max, ASSISTANT_MAX_CVS),
+        allowedBrands
+      });
+    } catch (err) {
+      console.error("[assistant] cv db fetch failed", err.message);
+      list = cvStore.slice(0, ASSISTANT_MAX_CVS * 2);
+    }
+  } else {
+    list = cvStore.slice(0, ASSISTANT_MAX_CVS * 2);
+  }
+  const filtered = assistantFilterByBrands(list, brandFilters);
+  return filtered.slice(0, max).map(assistantPickCandidate);
+}
+
+async function assistantFetchCalls({ allowedBrands, brandFilters, limit }) {
+  const max = Math.min(Number(limit) || ASSISTANT_MAX_CALLS, ASSISTANT_MAX_CALLS);
+  let list = [];
+  if (dbPool) {
+    try {
+      const brandParam = brandFilters.length === 1 ? brandFilters[0] : "";
+      list = await fetchCallsFromDb({
+        brandParam,
+        roleParam: "",
+        recParam: "",
+        qParam: "",
+        minScore: NaN,
+        maxScore: NaN,
+        limit: Math.max(max, ASSISTANT_MAX_CALLS),
+        allowedBrands
+      });
+    } catch (err) {
+      console.error("[assistant] calls db fetch failed", err.message);
+      list = callHistory.slice(0, ASSISTANT_MAX_CALLS * 2);
+    }
+  } else {
+    list = callHistory.slice(0, ASSISTANT_MAX_CALLS * 2);
+  }
+  const filtered = assistantFilterByBrands(list, brandFilters);
+  const trimmed = filtered.slice(0, max);
+  const mapped = [];
+  for (const entry of trimmed) {
+    const audioUrl = await resolveStoredUrl(entry.audio_url || "");
+    const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+    mapped.push(assistantPickCall({ ...entry, audio_url: audioUrl || entry.audio_url, cv_url: cvUrl || entry.cv_url }));
+  }
+  return mapped;
+}
+
+async function assistantFetchPortalPages({ allowedBrands, brandFilters, limit }) {
+  const max = Math.min(Number(limit) || ASSISTANT_MAX_PORTAL_PAGES, ASSISTANT_MAX_PORTAL_PAGES);
+  let list = [];
+  if (dbPool) {
+    try {
+      const resp = await dbQuery(
+        `
+        SELECT id, slug, brand, role, active, updated_at, created_at
+        FROM portal_pages
+        ORDER BY updated_at DESC
+        LIMIT $1
+      `,
+        [Math.max(max, ASSISTANT_MAX_PORTAL_PAGES)]
+      );
+      list = (resp?.rows || []).map((row) => ({
+        id: row.id,
+        slug: row.slug,
+        brand: row.brand || "",
+        role: row.role || "",
+        active: row.active !== false,
+        updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : "",
+        created_at: row.created_at ? new Date(row.created_at).toISOString() : ""
+      }));
+    } catch (err) {
+      console.error("[assistant] portal pages db fetch failed", err.message);
+      const raw = assistantReadJsonFile(PORTAL_PAGES_PATH) || [];
+      list = raw.map((row) => ({
+        id: row.id || "",
+        slug: row.slug || "",
+        brand: row.brand || "",
+        role: row.role || "",
+        active: row.active !== false,
+        updated_at: row.updated_at || row.created_at || ""
+      }));
+    }
+  } else {
+    const raw = assistantReadJsonFile(PORTAL_PAGES_PATH) || [];
+    list = raw.map((row) => ({
+      id: row.id || "",
+      slug: row.slug || "",
+      brand: row.brand || "",
+      role: row.role || "",
+      active: row.active !== false,
+      updated_at: row.updated_at || row.created_at || ""
+    }));
+  }
+  const filtered = assistantFilterByBrands(list, brandFilters);
+  const allowed = Array.isArray(allowedBrands) && allowedBrands.length
+    ? filtered.filter((item) => allowedBrands.includes(item.brandKey || brandKey(item.brand || "")))
+    : filtered;
+  return allowed.slice(0, max).map(assistantPickPortalPage);
+}
+
+async function assistantFetchPortalApps({ allowedBrands, brandFilters, limit }) {
+  const max = Math.min(Number(limit) || ASSISTANT_MAX_PORTAL_APPS, ASSISTANT_MAX_PORTAL_APPS);
+  let list = [];
+  if (dbPool) {
+    try {
+      const resp = await dbQuery(
+        `
+        SELECT id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
+        FROM portal_applications
+        ORDER BY created_at DESC
+        LIMIT $1
+      `,
+        [Math.max(max, ASSISTANT_MAX_PORTAL_APPS)]
+      );
+      list = (resp?.rows || []).map((row) => ({
+        id: row.id,
+        slug: row.slug,
+        brand: row.brand || "",
+        role: row.role || "",
+        name: row.name || "",
+        email: row.email || "",
+        phone: row.phone || "",
+        consent: !!row.consent,
+        resume_url: row.resume_url || "",
+        photo_url: row.photo_url || "",
+        locations: row.locations || [],
+        created_at: row.created_at ? new Date(row.created_at).toISOString() : ""
+      }));
+    } catch (err) {
+      console.error("[assistant] portal apps db fetch failed", err.message);
+      const raw = assistantReadJsonFile(PORTAL_APPS_PATH) || [];
+      list = raw.map((row) => ({
+        id: row.id || "",
+        slug: row.slug || "",
+        brand: row.brand || "",
+        role: row.role || "",
+        name: row.name || "",
+        email: row.email || "",
+        phone: row.phone || "",
+        consent: !!row.consent,
+        resume_url: row.resume_url || "",
+        photo_url: row.photo_url || "",
+        locations: row.locations || [],
+        created_at: row.created_at || ""
+      }));
+    }
+  } else {
+    const raw = assistantReadJsonFile(PORTAL_APPS_PATH) || [];
+    list = raw.map((row) => ({
+      id: row.id || "",
+      slug: row.slug || "",
+      brand: row.brand || "",
+      role: row.role || "",
+      name: row.name || "",
+      email: row.email || "",
+      phone: row.phone || "",
+      consent: !!row.consent,
+      resume_url: row.resume_url || "",
+      photo_url: row.photo_url || "",
+      locations: row.locations || [],
+      created_at: row.created_at || ""
+    }));
+  }
+  const filtered = assistantFilterByBrands(list, brandFilters);
+  const allowed = Array.isArray(allowedBrands) && allowedBrands.length
+    ? filtered.filter((item) => allowedBrands.includes(item.brandKey || brandKey(item.brand || "")))
+    : filtered;
+  return allowed.slice(0, max).map(assistantPickPortalApp);
+}
+
+async function assistantFetchCounts({ allowedBrands }) {
+  const allowed = Array.isArray(allowedBrands) ? allowedBrands : [];
+  if (dbPool) {
+    const params = [];
+    const where = allowed.length ? "WHERE brand_key = ANY($1)" : "";
+    if (allowed.length) params.push(allowed);
+    const [callsResp, cvsResp] = await Promise.all([
+      dbQuery(`SELECT COUNT(*)::int AS total FROM calls ${where}`, params),
+      dbQuery(`SELECT COUNT(*)::int AS total FROM cvs ${where}`, params)
+    ]);
+    let portalTotal = 0;
+    try {
+      const portalResp = await dbQuery(
+        `SELECT brand FROM portal_applications ORDER BY created_at DESC LIMIT 5000`,
+        []
+      );
+      const rows = portalResp?.rows || [];
+      if (!allowed.length) {
+        portalTotal = rows.length;
+      } else {
+        portalTotal = rows.filter((row) => allowed.includes(brandKey(row.brand || ""))).length;
+      }
+    } catch (err) {
+      portalTotal = 0;
+    }
+    return {
+      calls: Number(callsResp?.rows?.[0]?.total || 0),
+      cvs: Number(cvsResp?.rows?.[0]?.total || 0),
+      portal_apps: Number(portalTotal || 0)
+    };
+  }
+  const scopedCalls = allowed.length ? callHistory.filter((c) => allowed.includes(c.brandKey || brandKey(c.brand || ""))) : callHistory;
+  const scopedCvs = allowed.length ? cvStore.filter((c) => allowed.includes(c.brandKey || brandKey(c.brand || ""))) : cvStore;
+  const portalAppsRaw = assistantReadJsonFile(PORTAL_APPS_PATH) || [];
+  const scopedApps = allowed.length
+    ? portalAppsRaw.filter((app) => allowed.includes(brandKey(app.brand || "")))
+    : portalAppsRaw;
+  return {
+    calls: scopedCalls.length,
+    cvs: scopedCvs.length,
+    portal_apps: scopedApps.length
+  };
+}
+
+function assistantConfigSummary(role) {
+  const meta = roleConfig?.meta || {};
+  if (role === "admin") {
+    return {
+      opener_es: meta.opener_es || "",
+      opener_en: meta.opener_en || "",
+      lang_rules: meta.lang_rules || "",
+      must_ask: meta.must_ask || "",
+      system_prompt: meta.system_prompt || "",
+      runtime_instructions: meta.runtime_instructions || "",
+      recording: {
+        intro_es: meta.recording_intro_es || "",
+        intro_en: meta.recording_intro_en || "",
+        consent_es: meta.recording_consent_es || "",
+        consent_en: meta.recording_consent_en || "",
+        confirm_es: meta.recording_confirm_es || "",
+        confirm_en: meta.recording_confirm_en || "",
+        no_response_es: meta.recording_no_response_es || "",
+        no_response_en: meta.recording_no_response_en || "",
+        decline_es: meta.recording_decline_es || "",
+        decline_en: meta.recording_decline_en || ""
+      },
+      mandatory: {
+        english_level_es: meta.english_level_es || "",
+        english_level_en: meta.english_level_en || "",
+        english_check_es: meta.english_check_es || "",
+        english_check_en: meta.english_check_en || "",
+        late_closing_es: meta.late_closing_es || "",
+        late_closing_en: meta.late_closing_en || ""
+      }
+    };
+  }
+  return {
+    opener_es: meta.opener_es || "",
+    opener_en: meta.opener_en || "",
+    lang_rules: meta.lang_rules || "",
+    must_ask: meta.must_ask || ""
+  };
+}
+
+async function assistantBuildContext({ message, role, allowedBrands }) {
+  const scopes = assistantInferScopes(message || "");
+  const { filters: brandFilters, denied } = assistantResolveBrandFilters(message || "", allowedBrands);
+  const brandIndex = assistantBuildBrandIndex();
+  const visibleBrands = Array.isArray(allowedBrands) && allowedBrands.length
+    ? brandIndex.filter((b) => allowedBrands.includes(b.key))
+    : brandIndex;
+  const context = {
+    now: new Date().toISOString(),
+    access: {
+      role: role || "viewer",
+      allowed_brands: Array.isArray(allowedBrands) ? allowedBrands : [],
+      requested_brands: brandFilters,
+      denied_brands: denied
+    },
+    brands: visibleBrands.map((b) => ({
+      key: b.key,
+      display: b.display,
+      roles: b.roles
+    }))
+  };
+  if (scopes.wantsFaq || !message) {
+    context.faq = ASSISTANT_FAQ;
+  }
+  if (scopes.wantsConfig) {
+    context.config = assistantConfigSummary(role);
+  }
+  if (scopes.wantsCounts || scopes.wantsCalls || scopes.wantsCvs || scopes.wantsPortal || scopes.wantsUsers) {
+    context.counts = await assistantFetchCounts({ allowedBrands });
+  }
+  if (scopes.wantsCvs) {
+    context.candidates = await assistantFetchCandidates({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_CVS });
+  }
+  if (scopes.wantsCalls) {
+    context.interviews = await assistantFetchCalls({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_CALLS });
+  }
+  if (scopes.wantsPortal) {
+    context.portal_pages = await assistantFetchPortalPages({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_PORTAL_PAGES });
+    context.portal_apps = await assistantFetchPortalApps({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_PORTAL_APPS });
+  }
+  if (!scopes.wantsCalls && !scopes.wantsCvs && !scopes.wantsPortal && !scopes.wantsConfig) {
+    context.counts = context.counts || await assistantFetchCounts({ allowedBrands });
+    context.faq = context.faq || ASSISTANT_FAQ;
+  }
+  return context;
 }
 
 function normalizePhone(num) {
@@ -2593,6 +3085,63 @@ app.post("/admin/system-prompt/assist", requireAdmin, async (req, res) => {
   }
 });
 
+app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
+  try {
+    const message = (req.body?.message || "").toString().trim();
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-6) : [];
+    if (!message) return res.status(400).json({ error: "missing_message" });
+    const context = await assistantBuildContext({
+      message,
+      role: req.userRole || "viewer",
+      allowedBrands: req.allowedBrands || []
+    });
+    const contextJsonRaw = JSON.stringify(context);
+    const contextJson = contextJsonRaw.length > 18000
+      ? contextJsonRaw.slice(0, 18000) + "\n...TRUNCATED"
+      : contextJsonRaw;
+    const systemPrompt = [
+      "You are HRBOT Assistant for the admin console.",
+      "Answer ONLY using the provided DATA JSON.",
+      "Never invent data; if missing, say so and suggest where to check in the UI.",
+      "Respect access: if the user asks about brands not allowed, state you don't have access.",
+      "Keep replies concise and actionable.",
+      "Respond in the same language as the user's question (Spanish if unclear)."
+    ].join(" ");
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...history.map((item) => ({
+        role: item?.role === "assistant" ? "assistant" : "user",
+        content: String(item?.content || "").slice(0, 4000)
+      })),
+      {
+        role: "user",
+        content: `Pregunta: ${message}\n\nDATA:\n${contextJson}`
+      }
+    ];
+    const payload = {
+      model: OPENAI_MODEL_SCORING,
+      temperature: 0.2,
+      max_tokens: 700,
+      messages
+    };
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENAI_API_KEY}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error?.message || "assistant_failed");
+    const answer = (data?.choices?.[0]?.message?.content || "").trim();
+    return res.json({ ok: true, answer });
+  } catch (err) {
+    console.error("[assistant/chat] failed", err);
+    return res.status(400).json({ error: "assistant_failed", detail: err.message });
+  }
+});
+
 app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   const brandParam = (req.query?.brand || "").toString();
   const roleParam = (req.query?.role || "").toString();
@@ -3849,8 +4398,104 @@ app.get("/admin/ui", (req, res) => {
     }
     #prompt-assistant-input { min-height: 120px; }
     textarea.locked { background: #f2f0ea; color: #6b7280; }
+    .assistant-widget {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 80;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 12px;
+    }
+    .assistant-fab {
+      width: 56px;
+      height: 56px;
+      border-radius: 18px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      box-shadow: var(--shadow);
+    }
+    .assistant-panel {
+      position: absolute;
+      bottom: 70px;
+      right: 0;
+      width: min(380px, 92vw);
+      max-height: 70vh;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .assistant-panel.open { display: flex; }
+    .assistant-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      background: #f7f2e8;
+    }
+    .assistant-title { font-size: 15px; font-weight: 800; }
+    .assistant-sub { font-size: 11px; color: var(--muted); }
+    .assistant-actions { display: flex; gap: 6px; }
+    .assistant-messages {
+      padding: 12px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #fff;
+    }
+    .assistant-msg {
+      max-width: 90%;
+      border-radius: 14px;
+      padding: 10px 12px;
+      font-size: 12.5px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+    .assistant-msg.user {
+      align-self: flex-end;
+      background: rgba(27, 122, 140, 0.14);
+      border: 1px solid rgba(27, 122, 140, 0.35);
+    }
+    .assistant-msg.bot {
+      align-self: flex-start;
+      background: #fbfaf7;
+      border: 1px solid var(--border);
+    }
+    .assistant-input {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      background: #fbfaf7;
+    }
+    .assistant-input textarea {
+      min-height: 54px;
+      max-height: 140px;
+    }
+    .assistant-footer {
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+      background: #f7f2e8;
+    }
     @media (max-width: 980px) {
       .prompt-split { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 720px) {
+      .assistant-widget { right: 16px; left: 16px; align-items: stretch; }
+      .assistant-panel { width: 100%; right: auto; left: 0; }
+      .assistant-fab { align-self: flex-end; }
     }
     .table-wrapper {
       border: 1px solid var(--border);
@@ -6470,6 +7115,27 @@ app.get("/admin/ui", (req, res) => {
       <img id="photo-modal-img" alt="Foto del CV" />
     </div>
   </div>
+  <div id="assistant-widget" class="assistant-widget" style="display:none;">
+    <button class="assistant-fab" id="assistant-fab" type="button" aria-label="Abrir asistente">AI</button>
+    <div class="assistant-panel" id="assistant-panel" aria-live="polite">
+      <div class="assistant-header">
+        <div>
+          <div class="assistant-title">Asistente IA</div>
+          <div class="assistant-sub" id="assistant-scope">Acceso: —</div>
+        </div>
+        <div class="assistant-actions">
+          <button class="secondary btn-compact" id="assistant-clear" type="button">Limpiar</button>
+          <button class="secondary btn-compact" id="assistant-close" type="button">Cerrar</button>
+        </div>
+      </div>
+      <div class="assistant-messages" id="assistant-messages"></div>
+      <div class="assistant-input">
+        <textarea id="assistant-input" placeholder="Preguntá por candidatos, entrevistas, portales, configuración..."></textarea>
+        <button id="assistant-send" type="button">Enviar</button>
+      </div>
+      <div class="assistant-footer small" id="assistant-status"></div>
+    </div>
+  </div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
@@ -6724,6 +7390,16 @@ app.get("/admin/ui", (req, res) => {
     const photoModalEl = document.getElementById('photo-modal');
     const photoModalImgEl = document.getElementById('photo-modal-img');
     const photoModalCloseEl = document.getElementById('photo-modal-close');
+    const assistantWidgetEl = document.getElementById('assistant-widget');
+    const assistantFabEl = document.getElementById('assistant-fab');
+    const assistantPanelEl = document.getElementById('assistant-panel');
+    const assistantMessagesEl = document.getElementById('assistant-messages');
+    const assistantInputEl = document.getElementById('assistant-input');
+    const assistantSendEl = document.getElementById('assistant-send');
+    const assistantClearEl = document.getElementById('assistant-clear');
+    const assistantCloseEl = document.getElementById('assistant-close');
+    const assistantScopeEl = document.getElementById('assistant-scope');
+    const assistantStatusEl = document.getElementById('assistant-status');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -6781,6 +7457,9 @@ app.get("/admin/ui", (req, res) => {
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
+    let assistantHistory = [];
+    let assistantOpen = false;
+    let assistantBusy = false;
     const photoThumbCache = new Map();
     let usersList = [];
     let editingUserId = '';
@@ -6914,6 +7593,11 @@ app.get("/admin/ui", (req, res) => {
       if (appEl) appEl.style.display = isLoggedIn ? 'flex' : 'none';
       if (logoutBtnEl) logoutBtnEl.style.display = isLoggedIn ? '' : 'none';
       if (userPanelToggleEl) userPanelToggleEl.style.display = isLoggedIn ? '' : 'none';
+      if (assistantWidgetEl) assistantWidgetEl.style.display = isLoggedIn ? '' : 'none';
+      if (!isLoggedIn) {
+        assistantSetOpen(false);
+        assistantClearMessages();
+      }
       if (!isLoggedIn) {
         if (navCallsBadgeEl) {
           navCallsBadgeEl.textContent = '';
@@ -6923,6 +7607,94 @@ app.get("/admin/ui", (req, res) => {
           navInterviewsBadgeEl.textContent = '';
           navInterviewsBadgeEl.style.display = 'none';
         }
+      }
+    }
+
+    function assistantSetStatus(text, isError = false) {
+      if (!assistantStatusEl) return;
+      assistantStatusEl.textContent = text || '';
+      assistantStatusEl.style.color = isError ? '#a0362b' : '';
+    }
+
+    function assistantSetOpen(open) {
+      assistantOpen = !!open;
+      if (assistantPanelEl) {
+        assistantPanelEl.classList.toggle('open', assistantOpen);
+      }
+      if (!assistantOpen) {
+        assistantSetStatus('');
+      }
+    }
+
+    function assistantAppendMessage(role, text) {
+      if (!assistantMessagesEl) return;
+      const msg = document.createElement('div');
+      msg.className = 'assistant-msg ' + (role === 'user' ? 'user' : 'bot');
+      msg.textContent = text || '';
+      assistantMessagesEl.appendChild(msg);
+      assistantMessagesEl.scrollTop = assistantMessagesEl.scrollHeight;
+    }
+
+    function assistantClearMessages() {
+      assistantHistory = [];
+      if (assistantMessagesEl) assistantMessagesEl.innerHTML = '';
+      assistantSetStatus('');
+    }
+
+    function assistantFormatBrandLabel(key) {
+      const entry = state?.config?.[key];
+      const meta = entry && entry._meta;
+      return meta?.displayName || key;
+    }
+
+    function assistantUpdateScope() {
+      if (!assistantScopeEl) return;
+      const roleLabel = authRole === 'admin'
+        ? 'Admin'
+        : (authRole === 'interviewer' ? 'Interviewer' : 'Viewer');
+      const brands = Array.isArray(authBrands) && authBrands.length
+        ? authBrands.map(assistantFormatBrandLabel).join(', ')
+        : 'todos';
+      assistantScopeEl.textContent = 'Acceso: ' + roleLabel + ' · ' + brands;
+    }
+
+    async function assistantSendMessage() {
+      if (assistantBusy) return;
+      const text = (assistantInputEl && assistantInputEl.value || '').trim();
+      if (!text) return;
+      if (!tokenEl || !tokenEl.value) {
+        assistantSetStatus('Iniciá sesión primero.', true);
+        return;
+      }
+      assistantAppendMessage('user', text);
+      assistantHistory.push({ role: 'user', content: text });
+      assistantHistory = assistantHistory.slice(-8);
+      if (assistantInputEl) assistantInputEl.value = '';
+      assistantBusy = true;
+      if (assistantSendEl) assistantSendEl.disabled = true;
+      assistantSetStatus('Pensando...');
+      try {
+        const resp = await fetch('/admin/assistant/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + tokenEl.value
+          },
+          body: JSON.stringify({ message: text, history: assistantHistory })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'assistant_failed');
+        const answer = data.answer || 'No tengo datos suficientes para responder.';
+        assistantAppendMessage('assistant', answer);
+        assistantHistory.push({ role: 'assistant', content: answer });
+        assistantHistory = assistantHistory.slice(-8);
+        assistantSetStatus('');
+      } catch (err) {
+        assistantSetStatus('Error: ' + err.message, true);
+        assistantAppendMessage('assistant', 'No pude responder ahora. Probá de nuevo.');
+      } finally {
+        assistantBusy = false;
+        if (assistantSendEl) assistantSendEl.disabled = false;
       }
     }
 
@@ -7176,6 +7948,7 @@ app.get("/admin/ui", (req, res) => {
       if (!isAdmin && activeView === 'general') {
         setActiveView(VIEW_CALLS);
       }
+      assistantUpdateScope();
     }
 
     function initialsFromEmail(email) {
@@ -13155,6 +13928,18 @@ app.get("/admin/ui", (req, res) => {
     if (photoModalEl) {
       photoModalEl.addEventListener('click', (event) => {
         if (event.target === photoModalEl) closePhotoModal();
+      });
+    }
+    if (assistantFabEl) assistantFabEl.onclick = () => assistantSetOpen(!assistantOpen);
+    if (assistantCloseEl) assistantCloseEl.onclick = () => assistantSetOpen(false);
+    if (assistantClearEl) assistantClearEl.onclick = assistantClearMessages;
+    if (assistantSendEl) assistantSendEl.onclick = assistantSendMessage;
+    if (assistantInputEl) {
+      assistantInputEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          assistantSendMessage();
+        }
       });
     }
     let urlParams = null;
