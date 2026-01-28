@@ -2449,9 +2449,15 @@ async function initDb() {
         english_required BOOLEAN,
         cv_id TEXT,
         cv_text TEXT,
-        cv_url TEXT
+        cv_url TEXT,
+        notes TEXT,
+        alt_brand_key TEXT,
+        alt_role_key TEXT
       );
     `);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_brand_key TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_role_key TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_brand ON calls (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
@@ -3431,6 +3437,52 @@ app.delete("/admin/calls/:callId", requireAdminUser, async (req, res) => {
     }
   }
   return res.json({ ok: true, removed });
+});
+
+app.post("/admin/calls/:callId/notes", requireWrite, async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  const rawNotes = typeof req.body?.notes === "string" ? req.body.notes : "";
+  const notes = rawNotes.trim();
+  const rawAltBrand = (req.body?.alt_brand_key ?? req.body?.altBrandKey ?? "").toString().trim();
+  const rawAltRole = (req.body?.alt_role_key ?? req.body?.altRoleKey ?? "").toString().trim();
+  const alt_brand_key = rawAltBrand;
+  const alt_role_key = rawAltBrand ? rawAltRole : "";
+  const callIds = Array.isArray(req.body?.callIds) ? req.body.callIds.filter(Boolean) : [];
+  const targetIds = callIds.length ? callIds : [callId];
+  const patch = { notes, alt_brand_key, alt_role_key };
+
+  for (const id of targetIds) {
+    const tracked = callsByCallSid.get(id);
+    if (tracked) Object.assign(tracked, patch);
+    for (const entry of callHistory) {
+      if (!entry) continue;
+      if (entry.callId === id || entry.callSid === id) {
+        Object.assign(entry, patch);
+      }
+    }
+  }
+  scheduleCallHistorySave();
+
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery(
+          "UPDATE calls SET notes = $2, alt_brand_key = $3, alt_role_key = $4 WHERE call_sid = ANY($1)",
+          [targetIds, notes, alt_brand_key, alt_role_key]
+        );
+      } else {
+        await dbQuery(
+          "UPDATE calls SET notes = $2, alt_brand_key = $3, alt_role_key = $4 WHERE call_sid = $1",
+          [callId, notes, alt_brand_key, alt_role_key]
+        );
+      }
+    } catch (err) {
+      console.error("[admin/calls] notes update failed", err);
+      return res.status(400).json({ error: "notes_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, notes, alt_brand_key, alt_role_key });
 });
 
 app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => {
@@ -5218,6 +5270,45 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1.45;
       color: #2f3e36;
     }
+    .detail-notes {
+      width: 100%;
+      min-height: 82px;
+      resize: vertical;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.5;
+      background: #fff;
+      color: #1f2a24;
+      margin-top: 6px;
+    }
+    .detail-alt { margin-top: 10px; }
+    .detail-alt-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .detail-select {
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      font-size: 12px;
+      background: #fff;
+      color: #1f2a24;
+    }
+    .detail-notes-actions {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .detail-note-status {
+      font-size: 11px;
+      color: var(--muted);
+    }
     .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
     .audio-wrap { display: flex; align-items: center; gap: 8px; }
     .detail-head {
@@ -5337,6 +5428,7 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1.35;
       cursor: help;
     }
+    .notes-cell { max-width: 180px; }
     .summary-tooltip {
       position: fixed;
       max-width: 360px;
@@ -6720,6 +6812,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
+                  <th>Notas</th>
                   <th>Decisión</th>
                   <th>CV</th>
                   <th>Audio</th>
@@ -11081,6 +11174,9 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
       infoSection.appendChild(buildSwipeRow('Teléfono', call.phone || '—'));
       infoSection.appendChild(buildSwipeRow('Estado', formatInterviewSummary(call)));
+      if (call.notes) infoSection.appendChild(buildSwipeRow('Notas', call.notes));
+      const altProfileLabel = formatAltProfile(call);
+      if (altProfileLabel) infoSection.appendChild(buildSwipeRow('Perfil alternativo', altProfileLabel));
       card.appendChild(infoSection);
 
       const decisionSection = document.createElement('div');
@@ -12872,6 +12968,18 @@ app.get("/admin/ui", (req, res) => {
       return status || '—';
     }
 
+    function formatAltProfile(call) {
+      if (!call) return '';
+      const altBrandKey = call.alt_brand_key || '';
+      const altRoleKey = call.alt_role_key || '';
+      if (!altBrandKey && !altRoleKey) return '';
+      const brandLabel = altBrandKey ? getBrandDisplayByKey(altBrandKey) : '';
+      const roleLabel = altRoleKey
+        ? getRoleDisplayForBrand(altBrandKey || call.brandKey || call.brand, altRoleKey)
+        : '';
+      return [brandLabel, roleLabel].filter(Boolean).join(' • ');
+    }
+
     function addDetailItem(grid, label, value) {
       if (value === undefined || value === null || value === '') return;
       const item = document.createElement('div');
@@ -12911,6 +13019,7 @@ app.get("/admin/ui", (req, res) => {
       const statusText = formatInterviewSummary(call);
       const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '';
       const englishLabel = call.english_detail ? (call.english + ' (' + call.english_detail + ')') : (call.english || '');
+      const altProfileLabel = formatAltProfile(call);
 
       const head = document.createElement('div');
       head.className = 'detail-head';
@@ -12941,6 +13050,7 @@ app.get("/admin/ui", (req, res) => {
 
       addDetailItem(grid, 'Local', brandLabel);
       addDetailItem(grid, 'Posición', roleLabel);
+      addDetailItem(grid, 'Perfil alternativo', altProfileLabel);
       addDetailItem(grid, 'Teléfono', call.phone || '');
       if (call.outcome === 'NO_ANSWER' && call.attempts > 1) {
         addDetailItem(grid, 'Intentos', String(call.attempts));
@@ -12956,6 +13066,100 @@ app.get("/admin/ui", (req, res) => {
 
       addDetailBlock(card, 'Experiencia', call.experience || '');
       addDetailBlock(card, 'Resumen', call.summary || '');
+
+      const notesBlock = document.createElement('div');
+      notesBlock.className = 'detail-block';
+      const notesLabel = document.createElement('div');
+      notesLabel.className = 'detail-label';
+      notesLabel.textContent = 'Notas internas';
+      const notesArea = document.createElement('textarea');
+      notesArea.className = 'detail-notes';
+      notesArea.rows = 3;
+      notesArea.placeholder = authRole === 'viewer' ? 'Sin notas.' : 'Escribí notas internas sobre el candidato.';
+      notesArea.value = call.notes || '';
+      notesArea.disabled = authRole === 'viewer';
+      notesBlock.appendChild(notesLabel);
+      notesBlock.appendChild(notesArea);
+
+      const altWrap = document.createElement('div');
+      altWrap.className = 'detail-alt';
+      const altLabel = document.createElement('div');
+      altLabel.className = 'detail-label';
+      altLabel.textContent = 'Perfil alternativo';
+      const altRow = document.createElement('div');
+      altRow.className = 'detail-alt-row';
+      const altBrandSelect = document.createElement('select');
+      altBrandSelect.className = 'detail-select';
+      const altRoleSelect = document.createElement('select');
+      altRoleSelect.className = 'detail-select';
+      const altBrandOptions = [{ key: '', display: 'Sin perfil alternativo' }, ...listBrandOptions()];
+      altBrandOptions.forEach((opt) => {
+        const option = document.createElement('option');
+        option.value = opt.key;
+        option.textContent = opt.display;
+        altBrandSelect.appendChild(option);
+      });
+      altBrandSelect.value = call.alt_brand_key || '';
+      const setAltRoleOptions = (preserveValue) => {
+        const brandKey = altBrandSelect.value || '';
+        altRoleSelect.innerHTML = '';
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = brandKey ? 'Seleccionar puesto' : 'Seleccioná local';
+        altRoleSelect.appendChild(placeholder);
+        if (brandKey) {
+          listRolesForBrand(brandKey).forEach((role) => {
+            const option = document.createElement('option');
+            option.value = role.key;
+            option.textContent = role.display;
+            altRoleSelect.appendChild(option);
+          });
+        }
+        altRoleSelect.disabled = authRole === 'viewer' || !brandKey;
+        if (preserveValue && brandKey && call.alt_role_key) {
+          altRoleSelect.value = call.alt_role_key;
+        }
+      };
+      setAltRoleOptions(true);
+      altBrandSelect.disabled = authRole === 'viewer';
+      altBrandSelect.addEventListener('change', () => setAltRoleOptions(false));
+      altRow.appendChild(altBrandSelect);
+      altRow.appendChild(altRoleSelect);
+      altWrap.appendChild(altLabel);
+      altWrap.appendChild(altRow);
+      notesBlock.appendChild(altWrap);
+
+      const notesActions = document.createElement('div');
+      notesActions.className = 'detail-notes-actions';
+      const saveNotesBtn = document.createElement('button');
+      saveNotesBtn.type = 'button';
+      saveNotesBtn.className = 'primary btn-compact';
+      saveNotesBtn.textContent = 'Guardar notas';
+      saveNotesBtn.disabled = authRole === 'viewer';
+      const notesStatus = document.createElement('span');
+      notesStatus.className = 'detail-note-status';
+      saveNotesBtn.onclick = async (event) => {
+        event.stopPropagation();
+        if (authRole === 'viewer') return;
+        const nextNotes = notesArea.value.trim();
+        const nextAltBrand = altBrandSelect.value || '';
+        const nextAltRole = nextAltBrand ? (altRoleSelect.value || '') : '';
+        saveNotesBtn.disabled = true;
+        notesStatus.textContent = 'Guardando...';
+        try {
+          await saveInterviewNotes(call, nextNotes, nextAltBrand, nextAltRole);
+          notesStatus.textContent = 'Guardado';
+        } catch (err) {
+          notesStatus.textContent = 'Error: ' + err.message;
+        } finally {
+          saveNotesBtn.disabled = authRole === 'viewer';
+          setTimeout(() => { notesStatus.textContent = ''; }, 2000);
+        }
+      };
+      notesActions.appendChild(saveNotesBtn);
+      notesActions.appendChild(notesStatus);
+      notesBlock.appendChild(notesActions);
+      card.appendChild(notesBlock);
 
       const actions = document.createElement('div');
       actions.className = 'detail-actions';
@@ -13043,6 +13247,10 @@ app.get("/admin/ui", (req, res) => {
       push('Zona', call.area || '');
       push('Disponibilidad', call.availability || '');
       push('Expectativa salarial', call.salary || '');
+      const altProfileLabel = formatAltProfile(call);
+      if (altProfileLabel) {
+        push('Perfil alternativo', altProfileLabel);
+      }
       if (call.stay_plan) {
         push('Se queda en EE.UU.', call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan);
       }
@@ -13050,6 +13258,11 @@ app.get("/admin/ui", (req, res) => {
         lines.push('');
         lines.push('Resumen:');
         lines.push(call.summary);
+      }
+      if (call.notes) {
+        lines.push('');
+        lines.push('Notas:');
+        lines.push(call.notes);
       }
       if (call.cv_url) {
         lines.push('');
@@ -13164,10 +13377,16 @@ app.get("/admin/ui", (req, res) => {
         if (!entry.cv_url && call.cv_url) entry.cv_url = call.cv_url;
         if (!entry.cv_text && call.cv_text) entry.cv_text = call.cv_text;
         if (!entry.cv_id && call.cv_id) entry.cv_id = call.cv_id;
+        if (!entry.notes && call.notes) entry.notes = call.notes;
+        if (!entry.alt_brand_key && call.alt_brand_key) entry.alt_brand_key = call.alt_brand_key;
+        if (!entry.alt_role_key && call.alt_role_key) entry.alt_role_key = call.alt_role_key;
         const prevSource = entry.source || '';
         const prevCvUrl = entry.cv_url || '';
         const prevCvText = entry.cv_text || '';
         const prevCvId = entry.cv_id || '';
+        const prevNotes = entry.notes || '';
+        const prevAltBrand = entry.alt_brand_key || '';
+        const prevAltRole = entry.alt_role_key || '';
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           Object.assign(entry, call);
           entry._latestAt = createdAt;
@@ -13175,11 +13394,17 @@ app.get("/admin/ui", (req, res) => {
           if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
           if (!entry.cv_text && prevCvText) entry.cv_text = prevCvText;
           if (!entry.cv_id && prevCvId) entry.cv_id = prevCvId;
+          if (!entry.notes && prevNotes) entry.notes = prevNotes;
+          if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
+          if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
         } else {
           if (!entry.source && prevSource) entry.source = prevSource;
           if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
           if (!entry.cv_text && prevCvText) entry.cv_text = prevCvText;
           if (!entry.cv_id && prevCvId) entry.cv_id = prevCvId;
+          if (!entry.notes && prevNotes) entry.notes = prevNotes;
+          if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
+          if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
         }
         if (!entry.decision && call.decision) {
           entry.decision = call.decision;
@@ -13366,6 +13591,48 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    function applyCallPatch(callIds, patch) {
+      const ids = new Set((callIds || []).filter(Boolean));
+      if (!ids.size) return;
+      const apply = (item) => {
+        if (!item) return;
+        const id = item.callId || item.callSid || '';
+        if (ids.has(id)) Object.assign(item, patch);
+      };
+      (lastResultsRaw || []).forEach(apply);
+      (lastResults || []).forEach(apply);
+    }
+
+    async function saveInterviewNotes(call, notes, altBrandKey, altRoleKey) {
+      const callId = call?.callId || '';
+      if (!callId) throw new Error('missing_call_id');
+      const callIds = Array.isArray(call?.callIds) ? call.callIds.filter(Boolean) : [];
+      const resp = await fetch('/admin/calls/' + encodeURIComponent(callId) + '/notes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer ' + tokenEl.value
+        },
+        body: JSON.stringify({
+          notes: notes || '',
+          alt_brand_key: altBrandKey || '',
+          alt_role_key: altRoleKey || '',
+          callIds
+        })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'notes failed');
+      const patch = {
+        notes: data.notes || '',
+        alt_brand_key: data.alt_brand_key || '',
+        alt_role_key: data.alt_role_key || ''
+      };
+      applyCallPatch(callIds.length ? callIds : [callId], patch);
+      Object.assign(call, patch);
+      renderResults(lastResultsRaw);
+      return patch;
+    }
+
     async function deleteCandidate(cvId) {
       if (!cvId) return;
       if (!confirm('¿Seguro que querés borrar este candidato?')) return;
@@ -13481,6 +13748,19 @@ app.get("/admin/ui", (req, res) => {
         }
         statusTd.appendChild(statusDiv);
         tr.appendChild(statusTd);
+        const notesTd = document.createElement('td');
+        notesTd.dataset.label = 'Notas';
+        if (call.notes) {
+          const notesDiv = document.createElement('div');
+          notesDiv.className = 'summary-cell notes-cell';
+          notesDiv.textContent = call.notes;
+          notesDiv.addEventListener('mouseenter', () => showSummaryTooltip(notesDiv, call.notes));
+          notesDiv.addEventListener('mouseleave', hideSummaryTooltip);
+          notesTd.appendChild(notesDiv);
+        } else {
+          notesTd.textContent = '—';
+        }
+        tr.appendChild(notesTd);
         const decisionTd = document.createElement('td');
         decisionTd.className = 'decision-cell';
         decisionTd.dataset.label = 'Decisión';
@@ -15916,7 +16196,10 @@ function buildCallHistoryEntry(call) {
     english_required: !!call.englishRequired,
     cv_id: call.cvId || "",
     cv_text: call.cvText || call.cvSummary || "",
-    cv_url: call.cvUrl || ""
+    cv_url: call.cvUrl || "",
+    notes: call.notes || "",
+    alt_brand_key: call.alt_brand_key || call.altBrandKey || "",
+    alt_role_key: call.alt_role_key || call.altRoleKey || ""
   };
 }
 
@@ -15927,7 +16210,13 @@ function recordCallHistory(call) {
   const key = entry.callId || `${entry.phone || "na"}:${entry.created_at}`;
   const existing = callHistoryByKey.get(key);
   if (existing) {
+    const prevNotes = existing.notes || "";
+    const prevAltBrand = existing.alt_brand_key || "";
+    const prevAltRole = existing.alt_role_key || "";
     Object.assign(existing, entry);
+    if (!existing.notes && prevNotes) existing.notes = prevNotes;
+    if (!existing.alt_brand_key && prevAltBrand) existing.alt_brand_key = prevAltBrand;
+    if (!existing.alt_role_key && prevAltRole) existing.alt_role_key = prevAltRole;
     scheduleCallHistorySave();
     if (dbPool) {
       upsertCallDb(existing).catch((err) => console.error("[call-history] db upsert failed", err));
@@ -16059,19 +16348,26 @@ async function upsertCvDb(entry) {
 async function upsertCallDb(entry) {
   if (!dbPool || !entry) return;
   const callId = entry.callId || entry._key || randomToken();
+  const notesValue = entry.notes === undefined ? null : entry.notes;
+  const altBrandValue = entry.alt_brand_key === undefined
+    ? (entry.altBrandKey === undefined ? null : entry.altBrandKey)
+    : entry.alt_brand_key;
+  const altRoleValue = entry.alt_role_key === undefined
+    ? (entry.altRoleKey === undefined ? null : entry.altRoleKey)
+    : entry.alt_role_key;
   const sql = `
     INSERT INTO calls (
       call_sid, created_at, brand, brand_key, role, role_key, applicant, phone,
       score, recommendation, summary, warmth, fluency, english, english_detail,
       experience, area, availability, salary, trial, stay_plan, stay_detail,
       mobility, outcome, outcome_detail, duration_sec, audio_url,
-      english_required, cv_id, cv_text, cv_url
+      english_required, cv_id, cv_text, cv_url, notes, alt_brand_key, alt_role_key
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
       $9,$10,$11,$12,$13,$14,$15,
       $16,$17,$18,$19,$20,$21,$22,
       $23,$24,$25,$26,$27,
-      $28,$29,$30,$31
+      $28,$29,$30,$31,$32,$33,$34
     )
     ON CONFLICT (call_sid) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -16102,7 +16398,10 @@ async function upsertCallDb(entry) {
       english_required = EXCLUDED.english_required,
       cv_id = EXCLUDED.cv_id,
       cv_text = EXCLUDED.cv_text,
-      cv_url = EXCLUDED.cv_url
+      cv_url = EXCLUDED.cv_url,
+      notes = COALESCE(EXCLUDED.notes, calls.notes),
+      alt_brand_key = COALESCE(EXCLUDED.alt_brand_key, calls.alt_brand_key),
+      alt_role_key = COALESCE(EXCLUDED.alt_role_key, calls.alt_role_key)
   `;
   const values = [
     callId,
@@ -16135,7 +16434,10 @@ async function upsertCallDb(entry) {
     entry.english_required ? true : false,
     entry.cv_id || "",
     entry.cv_text || "",
-    entry.cv_url || ""
+    entry.cv_url || "",
+    notesValue,
+    altBrandValue,
+    altRoleValue
   ];
   await dbQuery(sql, values);
 }
@@ -16235,6 +16537,9 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      c.notes,
+      c.alt_brand_key,
+      c.alt_role_key,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
@@ -16284,7 +16589,10 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       decision: row.decision || "",
       source: row.source || "",
       cv_text: row.cv_text || "",
-      cv_url: cvUrl || ""
+      cv_url: cvUrl || "",
+      notes: row.notes || "",
+      alt_brand_key: row.alt_brand_key || "",
+      alt_role_key: row.alt_role_key || ""
     });
   }
   return mapped;
@@ -16325,6 +16633,9 @@ async function fetchCallById(callId) {
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      c.notes,
+      c.alt_brand_key,
+      c.alt_role_key,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
@@ -16372,7 +16683,10 @@ async function fetchCallById(callId) {
     decision: row.decision || "",
     source: row.source || "",
     cv_text: row.cv_text || "",
-    cv_url: cvUrl || ""
+    cv_url: cvUrl || "",
+    notes: row.notes || "",
+    alt_brand_key: row.alt_brand_key || "",
+    alt_role_key: row.alt_role_key || ""
   };
 }
 
