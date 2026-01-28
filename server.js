@@ -960,7 +960,16 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
       admin: baseUrl ? `${baseUrl}/admin/ui` : "/admin/ui",
       portal_editor: baseUrl ? `${baseUrl}/admin/ui?view=portal` : "/admin/ui?view=portal",
       apply_template: baseUrl ? `${baseUrl}/apply/{slug}` : "/apply/{slug}",
-      public_base: baseUrl || ""
+      public_base: baseUrl || "",
+      sections: {
+        messages: baseUrl ? `${baseUrl}/admin/ui?view=general#section-messages` : "/admin/ui?view=general#section-messages",
+        system_prompt: baseUrl ? `${baseUrl}/admin/ui?view=general#section-system-prompt` : "/admin/ui?view=general#section-system-prompt",
+        prompt_templates: baseUrl ? `${baseUrl}/admin/ui?view=general#section-prompt-templates` : "/admin/ui?view=general#section-prompt-templates",
+        mandatory: baseUrl ? `${baseUrl}/admin/ui?view=general#section-mandatory` : "/admin/ui?view=general#section-mandatory",
+        runtime: baseUrl ? `${baseUrl}/admin/ui?view=general#section-runtime` : "/admin/ui?view=general#section-runtime",
+        consent: baseUrl ? `${baseUrl}/admin/ui?view=general#section-consent` : "/admin/ui?view=general#section-consent",
+        users: baseUrl ? `${baseUrl}/admin/ui?view=general#users-panel` : "/admin/ui?view=general#users-panel"
+      }
     },
     kb: assistantBuildKnowledgeBase(meta, baseUrl),
     brands: visibleBrands.map((b) => ({
@@ -3243,6 +3252,7 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
       "If the user asks about system prompt and DATA.access.system_prompt_visible is false, say it's admin-only.",
       "If DATA.search.q is present, look for matches in interviews/candidates/portal_apps and answer based on them.",
       "Use DATA.kb to explain what things are and how to change them. Provide links from DATA.links when relevant.",
+      "When you explain where to change something, include the most relevant direct URL from DATA.links.sections.",
       "If asked about 'qué cambió' del system prompt, use DATA.config.prompt_latest (if present).",
       "When you include a link, output the raw URL so it becomes clickable in the UI.",
       "Format responses with short sections, bullets, and labels like **Entrevistas**, **Candidates**, **Portal** when helpful.",
@@ -4577,7 +4587,7 @@ app.get("/admin/ui", (req, res) => {
       right: 0;
       width: min(420px, 94vw);
       max-height: 74vh;
-      background: var(--panel);
+      background: #f6f1e8;
       border: 1px solid var(--border);
       border-radius: 18px;
       box-shadow: var(--shadow);
@@ -4594,6 +4604,9 @@ app.get("/admin/ui", (req, res) => {
       padding: 12px 14px;
       border-bottom: 1px solid var(--border);
       background: linear-gradient(135deg, rgba(27, 122, 140, 0.15), rgba(244, 162, 97, 0.18));
+      position: sticky;
+      top: 0;
+      z-index: 2;
     }
     .assistant-title { font-size: 15px; font-weight: 800; }
     .assistant-sub { font-size: 11px; color: var(--muted); }
@@ -4605,6 +4618,12 @@ app.get("/admin/ui", (req, res) => {
       flex-wrap: wrap;
       border-bottom: 1px solid var(--border);
       background: #fff;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .assistant-links-secondary {
+      border-top: none;
+      background: #fbfaf7;
     }
     .assistant-links a {
       display: inline-flex;
@@ -4618,6 +4637,7 @@ app.get("/admin/ui", (req, res) => {
       font-size: 11px;
       text-decoration: none;
       background: rgba(27, 122, 140, 0.08);
+      white-space: nowrap;
     }
     .assistant-links a:hover { box-shadow: var(--glow); }
     .assistant-messages {
@@ -4626,26 +4646,30 @@ app.get("/admin/ui", (req, res) => {
       display: flex;
       flex-direction: column;
       gap: 10px;
-      background: #fff;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 248, 243, 0.96));
     }
     .assistant-msg {
       max-width: 90%;
-      border-radius: 14px;
+      border-radius: 16px;
       padding: 10px 12px;
       font-size: 13px;
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+      box-shadow: 0 8px 18px rgba(15, 33, 39, 0.08);
     }
     .assistant-msg.user {
       align-self: flex-end;
-      background: rgba(27, 122, 140, 0.14);
-      border: 1px solid rgba(27, 122, 140, 0.35);
+      background: #1b7a8c;
+      color: #fff;
+      border: none;
+      border-bottom-right-radius: 6px;
     }
     .assistant-msg.bot {
       align-self: flex-start;
-      background: #fbfaf7;
+      background: #fff;
       border: 1px solid var(--border);
+      border-bottom-left-radius: 6px;
     }
     .assistant-results {
       display: grid;
@@ -4700,6 +4724,7 @@ app.get("/admin/ui", (req, res) => {
       font-weight: 700;
       text-decoration: none;
     }
+    .assistant-msg.user a { color: #fff; }
     .assistant-msg a:hover { text-decoration: underline; }
     .assistant-msg code {
       background: rgba(27, 122, 140, 0.12);
@@ -4714,7 +4739,7 @@ app.get("/admin/ui", (req, res) => {
       display: flex;
       gap: 8px;
       align-items: flex-end;
-      background: #fbfaf7;
+      background: #f7f2e8;
     }
     .assistant-input textarea {
       min-height: 54px;
@@ -4729,9 +4754,24 @@ app.get("/admin/ui", (req, res) => {
       .prompt-split { grid-template-columns: 1fr; }
     }
     @media (max-width: 720px) {
-      .assistant-widget { right: 16px; left: 16px; align-items: stretch; }
-      .assistant-panel { width: 100%; right: auto; left: 0; }
-      .assistant-fab { align-self: flex-end; }
+      .assistant-widget { right: 12px; left: 12px; align-items: stretch; }
+      .assistant-panel {
+        width: 100%;
+        right: auto;
+        left: 0;
+        position: fixed;
+        bottom: 0;
+        height: 82vh;
+        max-height: none;
+        border-radius: 18px 18px 0 0;
+      }
+      .assistant-messages { padding: 14px 12px 96px; }
+      .assistant-input {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+      }
+      .assistant-fab { align-self: flex-end; width: 52px; height: 52px; }
     }
     .table-wrapper {
       border: 1px solid var(--border);
@@ -6116,7 +6156,7 @@ app.get("/admin/ui", (req, res) => {
 
       <section id="general-view" class="view">
         <div class="panel" style="--delay:.05s;">
-          <div class="panel-title">Mensajes base</div>
+          <div class="panel-title" id="section-messages">Mensajes base</div>
           <div class="panel-sub">Personalizá los openers y reglas globales (podés usar {name}, {brand}, {role}).</div>
           <div class="grid">
             <div>
@@ -6137,7 +6177,7 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="divider"></div>
-          <div class="panel-title">System prompt</div>
+          <div class="panel-title" id="section-system-prompt">System prompt</div>
           <div class="panel-sub">Solo editable con clave ADMIN.</div>
           <div class="prompt-split">
             <div class="prompt-col">
@@ -6145,6 +6185,7 @@ app.get("/admin/ui", (req, res) => {
               <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {opener}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
           <div class="prompt-tools compact" id="prompt-tools">
             <div class="small">Templates y versiones</div>
+            <div id="section-prompt-templates"></div>
             <div class="prompt-tools-row">
               <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
               <button class="secondary btn-compact" id="prompt-template-save" type="button">Guardar</button>
@@ -6172,7 +6213,7 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="divider"></div>
-          <div class="panel-title">Bloque obligatorio (editable)</div>
+          <div class="panel-title" id="section-mandatory">Bloque obligatorio (editable)</div>
           <div class="panel-sub">Estos textos se usan cuando corresponde (inglés requerido / cierre tarde). Podés dejar el default o personalizar.</div>
           <div class="grid">
             <div>
@@ -6201,12 +6242,12 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="divider"></div>
-          <div class="panel-title">Runtime (se inyecta al ejecutar)</div>
+          <div class="panel-title" id="section-runtime">Runtime (se inyecta al ejecutar)</div>
           <div class="panel-sub">Este bloque se agrega automáticamente a cada llamada, además del checklist obligatorio. Úsalo para reglas operativas del momento.</div>
           <textarea id="runtime-instructions" placeholder="Ej: preguntá si puede cubrir turnos de cierre o si maneja café manual."></textarea>
           <div class="small">Placeholders útiles: {brand}, {spoken_role}, {address}, {name}.</div>
           <div class="divider"></div>
-          <div class="panel-title">Grabación / Consentimiento</div>
+          <div class="panel-title" id="section-consent">Grabación / Consentimiento</div>
           <div class="panel-sub">Texto leído antes de iniciar la entrevista y para confirmar grabación. Podés usar {opener}, {brand}, {spoken_role}, {name}.</div>
           <div class="grid">
             <div>
@@ -7379,6 +7420,13 @@ app.get("/admin/ui", (req, res) => {
         <a id="assistant-link-interviews" href="#" target="_blank" rel="noopener">Interviews</a>
         <a id="assistant-link-portal" href="#" target="_blank" rel="noopener">Portal</a>
       </div>
+      <div class="assistant-links assistant-links-secondary" id="assistant-links-sections">
+        <a id="assistant-link-system" href="#" target="_blank" rel="noopener">System prompt</a>
+        <a id="assistant-link-runtime" href="#" target="_blank" rel="noopener">Runtime</a>
+        <a id="assistant-link-consent" href="#" target="_blank" rel="noopener">Consent</a>
+        <a id="assistant-link-mandatory" href="#" target="_blank" rel="noopener">Bloque obligatorio</a>
+        <a id="assistant-link-users" href="#" target="_blank" rel="noopener">Usuarios</a>
+      </div>
       <div class="assistant-messages" id="assistant-messages"></div>
       <div class="assistant-input">
         <textarea id="assistant-input" placeholder="Preguntá por candidatos, entrevistas, portales, configuración..."></textarea>
@@ -7657,6 +7705,11 @@ app.get("/admin/ui", (req, res) => {
     const assistantLinkCandidatesEl = document.getElementById('assistant-link-candidates');
     const assistantLinkInterviewsEl = document.getElementById('assistant-link-interviews');
     const assistantLinkPortalEl = document.getElementById('assistant-link-portal');
+    const assistantLinkSystemEl = document.getElementById('assistant-link-system');
+    const assistantLinkRuntimeEl = document.getElementById('assistant-link-runtime');
+    const assistantLinkConsentEl = document.getElementById('assistant-link-consent');
+    const assistantLinkMandatoryEl = document.getElementById('assistant-link-mandatory');
+    const assistantLinkUsersEl = document.getElementById('assistant-link-users');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -7882,6 +7935,11 @@ app.get("/admin/ui", (req, res) => {
       if (assistantLinkCandidatesEl) assistantLinkCandidatesEl.href = base + '/admin/ui?view=candidates';
       if (assistantLinkInterviewsEl) assistantLinkInterviewsEl.href = base + '/admin/ui?view=interviews';
       if (assistantLinkPortalEl) assistantLinkPortalEl.href = base + '/admin/ui?view=portal';
+      if (assistantLinkSystemEl) assistantLinkSystemEl.href = base + '/admin/ui?view=general#section-system-prompt';
+      if (assistantLinkRuntimeEl) assistantLinkRuntimeEl.href = base + '/admin/ui?view=general#section-runtime';
+      if (assistantLinkConsentEl) assistantLinkConsentEl.href = base + '/admin/ui?view=general#section-consent';
+      if (assistantLinkMandatoryEl) assistantLinkMandatoryEl.href = base + '/admin/ui?view=general#section-mandatory';
+      if (assistantLinkUsersEl) assistantLinkUsersEl.href = base + '/admin/ui?view=general#users-panel';
     }
 
     function escapeHtml(text) {
