@@ -7893,12 +7893,17 @@ app.get("/admin/ui", (req, res) => {
         .replace(/'/g, '&#39;');
     }
 
+    const assistantBoldRegex = new RegExp('\\\\*\\\\*(.+?)\\\\*\\\\*', 'g');
+    const assistantCodeRegex = new RegExp('\\\\x60([^\\\\x60]+)\\\\x60', 'g');
+    const assistantLinkRegex = new RegExp('(https?:\\\\/\\\\/[^\\\\s<]+)', 'g');
+    const assistantNewlineRegex = new RegExp('\\\\n', 'g');
+
     function assistantFormatMessage(text) {
       let safe = escapeHtml(text || '');
-      safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-      safe = safe.replace(/\x60([^\x60]+)\x60/g, '<code>$1</code>');
-      safe = safe.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-      safe = safe.replace(/\n/g, '<br />');
+      safe = safe.replace(assistantBoldRegex, '<strong>$1</strong>');
+      safe = safe.replace(assistantCodeRegex, '<code>$1</code>');
+      safe = safe.replace(assistantLinkRegex, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+      safe = safe.replace(assistantNewlineRegex, '<br />');
       return safe;
     }
 
