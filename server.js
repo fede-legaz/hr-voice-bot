@@ -206,14 +206,21 @@ const DEFAULT_RECORDING_DECLINE_EN = "Understood, no problem. Thanks for your ti
 const DEFAULT_ASSISTANT_KB_TEMPLATE = `
 HRBOT · Mini cerebro (base de conocimiento)
 
+Flujo general (simple)
+1) Portal recibe postulaciones (apply) y guarda CV/foto + respuestas.
+2) Candidates muestra CVs guardados (manual o portal).
+3) Desde Candidates se llama al candidato.
+4) Interviews guarda el resultado: score, resumen, audio, recomendación y estado.
+5) WhatsApp envía resumen + CV + audio desde Interviews.
+
 Qué es cada cosa
-- System Prompt: reglas base que guían toda la entrevista. Define tono, secuencia y límites.
-- Bloque obligatorio: textos que se agregan automáticamente cuando aplica inglés requerido o cierre tarde.
-- Runtime: bloque que se inyecta en cada llamada (reglas operativas del momento).
-- Grabación/Consentimiento: frases que pide permiso para grabar antes de iniciar la entrevista.
-- Candidates (CVs): base de CVs cargados (manual o portal). Desde acá se llama y se guarda.
+- System Prompt: reglas base que guían toda la entrevista (tono, orden, límites).
+- Bloque obligatorio: textos automáticos si aplica inglés requerido o cierre tarde.
+- Runtime: instrucciones del momento que se inyectan a cada llamada.
+- Grabación/Consentimiento: frases para pedir permiso de grabación antes de empezar.
+- Candidates (CVs): base de CVs; desde acá se llama o se guarda.
 - Interviews: resultados de llamadas (score, resumen, audio, recomendación).
-- Portal: páginas públicas de aplicación + postulaciones recibidas.
+- Portal: páginas públicas y postulaciones recibidas.
 
 Dónde se cambia
 - System Prompt / Bloque obligatorio / Runtime / Consentimiento: Admin > General.
@@ -227,7 +234,10 @@ Links útiles
 - Editor Portal: {{portal_url}}
 - Página pública de apply: {{apply_url}}
 
-Consejo: si preguntan “qué cambió”, mirá el historial del System Prompt (templates/versiones).
+Cómo responder preguntas
+- Si preguntan “qué es X”, explicá la definición y dónde se edita.
+- Si preguntan “qué pasó con X”, buscá en Interviews/Candidates/Portal por nombre o teléfono.
+- Si no hay datos, decí que no hay registros visibles con ese nombre/teléfono.
 `.trim();
 const HUNG_UP_THRESHOLD_SEC = 20;
 const OUTCOME_LABELS = {
@@ -968,7 +978,8 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
   if (scopes.wantsCounts || scopes.wantsCalls || scopes.wantsCvs || scopes.wantsPortal || scopes.wantsUsers) {
     context.counts = await assistantFetchCounts({ allowedBrands });
   }
-  if (scopes.wantsCvs) {
+  const hasSearch = !!(search.q || search.phone);
+  if (scopes.wantsCvs || hasSearch) {
     context.candidates = await assistantFetchCandidates({
       allowedBrands,
       brandFilters,
@@ -976,7 +987,7 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
       qParam: search.q || ""
     });
   }
-  if (scopes.wantsCalls) {
+  if (scopes.wantsCalls || hasSearch) {
     context.interviews = await assistantFetchCalls({
       allowedBrands,
       brandFilters,
@@ -984,7 +995,7 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
       qParam: search.q || ""
     });
   }
-  if (scopes.wantsPortal) {
+  if (scopes.wantsPortal || hasSearch) {
     context.portal_pages = await assistantFetchPortalPages({ allowedBrands, brandFilters, limit: ASSISTANT_MAX_PORTAL_PAGES });
     context.portal_apps = await assistantFetchPortalApps({
       allowedBrands,
@@ -3232,6 +3243,7 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
       "If DATA.search.q is present, look for matches in interviews/candidates/portal_apps and answer based on them.",
       "Use DATA.kb to explain what things are and how to change them. Provide links from DATA.links when relevant.",
       "If asked about 'qué cambió' del system prompt, use DATA.config.prompt_latest (if present).",
+      "When you include a link, output the raw URL so it becomes clickable in the UI.",
       "Keep replies concise and actionable.",
       "Respond in the same language as the user's question (Spanish if unclear)."
     ].join(" ");
@@ -4551,8 +4563,8 @@ app.get("/admin/ui", (req, res) => {
       position: absolute;
       bottom: 70px;
       right: 0;
-      width: min(380px, 92vw);
-      max-height: 70vh;
+      width: min(420px, 94vw);
+      max-height: 74vh;
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 18px;
@@ -4569,13 +4581,13 @@ app.get("/admin/ui", (req, res) => {
       gap: 8px;
       padding: 12px 14px;
       border-bottom: 1px solid var(--border);
-      background: #f7f2e8;
+      background: linear-gradient(135deg, rgba(27, 122, 140, 0.15), rgba(244, 162, 97, 0.18));
     }
     .assistant-title { font-size: 15px; font-weight: 800; }
     .assistant-sub { font-size: 11px; color: var(--muted); }
     .assistant-actions { display: flex; gap: 6px; }
     .assistant-messages {
-      padding: 12px;
+      padding: 14px;
       overflow: auto;
       display: flex;
       flex-direction: column;
@@ -4586,9 +4598,10 @@ app.get("/admin/ui", (req, res) => {
       max-width: 90%;
       border-radius: 14px;
       padding: 10px 12px;
-      font-size: 12.5px;
+      font-size: 13px;
       line-height: 1.45;
       white-space: pre-wrap;
+      word-break: break-word;
     }
     .assistant-msg.user {
       align-self: flex-end;
@@ -4599,6 +4612,19 @@ app.get("/admin/ui", (req, res) => {
       align-self: flex-start;
       background: #fbfaf7;
       border: 1px solid var(--border);
+    }
+    .assistant-msg a {
+      color: var(--primary-dark);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .assistant-msg a:hover { text-decoration: underline; }
+    .assistant-msg code {
+      background: rgba(27, 122, 140, 0.12);
+      padding: 1px 4px;
+      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 12px;
     }
     .assistant-input {
       padding: 12px;
@@ -7757,6 +7783,24 @@ app.get("/admin/ui", (req, res) => {
       assistantStatusEl.style.color = isError ? '#a0362b' : '';
     }
 
+    function escapeHtml(text) {
+      return String(text || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function assistantFormatMessage(text) {
+      let safe = escapeHtml(text || '');
+      safe = safe.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      safe = safe.replace(/\x60([^\x60]+)\x60/g, '<code>$1</code>');
+      safe = safe.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+      safe = safe.replace(/\n/g, '<br />');
+      return safe;
+    }
+
     function assistantSetOpen(open) {
       assistantOpen = !!open;
       if (assistantPanelEl) {
@@ -7771,7 +7815,7 @@ app.get("/admin/ui", (req, res) => {
       if (!assistantMessagesEl) return;
       const msg = document.createElement('div');
       msg.className = 'assistant-msg ' + (role === 'user' ? 'user' : 'bot');
-      msg.textContent = text || '';
+      msg.innerHTML = assistantFormatMessage(text || '');
       assistantMessagesEl.appendChild(msg);
       assistantMessagesEl.scrollTop = assistantMessagesEl.scrollHeight;
     }
