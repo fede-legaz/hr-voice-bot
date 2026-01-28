@@ -1121,7 +1121,7 @@ function withEnglishRequiredQuestions(questions, needsEnglish, levelQuestion, ch
   return list;
 }
 
-function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosing, langPref, customQuestion, englishLevelQuestion, englishCheckQuestion, lateClosingQuestion }) {
+function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosing, langPref, customQuestion, customQuestionMode, englishLevelQuestion, englishCheckQuestion, lateClosingQuestion }) {
   const lines = [];
   const header = langPref === "en"
     ? "MANDATORY — do not skip these. Integrate naturally in the conversation:"
@@ -1147,9 +1147,10 @@ function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosi
     });
   }
   if (customQuestion) {
+    const ai = customQuestionMode === "ai";
     lines.push(langPref === "en"
-      ? `- Candidate custom question (ask after experience and before closing): ${customQuestion}`
-      : `- Pregunta personalizada del candidato (hacerla después de experiencia y antes del cierre): ${customQuestion}`);
+      ? `- Candidate custom question (ask after experience and before closing${ai ? "; rephrase naturally, keep meaning and language" : "; exact wording"}): ${customQuestion}`
+      : `- Pregunta personalizada del candidato (hacerla después de experiencia y antes del cierre${ai ? "; reformulá natural manteniendo sentido e idioma" : "; texto exacto"}): ${customQuestion}`);
   }
   return lines.join("\n");
 }
@@ -1358,6 +1359,7 @@ function buildInstructions(ctx) {
   const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, englishLevelQuestion, englishCheckQuestion);
   const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
   const customQuestion = (ctx.customQuestion || ctx.custom_question || "").toString().trim();
+  const customQuestionMode = (ctx.customQuestionMode || ctx.custom_question_mode || "").toString().trim() === "ai" ? "ai" : "exact";
   const promptVars = {
     name: firstName,
     first_name: firstName,
@@ -1396,6 +1398,7 @@ function buildInstructions(ctx) {
     specific_questions: specificQs.map(q => `- ${q}`).join("\n"),
     specific_questions_inline: specificQs.join("; "),
     custom_question: customQuestion,
+    custom_question_mode: customQuestionMode,
     runtime_instructions: metaCfg.runtime_instructions || ""
   };
   const rendered = renderPromptTemplate(promptTemplate, promptVars).trim();
@@ -1406,6 +1409,7 @@ function buildInstructions(ctx) {
     needsLateClosing,
     langPref,
     customQuestion,
+    customQuestionMode,
     englishLevelQuestion,
     englishCheckQuestion,
     lateClosingQuestion
@@ -1476,6 +1480,7 @@ function buildCallFromPayload(payload, extra = {}) {
     cvText: payload?.cv_text || payload?.cvText || payload?.cv_summary || "",
     cvId: payload?.cv_id || payload?.cvId || "",
     customQuestion: payload?.custom_question || payload?.customQuestion || "",
+    customQuestionMode: (payload?.custom_question_mode || payload?.customQuestionMode || "").toString().trim() === "ai" ? "ai" : "exact",
     resumeUrl,
     recordingStarted: false,
     transcriptText: "",
@@ -1883,6 +1888,9 @@ function hydrateCvStore(entries) {
     if (!entry.brandKey && entry.brand) entry.brandKey = brandKey(entry.brand);
     if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
     if (!entry.decision) entry.decision = "";
+    if (!entry.custom_question_mode) {
+      entry.custom_question_mode = entry.custom_question ? "exact" : "exact";
+    }
     cvStore.push(entry);
     cvStoreById.set(entry.id, entry);
   });
@@ -2397,12 +2405,14 @@ async function initDb() {
         cv_url TEXT,
         cv_photo_url TEXT,
         custom_question TEXT,
+        custom_question_mode TEXT,
         decision TEXT,
         source TEXT
       );
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question_mode TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
@@ -3685,9 +3695,12 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
       }
     }
     const entry = buildCvEntry(body);
-    if (!Object.prototype.hasOwnProperty.call(body, "custom_question")
-        && !Object.prototype.hasOwnProperty.call(body, "customQuestion")
-        && entry.id) {
+    const hasCustomQuestion = Object.prototype.hasOwnProperty.call(body, "custom_question")
+      || Object.prototype.hasOwnProperty.call(body, "customQuestion");
+    const hasCustomQuestionMode = Object.prototype.hasOwnProperty.call(body, "custom_question_mode")
+      || Object.prototype.hasOwnProperty.call(body, "customQuestionMode")
+      || Object.prototype.hasOwnProperty.call(body, "mode");
+    if (!hasCustomQuestion && entry.id) {
       let existingQuestion = "";
       const existing = cvStoreById.get(entry.id);
       if (existing && existing.custom_question) {
@@ -3700,6 +3713,20 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
         } catch {}
       }
       if (existingQuestion) entry.custom_question = existingQuestion;
+    }
+    if (!hasCustomQuestionMode && entry.id) {
+      let existingMode = "";
+      const existing = cvStoreById.get(entry.id);
+      if (existing && existing.custom_question_mode) {
+        existingMode = existing.custom_question_mode;
+      } else if (dbPool) {
+        try {
+          const resp = await dbQuery("SELECT custom_question_mode FROM cvs WHERE id = $1 LIMIT 1", [entry.id]);
+          const row = resp?.rows?.[0];
+          if (row?.custom_question_mode) existingMode = row.custom_question_mode;
+        } catch {}
+      }
+      if (existingMode) entry.custom_question_mode = existingMode;
     }
     if (!entry.cv_text) {
       return res.status(400).json({ error: "missing_cv_text" });
@@ -3750,6 +3777,8 @@ app.post("/admin/cv/question", requireWrite, async (req, res) => {
     const body = req.body || {};
     const id = (body.id || "").toString().trim();
     const question = typeof body.question === "string" ? body.question.trim() : "";
+    const modeRaw = (body.mode || body.custom_question_mode || body.customQuestionMode || "").toString().trim();
+    const mode = modeRaw === "ai" ? "ai" : "exact";
     if (!id) return res.status(400).json({ error: "missing_id" });
     const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
 
@@ -3760,7 +3789,7 @@ app.post("/admin/cv/question", requireWrite, async (req, res) => {
       if (allowedBrands.length && row.brand_key && !allowedBrands.includes(row.brand_key)) {
         return res.status(403).json({ error: "brand_not_allowed" });
       }
-      await dbQuery("UPDATE cvs SET custom_question = $1 WHERE id = $2", [question, id]);
+      await dbQuery("UPDATE cvs SET custom_question = $1, custom_question_mode = $2 WHERE id = $3", [question, mode, id]);
     }
 
     const entry = cvStoreById.get(id);
@@ -3770,9 +3799,10 @@ app.post("/admin/cv/question", requireWrite, async (req, res) => {
         return res.status(403).json({ error: "brand_not_allowed" });
       }
       entry.custom_question = question;
+      entry.custom_question_mode = mode;
       scheduleCvStoreSave();
     }
-    return res.json({ ok: true, id, question });
+    return res.json({ ok: true, id, question, mode });
   } catch (err) {
     console.error("[admin/cv] question update failed", err);
     return res.status(400).json({ error: "question_update_failed", detail: err.message });
@@ -7376,6 +7406,10 @@ app.get("/admin/ui", (req, res) => {
       </div>
       <div class="small" style="margin:6px 0 8px;">Se integra de forma natural en la llamada (no al inicio).</div>
       <textarea id="cv-question-text" placeholder="Ej: ¿Tenés disponibilidad para turnos de cierre?"></textarea>
+      <label class="inline" style="gap:8px; align-items:center; margin-top:8px;">
+        <input type="checkbox" id="cv-question-ai" />
+        <span class="small">Reformular con IA (mantiene el sentido y el idioma).</span>
+      </label>
       <div class="inline" style="justify-content:flex-end; margin-top:10px;">
         <button class="secondary" id="cv-question-clear" type="button">Limpiar</button>
         <button id="cv-question-save" type="button">Guardar</button>
@@ -7681,6 +7715,7 @@ app.get("/admin/ui", (req, res) => {
     const cvModalCloseEl = document.getElementById('cv-modal-close');
     const cvQuestionModalEl = document.getElementById('cv-question-modal');
     const cvQuestionTextEl = document.getElementById('cv-question-text');
+    const cvQuestionAiEl = document.getElementById('cv-question-ai');
     const cvQuestionSaveEl = document.getElementById('cv-question-save');
     const cvQuestionClearEl = document.getElementById('cv-question-clear');
     const cvQuestionCloseEl = document.getElementById('cv-question-close');
@@ -8777,6 +8812,7 @@ app.get("/admin/ui", (req, res) => {
       if (!cvQuestionModalEl || !cvQuestionTextEl) return;
       pendingCvQuestionId = item?.id || (Array.isArray(item?.cvIds) ? item.cvIds[0] : '') || '';
       cvQuestionTextEl.value = item?.custom_question || '';
+      if (cvQuestionAiEl) cvQuestionAiEl.checked = item?.custom_question_mode === 'ai';
       setCvQuestionStatus('');
       cvQuestionModalEl.style.display = 'flex';
     }
@@ -8790,16 +8826,19 @@ app.get("/admin/ui", (req, res) => {
     async function saveCvQuestion() {
       if (!pendingCvQuestionId) return;
       const question = (cvQuestionTextEl.value || '').trim();
+      const mode = cvQuestionAiEl && cvQuestionAiEl.checked ? 'ai' : 'exact';
       setCvQuestionStatus('Guardando...');
       try {
         const resp = await fetch('/admin/cv/question', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
-          body: JSON.stringify({ id: pendingCvQuestionId, question })
+          body: JSON.stringify({ id: pendingCvQuestionId, question, mode })
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.error || 'save_failed');
-        lastCvRaw = lastCvRaw.map((c) => c.id === pendingCvQuestionId ? { ...c, custom_question: question } : c);
+        lastCvRaw = lastCvRaw.map((c) => c.id === pendingCvQuestionId
+          ? { ...c, custom_question: question, custom_question_mode: mode }
+          : c);
         setCvQuestionStatus('Guardado.');
         renderCvList(lastCvRaw);
       } catch (err) {
@@ -10918,7 +10957,8 @@ app.get("/admin/ui", (req, res) => {
             cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
             cv_text: item.cv_text || '',
             cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
-            custom_question: item.custom_question || ''
+            custom_question: item.custom_question || '',
+            custom_question_mode: item.custom_question_mode || 'exact'
           });
         };
         cvActions.appendChild(callBtn);
@@ -13133,6 +13173,7 @@ app.get("/admin/ui", (req, res) => {
           entry = {
             ...item,
             custom_question: item.custom_question || "",
+            custom_question_mode: item.custom_question_mode || "exact",
             cvIds: [],
             call_count: Number(item.call_count || 0),
             active_call: !!item.active_call,
@@ -13156,6 +13197,7 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
           entry.custom_question = item.custom_question || entry.custom_question || "";
+          entry.custom_question_mode = item.custom_question_mode || entry.custom_question_mode || "exact";
           entry.decision = item.decision || entry.decision || "";
           entry.created_at = item.created_at;
           entry.source = item.source;
@@ -13165,6 +13207,9 @@ app.get("/admin/ui", (req, res) => {
         }
         if (!entry.custom_question && item.custom_question) {
           entry.custom_question = item.custom_question;
+        }
+        if (!entry.custom_question_mode && item.custom_question_mode) {
+          entry.custom_question_mode = item.custom_question_mode;
         }
         if (item.active_call) {
           entry.active_call = true;
@@ -13784,7 +13829,8 @@ app.get("/admin/ui", (req, res) => {
               cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
               cv_text: item.cv_text || '',
               cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
-              custom_question: item.custom_question || ''
+              custom_question: item.custom_question || '',
+              custom_question_mode: item.custom_question_mode || 'exact'
             });
           };
           actionWrap.appendChild(callBtn);
@@ -14435,6 +14481,7 @@ app.get("/admin/ui", (req, res) => {
     if (cvQuestionCloseEl) cvQuestionCloseEl.addEventListener('click', closeCvQuestionModal);
     if (cvQuestionClearEl) cvQuestionClearEl.addEventListener('click', () => {
       if (cvQuestionTextEl) cvQuestionTextEl.value = '';
+      if (cvQuestionAiEl) cvQuestionAiEl.checked = false;
     });
     if (cvQuestionSaveEl) cvQuestionSaveEl.addEventListener('click', saveCvQuestion);
     if (cvQuestionModalEl) {
@@ -14736,6 +14783,7 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
       { name: "cv_id", value: payload.cv_id },
       { name: "resume_url", value: payload.resume_url },
       { name: "custom_question", value: payload.custom_question || payload.customQuestion },
+      { name: "custom_question_mode", value: payload.custom_question_mode || payload.customQuestionMode },
       { name: "lang", value: lang }
     ]
       .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
@@ -14920,8 +14968,9 @@ app.post("/call", requireWrite, async (req, res) => {
       cv_id: cvIdRaw = "",
       resume_url = "",
       from = TWILIO_VOICE_FROM
-    } = body;
-    let customQuestion = (body.custom_question || body.customQuestion || "").toString().trim();
+  } = body;
+  let customQuestion = (body.custom_question || body.customQuestion || "").toString().trim();
+  let customQuestionMode = (body.custom_question_mode || body.customQuestionMode || "").toString().trim() === "ai" ? "ai" : "exact";
 
     const cvSummary = (cv_summary || cv_text || "").trim();
     let cvId = cvIdRaw || "";
@@ -14961,11 +15010,13 @@ app.post("/call", requireWrite, async (req, res) => {
       const fromMem = cvStoreById.get(cvId);
       if (fromMem?.custom_question) {
         customQuestion = fromMem.custom_question;
+        if (fromMem.custom_question_mode) customQuestionMode = fromMem.custom_question_mode;
       } else if (dbPool) {
         try {
-          const resp = await dbQuery("SELECT custom_question FROM cvs WHERE id = $1 LIMIT 1", [cvId]);
+          const resp = await dbQuery("SELECT custom_question, custom_question_mode FROM cvs WHERE id = $1 LIMIT 1", [cvId]);
           const row = resp?.rows?.[0];
           if (row?.custom_question) customQuestion = row.custom_question;
+          if (row?.custom_question_mode) customQuestionMode = row.custom_question_mode;
         } catch {}
       }
     }
@@ -14979,7 +15030,8 @@ app.post("/call", requireWrite, async (req, res) => {
         phone: toNorm,
         cv_text: cv_text || cvSummary,
         resume_url,
-        custom_question: customQuestion
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
       });
       recordCvEntry(cvEntry);
     }
@@ -14991,7 +15043,8 @@ app.post("/call", requireWrite, async (req, res) => {
         phone: toNorm,
         cv_text: cv_text || cvSummary,
         resume_url,
-        custom_question: customQuestion
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
       });
       recordCvEntry(cvEntry);
       cvId = cvEntry.id;
@@ -15010,7 +15063,8 @@ app.post("/call", requireWrite, async (req, res) => {
         cv_summary: cvSummary,
         cv_id: cvId,
         resume_url,
-        custom_question: customQuestion
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
       },
       expiresAt: Date.now() + CALL_TTL_MS
     });
@@ -15028,7 +15082,8 @@ app.post("/call", requireWrite, async (req, res) => {
         cv_summary: cvSummary,
         cv_id: cvId,
         resume_url,
-        custom_question: customQuestion
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
       },
       expiresAt: Date.now() + CALL_TTL_MS
     });
@@ -15069,7 +15124,8 @@ app.post("/call", requireWrite, async (req, res) => {
           cv_summary: cvSummary,
           cv_id: cvId,
           resume_url,
-          custom_question: customQuestion
+          custom_question: customQuestion,
+          custom_question_mode: customQuestionMode
         },
         { callSid: data.sid, to: toNorm }
       );
@@ -15127,6 +15183,7 @@ wss.on("connection", (twilioWs, req) => {
     cvText: cvSummary,
     cvId,
     customQuestion: "",
+    customQuestionMode: "exact",
     resumeUrl,
     from: null,
     recordingStarted: false,
@@ -15349,9 +15406,14 @@ DECÍ ESTO Y CALLATE:
       if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
         const q = String(call.customQuestion || "").trim();
         if (q) {
+          const aiMode = call.customQuestionMode === "ai";
           const forceLine = call.lang === "en"
-            ? `Ask this question now (exact wording) and wait for the answer: "${q}"`
-            : `Preguntá ahora esta pregunta (texto exacto) y esperá la respuesta: "${q}"`;
+            ? (aiMode
+              ? `Ask this question now, rephrased naturally but with the same meaning and language, and wait for the answer: "${q}"`
+              : `Ask this question now (exact wording) and wait for the answer: "${q}"`)
+            : (aiMode
+              ? `Preguntá ahora esta pregunta reformulándola natural, manteniendo sentido e idioma, y esperá la respuesta: "${q}"`
+              : `Preguntá ahora esta pregunta (texto exacto) y esperá la respuesta: "${q}"`);
           openaiWs.send(JSON.stringify({
             type: "conversation.item.create",
             item: {
@@ -15413,6 +15475,7 @@ DECÍ ESTO Y CALLATE:
         cvId = sp.cv_id || cvId;
         resumeUrl = sp.resume_url || resumeUrl;
         call.customQuestion = sp.custom_question || sp.customQuestion || call.customQuestion || "";
+        call.customQuestionMode = (sp.custom_question_mode || sp.customQuestionMode || call.customQuestionMode || "").toString().trim() === "ai" ? "ai" : "exact";
         call.customQuestionInjected = false;
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
@@ -15464,6 +15527,7 @@ DECÍ ESTO Y CALLATE:
           if (!call.outcome_detail) call.outcome_detail = tracked.outcome_detail || "";
           if (!call.startedAt && tracked.startedAt) call.startedAt = tracked.startedAt;
           if (!call.customQuestion && tracked.customQuestion) call.customQuestion = tracked.customQuestion;
+          if (tracked.customQuestionMode) call.customQuestionMode = tracked.customQuestionMode;
           if (tracked.expiresAt) call.expiresAt = Math.max(call.expiresAt || 0, tracked.expiresAt);
         }
         if (!call.callStatus) call.callStatus = "in-progress";
@@ -15837,6 +15901,8 @@ function buildCvEntry(payload = {}) {
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
   const customQuestion = (payload.custom_question || payload.customQuestion || "").toString().trim();
+  const customQuestionModeRaw = (payload.custom_question_mode || payload.customQuestionMode || "").toString().trim();
+  const customQuestionMode = customQuestionModeRaw === "ai" ? "ai" : "exact";
   const decision = (payload.decision || payload.status || "").toString().trim();
   return {
     id,
@@ -15852,6 +15918,7 @@ function buildCvEntry(payload = {}) {
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
     custom_question: customQuestion,
+    custom_question_mode: customQuestionMode,
     decision,
     source
   };
@@ -15864,6 +15931,9 @@ function recordCvEntry(entry) {
     const next = { ...entry };
     if (!next.custom_question && existing.custom_question) {
       next.custom_question = existing.custom_question;
+    }
+    if (!next.custom_question_mode && existing.custom_question_mode) {
+      next.custom_question_mode = existing.custom_question_mode;
     }
     Object.assign(existing, next);
     scheduleCvStoreSave();
@@ -15889,9 +15959,9 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, custom_question, decision, source
+      cv_text, cv_url, cv_photo_url, custom_question, custom_question_mode, decision, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -15904,6 +15974,7 @@ async function upsertCvDb(entry) {
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
       custom_question = EXCLUDED.custom_question,
+      custom_question_mode = EXCLUDED.custom_question_mode,
       decision = EXCLUDED.decision,
       source = EXCLUDED.source
   `;
@@ -15920,6 +15991,7 @@ async function upsertCvDb(entry) {
     entry.cv_url || "",
     entry.cv_photo_url || "",
     entry.custom_question || "",
+    entry.custom_question_mode || "exact",
     entry.decision || "",
     entry.source || ""
   ];
@@ -16308,7 +16380,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.custom_question, c.decision, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.custom_question, c.custom_question_mode, c.decision, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -16342,6 +16414,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
       custom_question: row.custom_question || "",
+      custom_question_mode: row.custom_question_mode || "exact",
       decision: row.decision || "",
       source: row.source || "",
       call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
