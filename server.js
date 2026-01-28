@@ -7405,6 +7405,12 @@ app.get("/admin/ui", (req, res) => {
         <button class="secondary" id="cv-question-close" type="button">Cerrar</button>
       </div>
       <div class="small" style="margin:6px 0 8px;">Se integra de forma natural en la llamada (no al inicio).</div>
+      <div class="inline" style="justify-content:flex-start; gap:8px; margin-bottom:6px;">
+        <select id="cv-question-preset">
+          <option value="">Pregunta preescrita…</option>
+        </select>
+        <button class="secondary btn-compact" id="cv-question-apply" type="button">Usar</button>
+      </div>
       <textarea id="cv-question-text" placeholder="Ej: ¿Tenés disponibilidad para turnos de cierre?"></textarea>
       <label class="inline" style="gap:8px; align-items:center; margin-top:8px;">
         <input type="checkbox" id="cv-question-ai" />
@@ -7714,6 +7720,8 @@ app.get("/admin/ui", (req, res) => {
     const cvModalTextEl = document.getElementById('cv-modal-text');
     const cvModalCloseEl = document.getElementById('cv-modal-close');
     const cvQuestionModalEl = document.getElementById('cv-question-modal');
+    const cvQuestionPresetEl = document.getElementById('cv-question-preset');
+    const cvQuestionApplyEl = document.getElementById('cv-question-apply');
     const cvQuestionTextEl = document.getElementById('cv-question-text');
     const cvQuestionAiEl = document.getElementById('cv-question-ai');
     const cvQuestionSaveEl = document.getElementById('cv-question-save');
@@ -7829,6 +7837,32 @@ app.get("/admin/ui", (req, res) => {
     const OCR_MAX_PAGES = 3;
     const OCR_MAX_DIM = 1700;
     const OCR_JPEG_QUALITY = 0.82;
+    const CUSTOM_QUESTION_PRESETS = [
+      {
+        label: 'Disponibilidad turno noche / cierre',
+        text: 'En caso de ser requerido, ¿podés trabajar el turno noche hasta la 1 o 2 de la madrugada?'
+      },
+      {
+        label: 'Movilidad / cómo llega',
+        text: '¿Tenés movilidad propia o cómo te movilizás para llegar al local?'
+      },
+      {
+        label: 'Prueba laboral',
+        text: 'Si te invitamos a una prueba, ¿cuándo podrías venir?'
+      },
+      {
+        label: 'Experiencia específica del rol',
+        text: '¿Qué fue lo más importante que aprendiste en tu último trabajo relacionado a este puesto?'
+      },
+      {
+        label: 'Disponibilidad fines de semana',
+        text: '¿Tenés disponibilidad para trabajar fines de semana?'
+      },
+      {
+        label: 'Disponibilidad full time / part time',
+        text: '¿Buscás full time, part time o algo flexible?'
+      }
+    ];
     const defaultSystemPrompt = ${JSON.stringify(DEFAULT_SYSTEM_PROMPT_TEMPLATE)};
     const defaultEnglishLevelQuestionEs = ${JSON.stringify(ENGLISH_LEVEL_QUESTION)};
     const defaultEnglishLevelQuestionEn = ${JSON.stringify(ENGLISH_LEVEL_QUESTION_EN)};
@@ -8813,6 +8847,7 @@ app.get("/admin/ui", (req, res) => {
       pendingCvQuestionId = item?.id || (Array.isArray(item?.cvIds) ? item.cvIds[0] : '') || '';
       cvQuestionTextEl.value = item?.custom_question || '';
       if (cvQuestionAiEl) cvQuestionAiEl.checked = item?.custom_question_mode === 'ai';
+      if (cvQuestionPresetEl) cvQuestionPresetEl.value = '';
       setCvQuestionStatus('');
       cvQuestionModalEl.style.display = 'flex';
     }
@@ -14483,6 +14518,29 @@ app.get("/admin/ui", (req, res) => {
       if (cvQuestionTextEl) cvQuestionTextEl.value = '';
       if (cvQuestionAiEl) cvQuestionAiEl.checked = false;
     });
+    if (cvQuestionPresetEl) {
+      cvQuestionPresetEl.innerHTML = '<option value="">Pregunta preescrita…</option>';
+      CUSTOM_QUESTION_PRESETS.forEach((preset, index) => {
+        const opt = document.createElement('option');
+        opt.value = String(index);
+        opt.textContent = preset.label;
+        cvQuestionPresetEl.appendChild(opt);
+      });
+    }
+    function applyCvQuestionPreset() {
+      if (!cvQuestionPresetEl || !cvQuestionTextEl) return;
+      const idx = Number(cvQuestionPresetEl.value);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= CUSTOM_QUESTION_PRESETS.length) return;
+      const preset = CUSTOM_QUESTION_PRESETS[idx];
+      if (!preset) return;
+      const current = (cvQuestionTextEl.value || '').trim();
+      if (current && current !== preset.text) {
+        if (!confirm('¿Reemplazar la pregunta actual por la preescrita?')) return;
+      }
+      cvQuestionTextEl.value = preset.text;
+    }
+    if (cvQuestionApplyEl) cvQuestionApplyEl.addEventListener('click', applyCvQuestionPreset);
+    if (cvQuestionPresetEl) cvQuestionPresetEl.addEventListener('change', applyCvQuestionPreset);
     if (cvQuestionSaveEl) cvQuestionSaveEl.addEventListener('click', saveCvQuestion);
     if (cvQuestionModalEl) {
       cvQuestionModalEl.addEventListener('click', (event) => {
