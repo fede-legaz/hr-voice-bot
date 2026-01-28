@@ -5480,6 +5480,34 @@ app.get("/admin/ui", (req, res) => {
               </div>
             </details>
             <details class="faq-item">
+              <summary>System Prompt, Asistente IA y Templates</summary>
+              <div class="faq-body">
+                El System Prompt define el comportamiento principal del bot. El Asistente IA edita ese prompt automáticamente
+                cuando le pedís cambios. Templates y versiones guardan snapshots del prompt para volver atrás rápido.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Bloque obligatorio (editable)</summary>
+              <div class="faq-body">
+                Es un bloque que se agrega automáticamente a cada llamada cuando corresponde (inglés requerido o cierre tarde).
+                Podés editar los textos de inglés (nivel + pregunta) y cierre tarde desde General.
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Runtime (se inyecta al ejecutar)</summary>
+              <div class="faq-body">
+                Es un bloque adicional que se agrega al final del prompt en cada llamada. Úsalo para reglas del momento
+                (por ejemplo: “preguntá si puede cubrir turnos de cierre esta semana”).
+              </div>
+            </details>
+            <details class="faq-item">
+              <summary>Grabación / Consentimiento</summary>
+              <div class="faq-body">
+                Son los textos que el bot dice antes de empezar la entrevista para pedir permiso de grabación
+                (intro, consentimiento, confirmación, rechazo y no respuesta).
+              </div>
+            </details>
+            <details class="faq-item">
               <summary>Brand (clave) y Nombre para mostrar</summary>
               <div class="faq-body">
                 Brand (clave) es el identificador interno. Se usa para matchear el local con pedidos, filtrar entrevistas y
