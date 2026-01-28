@@ -15149,6 +15149,8 @@ wss.on("connection", (twilioWs, req) => {
     responseInFlight: false,
     heardSpeech: false,
     userSpoke: false,
+    userTurns: 0,
+    customQuestionInjected: false,
     lastCommitId: null,
     transcript: [],
     incomplete: false,
@@ -15337,11 +15339,30 @@ DECÍ ESTO Y CALLATE:
       call.userSpoke = true;
       call.speechByteCount = 0;
       call.speechStartedAt = null;
+      call.userTurns = (call.userTurns || 0) + 1;
 
       const commitId = evt.item_id || null;
       if (commitId && commitId === call.lastCommitId) return;
       call.lastCommitId = commitId;
       record("turn_committed", { commitId });
+
+      if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
+        const q = String(call.customQuestion || "").trim();
+        if (q) {
+          const forceLine = call.lang === "en"
+            ? `Ask this question now (exact wording) and wait for the answer: "${q}"`
+            : `Preguntá ahora esta pregunta (texto exacto) y esperá la respuesta: "${q}"`;
+          openaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine}` }]
+            }
+          }));
+          call.customQuestionInjected = true;
+        }
+      }
 
       if (!call.responseInFlight) {
         openaiWs.send(JSON.stringify({ type: "response.create" }));
@@ -15392,6 +15413,7 @@ DECÍ ESTO Y CALLATE:
         cvId = sp.cv_id || cvId;
         resumeUrl = sp.resume_url || resumeUrl;
         call.customQuestion = sp.custom_question || sp.customQuestion || call.customQuestion || "";
+        call.customQuestionInjected = false;
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
       }
