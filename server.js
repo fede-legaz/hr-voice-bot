@@ -203,6 +203,32 @@ const DEFAULT_RECORDING_NO_RESPONSE_ES = "No te escuché, gracias por tu tiempo.
 const DEFAULT_RECORDING_NO_RESPONSE_EN = "I didn't catch that. Thanks for your time.";
 const DEFAULT_RECORDING_DECLINE_ES = "Perfecto, no hay problema. Gracias por tu tiempo. Que tengas un buen día.";
 const DEFAULT_RECORDING_DECLINE_EN = "Understood, no problem. Thanks for your time. Goodbye.";
+const DEFAULT_ASSISTANT_KB_TEMPLATE = `
+HRBOT · Mini cerebro (base de conocimiento)
+
+Qué es cada cosa
+- System Prompt: reglas base que guían toda la entrevista. Define tono, secuencia y límites.
+- Bloque obligatorio: textos que se agregan automáticamente cuando aplica inglés requerido o cierre tarde.
+- Runtime: bloque que se inyecta en cada llamada (reglas operativas del momento).
+- Grabación/Consentimiento: frases que pide permiso para grabar antes de iniciar la entrevista.
+- Candidates (CVs): base de CVs cargados (manual o portal). Desde acá se llama y se guarda.
+- Interviews: resultados de llamadas (score, resumen, audio, recomendación).
+- Portal: páginas públicas de aplicación + postulaciones recibidas.
+
+Dónde se cambia
+- System Prompt / Bloque obligatorio / Runtime / Consentimiento: Admin > General.
+- Roles, notas y preguntas por rol: Admin > General (dentro de cada local).
+- Portal (crear/editar páginas, colores, preguntas): Admin > Portal.
+- Ver entrevistas: Admin > Interviews.
+- Ver candidatos: Admin > Candidates.
+
+Links útiles
+- Panel Admin: {{admin_url}}
+- Editor Portal: {{portal_url}}
+- Página pública de apply: {{apply_url}}
+
+Consejo: si preguntan “qué cambió”, mirá el historial del System Prompt (templates/versiones).
+`.trim();
 const HUNG_UP_THRESHOLD_SEC = 20;
 const OUTCOME_LABELS = {
   NO_ANSWER: "No contestó",
@@ -431,6 +457,20 @@ function assistantReadJsonFile(filePath) {
   }
 }
 
+function assistantBuildKnowledgeBase(meta, baseUrl) {
+  const fallback = DEFAULT_ASSISTANT_KB_TEMPLATE || "";
+  const raw = typeof meta?.assistant_kb === "string" && meta.assistant_kb.trim()
+    ? meta.assistant_kb
+    : fallback;
+  const adminUrl = baseUrl ? `${baseUrl}/admin/ui` : "/admin/ui";
+  const portalUrl = baseUrl ? `${baseUrl}/admin/ui?view=portal` : "/admin/ui?view=portal";
+  const applyUrl = baseUrl ? `${baseUrl}/apply/{slug}` : "/apply/{slug}";
+  return raw
+    .replace(/\{\{admin_url\}\}/g, adminUrl)
+    .replace(/\{\{portal_url\}\}/g, portalUrl)
+    .replace(/\{\{apply_url\}\}/g, applyUrl);
+}
+
 function assistantBuildBrandIndex() {
   if (!roleConfig) return [];
   const list = [];
@@ -585,7 +625,8 @@ function assistantPickPortalPage(entry) {
     brand: entry.brand || "",
     role: entry.role || "",
     active: entry.active !== false,
-    updated_at: entry.updated_at || entry.created_at || ""
+    updated_at: entry.updated_at || entry.created_at || "",
+    public_url: PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/apply/${entry.slug || ""}` : `/apply/${entry.slug || ""}`
   };
 }
 
@@ -890,6 +931,8 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
   const search = assistantExtractSearchTerm(message || "");
   const { filters: brandFilters, denied } = assistantResolveBrandFilters(message || "", allowedBrands);
   const brandIndex = assistantBuildBrandIndex();
+  const baseUrl = PUBLIC_BASE_URL || "";
+  const meta = roleConfig?.meta || {};
   const visibleBrands = Array.isArray(allowedBrands) && allowedBrands.length
     ? brandIndex.filter((b) => allowedBrands.includes(b.key))
     : brandIndex;
@@ -902,6 +945,13 @@ async function assistantBuildContext({ message, role, allowedBrands }) {
       denied_brands: denied,
       system_prompt_visible: role === "admin"
     },
+    links: {
+      admin: baseUrl ? `${baseUrl}/admin/ui` : "/admin/ui",
+      portal_editor: baseUrl ? `${baseUrl}/admin/ui?view=portal` : "/admin/ui?view=portal",
+      apply_template: baseUrl ? `${baseUrl}/apply/{slug}` : "/apply/{slug}",
+      public_base: baseUrl || ""
+    },
+    kb: assistantBuildKnowledgeBase(meta, baseUrl),
     brands: visibleBrands.map((b) => ({
       key: b.key,
       display: b.display,
@@ -3180,6 +3230,8 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
       "If DATA.access.denied_brands has items, say you don't have access to those brands.",
       "If the user asks about system prompt and DATA.access.system_prompt_visible is false, say it's admin-only.",
       "If DATA.search.q is present, look for matches in interviews/candidates/portal_apps and answer based on them.",
+      "Use DATA.kb to explain what things are and how to change them. Provide links from DATA.links when relevant.",
+      "If asked about 'qué cambió' del system prompt, use DATA.config.prompt_latest (if present).",
       "Keep replies concise and actionable.",
       "Respond in the same language as the user's question (Spanish if unclear)."
     ].join(" ");
@@ -6297,6 +6349,15 @@ app.get("/admin/ui", (req, res) => {
             </details>
           </div>
         </div>
+        <div class="panel" style="--delay:.09s;">
+          <div class="panel-title">Asistente IA · Base de conocimiento</div>
+          <div class="panel-sub">Texto base que el asistente usa para explicar procesos, definiciones y cómo cambiar cosas.</div>
+          <textarea id="assistant-kb" placeholder="Escribí acá la guía interna del proceso."></textarea>
+          <div class="inline" style="justify-content:flex-end;">
+            <button class="secondary btn-compact" id="assistant-kb-reset" type="button">Restaurar default</button>
+          </div>
+          <div class="small">Se guarda en la base de datos y el asistente la usa al responder.</div>
+        </div>
       </section>
 
       <section id="calls-view" class="view" style="display:none;">
@@ -7388,6 +7449,8 @@ app.get("/admin/ui", (req, res) => {
     const recordingNoResponseEnEl = document.getElementById('recording-no-response-en');
     const recordingDeclineEsEl = document.getElementById('recording-decline-es');
     const recordingDeclineEnEl = document.getElementById('recording-decline-en');
+    const assistantKbEl = document.getElementById('assistant-kb');
+    const assistantKbResetEl = document.getElementById('assistant-kb-reset');
     const promptTemplateNameEl = document.getElementById('prompt-template-name');
     const promptTemplateSaveEl = document.getElementById('prompt-template-save');
     const promptTemplateSelectEl = document.getElementById('prompt-template-select');
@@ -7575,6 +7638,7 @@ app.get("/admin/ui", (req, res) => {
     const defaultRecordingNoResponseEn = ${JSON.stringify(DEFAULT_RECORDING_NO_RESPONSE_EN)};
     const defaultRecordingDeclineEs = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_ES)};
     const defaultRecordingDeclineEn = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_EN)};
+    const defaultAssistantKb = ${JSON.stringify(DEFAULT_ASSISTANT_KB_TEMPLATE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
@@ -7597,7 +7661,8 @@ app.get("/admin/ui", (req, res) => {
       recording_no_response_es: defaultRecordingNoResponseEs,
       recording_no_response_en: defaultRecordingNoResponseEn,
       recording_decline_es: defaultRecordingDeclineEs,
-      recording_decline_en: defaultRecordingDeclineEn
+      recording_decline_en: defaultRecordingDeclineEn,
+      assistant_kb: defaultAssistantKb
     };
     const OUTCOME_LABELS = {
       NO_ANSWER: "No contestó",
@@ -11275,6 +11340,11 @@ app.get("/admin/ui", (req, res) => {
       if (recordingNoResponseEnEl) recordingNoResponseEnEl.value = typeof meta.recording_no_response_en === "string" && meta.recording_no_response_en.trim() ? meta.recording_no_response_en : defaults.recording_no_response_en;
       if (recordingDeclineEsEl) recordingDeclineEsEl.value = typeof meta.recording_decline_es === "string" && meta.recording_decline_es.trim() ? meta.recording_decline_es : defaults.recording_decline_es;
       if (recordingDeclineEnEl) recordingDeclineEnEl.value = typeof meta.recording_decline_en === "string" && meta.recording_decline_en.trim() ? meta.recording_decline_en : defaults.recording_decline_en;
+      if (assistantKbEl) {
+        assistantKbEl.value = typeof meta.assistant_kb === "string" && meta.assistant_kb.trim()
+          ? meta.assistant_kb
+          : defaults.assistant_kb;
+      }
       setSystemPromptBaseline(systemPromptEl.value || '');
       if (!systemPromptUnlocked) {
         lockSystemPrompt();
@@ -11406,7 +11476,8 @@ app.get("/admin/ui", (req, res) => {
           recording_no_response_es: recordingNoResponseEsEl?.value || '',
           recording_no_response_en: recordingNoResponseEnEl?.value || '',
           recording_decline_es: recordingDeclineEsEl?.value || '',
-          recording_decline_en: recordingDeclineEnEl?.value || ''
+          recording_decline_en: recordingDeclineEnEl?.value || '',
+          assistant_kb: assistantKbEl?.value || ''
         }
       };
       getBrandCards().forEach((bCard) => {
@@ -14017,6 +14088,11 @@ app.get("/admin/ui", (req, res) => {
           assistantSendMessage();
         }
       });
+    }
+    if (assistantKbResetEl) {
+      assistantKbResetEl.onclick = () => {
+        if (assistantKbEl) assistantKbEl.value = defaults.assistant_kb || '';
+      };
     }
     let urlParams = null;
     try {
