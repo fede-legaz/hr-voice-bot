@@ -8022,6 +8022,7 @@ app.get("/admin/ui", (req, res) => {
     const resultsSwipeCountEl = document.getElementById('results-swipe-count');
     const resultsSwipePrevEl = document.getElementById('results-swipe-prev');
     const resultsSwipeNextEl = document.getElementById('results-swipe-next');
+    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
@@ -8143,7 +8144,6 @@ app.get("/admin/ui", (req, res) => {
     const defaultRecordingDeclineEs = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_ES)};
     const defaultRecordingDeclineEn = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_EN)};
     const defaultAssistantKb = ${JSON.stringify(DEFAULT_ASSISTANT_KB_TEMPLATE)};
-    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
