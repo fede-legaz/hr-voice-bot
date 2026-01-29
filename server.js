@@ -1067,6 +1067,13 @@ function normalizePhone(num) {
   return s;
 }
 
+function normalizeIso(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
 function sanitizeRole(role) {
   if (!role) return role;
   const r = String(role);
@@ -2474,6 +2481,7 @@ async function initDb() {
         cv_text TEXT,
         cv_url TEXT,
         cv_photo_url TEXT,
+        trial_at TIMESTAMPTZ,
         custom_question TEXT,
         custom_question_mode TEXT,
         decision TEXT,
@@ -2481,6 +2489,7 @@ async function initDb() {
       );
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question_mode TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
@@ -2509,6 +2518,7 @@ async function initDb() {
         availability TEXT,
         salary TEXT,
         trial TEXT,
+        trial_at TIMESTAMPTZ,
         stay_plan TEXT,
         stay_detail TEXT,
         mobility TEXT,
@@ -2526,6 +2536,7 @@ async function initDb() {
       );
     `);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_brand_key TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_role_key TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_brand ON calls (brand_key);`);
@@ -3555,6 +3566,58 @@ app.post("/admin/calls/:callId/notes", requirePermission("calls_notes"), async (
   return res.json({ ok: true, notes, alt_brand_key, alt_role_key });
 });
 
+app.post("/admin/calls/:callId/trial", requirePermission("calls_notes"), async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  const raw = (req.body?.trial_at ?? req.body?.trialAt ?? "").toString().trim();
+  const normalized = raw ? normalizeIso(raw) : "";
+  if (raw && !normalized) return res.status(400).json({ error: "invalid_trial_at" });
+  const trial_at = normalized || "";
+  const callIds = Array.isArray(req.body?.callIds) ? req.body.callIds.filter(Boolean) : [];
+  const cvIds = Array.isArray(req.body?.cvIds) ? req.body.cvIds.filter(Boolean) : [];
+  const targetIds = callIds.length ? callIds : [callId];
+  const patch = { trial_at };
+
+  for (const id of targetIds) {
+    const tracked = callsByCallSid.get(id);
+    if (tracked) Object.assign(tracked, patch);
+    for (const entry of callHistory) {
+      if (!entry) continue;
+      if (entry.callId === id || entry.callSid === id) {
+        Object.assign(entry, patch);
+      }
+    }
+  }
+  if (cvIds.length) {
+    for (const id of cvIds) {
+      const entry = cvStoreById.get(id);
+      if (entry) entry.trial_at = trial_at;
+    }
+    for (const entry of cvStore) {
+      if (entry && entry.id && cvIds.includes(entry.id)) entry.trial_at = trial_at;
+    }
+    scheduleCvStoreSave();
+  }
+  scheduleCallHistorySave();
+
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery("UPDATE calls SET trial_at = $2 WHERE call_sid = ANY($1)", [targetIds, trial_at || null]);
+      } else {
+        await dbQuery("UPDATE calls SET trial_at = $2 WHERE call_sid = $1", [callId, trial_at || null]);
+      }
+      if (cvIds.length) {
+        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = ANY($1)", [cvIds, trial_at || null]);
+      }
+    } catch (err) {
+      console.error("[admin/calls] trial update failed", err);
+      return res.status(400).json({ error: "trial_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, trial_at });
+});
+
 app.post("/admin/calls/:callId/whatsapp", requirePermission("calls_whatsapp"), async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
@@ -3929,6 +3992,46 @@ app.post("/admin/cv/question", requirePermission("cvs_write"), async (req, res) 
     console.error("[admin/cv] question update failed", err);
     return res.status(400).json({ error: "question_update_failed", detail: err.message });
   }
+});
+
+app.post("/admin/cv/:id/trial", requirePermission("cvs_write"), async (req, res) => {
+  const cvId = (req.params?.id || "").trim();
+  if (!cvId) return res.status(400).json({ error: "missing_cv_id" });
+  const raw = (req.body?.trial_at ?? req.body?.trialAt ?? "").toString().trim();
+  const normalized = raw ? normalizeIso(raw) : "";
+  if (raw && !normalized) return res.status(400).json({ error: "invalid_trial_at" });
+  const trial_at = normalized || "";
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+  const targetIds = ids.length ? ids : [cvId];
+  for (const id of targetIds) {
+    const entry = cvStoreById.get(id);
+    if (entry) entry.trial_at = trial_at;
+    for (const item of cvStore) {
+      if (item && item.id === id) item.trial_at = trial_at;
+    }
+  }
+  for (const entry of callHistory) {
+    if (!entry || !entry.cv_id) continue;
+    if (targetIds.includes(entry.cv_id)) entry.trial_at = trial_at;
+  }
+  for (const call of callsByCallSid.values()) {
+    if (!call || !call.cvId) continue;
+    if (targetIds.includes(call.cvId)) call.trial_at = trial_at;
+  }
+  scheduleCvStoreSave();
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = ANY($1)", [targetIds, trial_at || null]);
+      } else {
+        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = $1", [cvId, trial_at || null]);
+      }
+    } catch (err) {
+      console.error("[admin/cv] trial update failed", err);
+      return res.status(400).json({ error: "trial_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, trial_at });
 });
 
 app.delete("/admin/cv/:id", requirePermission("cvs_delete"), async (req, res) => {
@@ -5930,6 +6033,107 @@ app.get("/admin/ui", (req, res) => {
       background: #fff;
       border: 1px solid var(--border);
     }
+    .trial-modal-card { width: min(460px, 92vw); }
+    .trial-input {
+      font-size: 14px;
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+    .trial-chip {
+      border: 1px dashed var(--border);
+      background: #faf7f0;
+      color: var(--ink);
+      padding: 6px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .trial-chip.has-trial {
+      border-style: solid;
+      background: #e9f4f4;
+      color: #1d4040;
+    }
+    .trial-chip:disabled { opacity: 0.6; cursor: not-allowed; }
+    .calendar-panel { margin-top: 16px; }
+    .calendar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .calendar-title { font-weight: 700; }
+    .calendar-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .calendar-weekday {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      text-align: center;
+    }
+    .calendar-day {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 8px;
+      min-height: 86px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      cursor: pointer;
+    }
+    .calendar-day.inactive { opacity: 0.4; cursor: default; }
+    .calendar-day.today {
+      border-color: #6fb0b7;
+      box-shadow: 0 0 0 2px rgba(111, 176, 183, 0.2);
+    }
+    .calendar-day.selected { background: #f3fafb; }
+    .calendar-day-number { font-weight: 600; font-size: 13px; }
+    .calendar-day-count { font-size: 11px; color: var(--muted); }
+    .calendar-list {
+      margin-top: 12px;
+      display: grid;
+      gap: 8px;
+    }
+    .calendar-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+      align-items: center;
+    }
+    .calendar-item-name { font-weight: 600; }
+    .calendar-item-meta { font-size: 12px; color: var(--muted); }
+    .calendar-item-time { font-weight: 600; }
+    .toast-container {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 50;
+    }
+    .toast {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-left: 4px solid #6fb0b7;
+      box-shadow: var(--shadow);
+      padding: 12px 14px;
+      border-radius: 14px;
+      min-width: 260px;
+      font-size: 13px;
+    }
+    .toast-title { font-weight: 700; margin-bottom: 4px; }
     .user-modal-card { width: min(780px, 92vw); }
     .user-modal-head {
       display: flex;
@@ -6875,6 +7079,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
+                  <th>Prueba</th>
                   <th>Decisión</th>
                   <th>CV</th>
                   <th>Acción</th>
@@ -6969,6 +7174,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
+                  <th>Prueba</th>
                   <th>Notas</th>
                   <th>Decisión</th>
                   <th>CV</th>
@@ -6991,6 +7197,19 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="small" id="results-count" style="margin-top:8px;"></div>
+        </div>
+        <div class="panel calendar-panel" id="trial-calendar-panel" style="--delay:.08s;">
+          <div class="panel-title">Calendario de pruebas</div>
+          <div class="panel-sub">Agenda en hora Miami (ET).</div>
+          <div class="calendar-header">
+            <button class="secondary btn-compact" id="calendar-prev" type="button">‹</button>
+            <div class="calendar-title" id="calendar-month">Mes</div>
+            <button class="secondary btn-compact" id="calendar-next" type="button">›</button>
+            <button class="secondary btn-compact" id="calendar-today" type="button">Hoy</button>
+          </div>
+          <div class="calendar-grid" id="calendar-weekdays"></div>
+          <div class="calendar-grid" id="calendar-grid"></div>
+          <div class="calendar-list" id="calendar-list"></div>
         </div>
       </section>
 
@@ -7691,6 +7910,24 @@ app.get("/admin/ui", (req, res) => {
       <img id="photo-modal-img" alt="Foto del CV" />
     </div>
   </div>
+  <div id="trial-modal" class="cv-modal">
+    <div class="cv-modal-card trial-modal-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">Prueba agendada</div>
+        <button class="secondary" id="trial-modal-close" type="button">Cerrar</button>
+      </div>
+      <div class="small">Hora Miami (ET).</div>
+      <div class="row">
+        <label>Fecha y hora</label>
+        <input type="datetime-local" id="trial-datetime" class="trial-input" />
+      </div>
+      <div class="inline" style="justify-content:flex-end; gap:10px;">
+        <button class="secondary" id="trial-clear" type="button">Limpiar</button>
+        <button id="trial-save" type="button">Guardar</button>
+        <span class="small" id="trial-status"></span>
+      </div>
+    </div>
+  </div>
   <div id="assistant-widget" class="assistant-widget" style="display:none;">
     <button class="assistant-fab" id="assistant-fab" type="button" aria-label="Abrir asistente">AI</button>
     <div class="assistant-panel" id="assistant-panel" aria-live="polite">
@@ -7725,6 +7962,7 @@ app.get("/admin/ui", (req, res) => {
       <div class="assistant-footer small" id="assistant-status"></div>
     </div>
   </div>
+  <div id="toast-container" class="toast-container"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
     const appEl = document.getElementById('app');
@@ -7985,6 +8223,13 @@ app.get("/admin/ui", (req, res) => {
     const photoModalEl = document.getElementById('photo-modal');
     const photoModalImgEl = document.getElementById('photo-modal-img');
     const photoModalCloseEl = document.getElementById('photo-modal-close');
+    const trialModalEl = document.getElementById('trial-modal');
+    const trialModalCloseEl = document.getElementById('trial-modal-close');
+    const trialDatetimeEl = document.getElementById('trial-datetime');
+    const trialSaveEl = document.getElementById('trial-save');
+    const trialClearEl = document.getElementById('trial-clear');
+    const trialStatusEl = document.getElementById('trial-status');
+    const toastContainerEl = document.getElementById('toast-container');
     const assistantWidgetEl = document.getElementById('assistant-widget');
     const assistantFabEl = document.getElementById('assistant-fab');
     const assistantPanelEl = document.getElementById('assistant-panel');
@@ -8022,6 +8267,14 @@ app.get("/admin/ui", (req, res) => {
     const resultsSwipeCountEl = document.getElementById('results-swipe-count');
     const resultsSwipePrevEl = document.getElementById('results-swipe-prev');
     const resultsSwipeNextEl = document.getElementById('results-swipe-next');
+    const calendarPanelEl = document.getElementById('trial-calendar-panel');
+    const calendarMonthEl = document.getElementById('calendar-month');
+    const calendarPrevEl = document.getElementById('calendar-prev');
+    const calendarNextEl = document.getElementById('calendar-next');
+    const calendarTodayEl = document.getElementById('calendar-today');
+    const calendarGridEl = document.getElementById('calendar-grid');
+    const calendarWeekdaysEl = document.getElementById('calendar-weekdays');
+    const calendarListEl = document.getElementById('calendar-list');
     const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     let state = { config: {} };
     let loginMode = 'admin';
@@ -8068,12 +8321,17 @@ app.get("/admin/ui", (req, res) => {
     let resultsViewMode = 'table';
     let cvSwipeIndex = 0;
     let resultsSwipeIndex = 0;
+    let trialItemsCache = [];
+    let calendarMonth = null;
+    let calendarSelectedKey = '';
+    let trialReminderTimer = null;
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
     let currentCvPhotoDataUrl = '';
     let currentCvFileName = '';
     let currentCvFileType = '';
     let currentCvId = '';
+    let pendingTrialTarget = null;
     let assistantHistory = [];
     let assistantOpen = false;
     let assistantBusy = false;
@@ -9171,6 +9429,79 @@ app.get("/admin/ui", (req, res) => {
       if (!cvQuestionModalEl) return;
       cvQuestionModalEl.style.display = 'none';
       pendingCvQuestionId = '';
+    }
+
+    function openTrialModal(payload) {
+      if (!trialModalEl || !trialDatetimeEl) return;
+      pendingTrialTarget = payload || null;
+      trialDatetimeEl.value = formatMiamiInputValue(payload?.trial_at || '');
+      if (trialStatusEl) trialStatusEl.textContent = '';
+      trialModalEl.style.display = 'flex';
+    }
+
+    function closeTrialModal() {
+      if (!trialModalEl) return;
+      trialModalEl.style.display = 'none';
+      pendingTrialTarget = null;
+    }
+
+    async function saveCvTrial(ids, trial_at) {
+      if (!ids || !ids.length) throw new Error('missing_cv_id');
+      const resp = await fetch('/admin/cv/' + encodeURIComponent(ids[0]) + '/trial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ ids, trial_at })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'trial_failed');
+      applyCvPatch(ids, { trial_at: data.trial_at || '' });
+      renderCvList(lastCvRaw);
+    }
+
+    async function saveCallTrial(callIds, cvIds, trial_at) {
+      if (!callIds || !callIds.length) throw new Error('missing_call_id');
+      const resp = await fetch('/admin/calls/' + encodeURIComponent(callIds[0]) + '/trial', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ callIds, cvIds, trial_at })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || 'trial_failed');
+      applyCallPatch(callIds, { trial_at: data.trial_at || '' });
+      if (Array.isArray(cvIds) && cvIds.length) {
+        applyCvPatch(cvIds, { trial_at: data.trial_at || '' });
+      }
+      renderResults(lastResultsRaw);
+      renderCvList(lastCvRaw);
+    }
+
+    async function saveTrialFromModal(clear) {
+      if (!pendingTrialTarget) return;
+      const target = pendingTrialTarget;
+      if (trialStatusEl) trialStatusEl.textContent = 'Guardando...';
+      try {
+        let trial_at = '';
+        if (!clear && trialDatetimeEl && trialDatetimeEl.value) {
+          const utc = zonedTimeToUtc(trialDatetimeEl.value, MIAMI_TZ);
+          if (!utc || Number.isNaN(utc.getTime())) {
+            throw new Error('Fecha inválida');
+          }
+          trial_at = utc.toISOString();
+        }
+        if (target.type === 'cv') {
+          await saveCvTrial(target.ids || [], trial_at || null);
+        } else if (target.type === 'call') {
+          await saveCallTrial(target.callIds || [], target.cvIds || [], trial_at || null);
+        }
+        if (trialStatusEl) trialStatusEl.textContent = 'Guardado';
+        refreshTrialViews();
+        setTimeout(() => {
+          if (trialStatusEl) trialStatusEl.textContent = '';
+        }, 1500);
+        closeTrialModal();
+      } catch (err) {
+        if (trialStatusEl) trialStatusEl.textContent = 'Error: ' + err.message;
+      }
     }
 
     async function saveCvQuestion() {
@@ -11208,6 +11539,29 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Teléfono', item.phone || '—'));
       const info = cvStatusInfo(item);
       infoSection.appendChild(buildSwipeRow('Estado', info.statusText || '—'));
+      const trialAt = item.trial_at || '';
+      if (canPermission('cvs_write')) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'trial-chip' + (trialAt ? ' has-trial' : '');
+        btn.textContent = formatTrialLabel(trialAt);
+        btn.title = trialAt ? formatMiamiDateTime(trialAt) : 'Agendar prueba';
+        btn.onclick = (event) => {
+          event.stopPropagation();
+          const ids = Array.isArray(item.cvIds) && item.cvIds.length
+            ? item.cvIds
+            : (item.id ? [item.id] : []);
+          openTrialModal({
+            type: 'cv',
+            ids,
+            trial_at: trialAt,
+            label: item.applicant || ''
+          });
+        };
+        infoSection.appendChild(buildSwipeRow('Prueba', btn));
+      } else {
+        infoSection.appendChild(buildSwipeRow('Prueba', trialAt ? formatMiamiDateTime(trialAt) : '—'));
+      }
       card.appendChild(infoSection);
 
       const decisionSection = document.createElement('div');
@@ -11400,6 +11754,33 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
       infoSection.appendChild(buildSwipeRow('Teléfono', call.phone || '—'));
       infoSection.appendChild(buildSwipeRow('Estado', formatInterviewSummary(call)));
+      const trialAt = call.trial_at || call.cv_trial_at || '';
+      if (canPermission('calls_notes')) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'trial-chip' + (trialAt ? ' has-trial' : '');
+        btn.textContent = formatTrialLabel(trialAt);
+        btn.title = trialAt ? formatMiamiDateTime(trialAt) : 'Agendar prueba';
+        btn.onclick = (event) => {
+          event.stopPropagation();
+          const callIds = Array.isArray(call.callIds) && call.callIds.length
+            ? call.callIds
+            : (call.callId ? [call.callId] : []);
+          const cvIds = Array.isArray(call.cvIds) && call.cvIds.length
+            ? call.cvIds
+            : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
+          openTrialModal({
+            type: 'call',
+            callIds,
+            cvIds,
+            trial_at: trialAt,
+            label: call.applicant || ''
+          });
+        };
+        infoSection.appendChild(buildSwipeRow('Prueba', btn));
+      } else {
+        infoSection.appendChild(buildSwipeRow('Prueba', trialAt ? formatMiamiDateTime(trialAt) : '—'));
+      }
       if (call.notes) infoSection.appendChild(buildSwipeRow('Notas', call.notes));
       const altProfileLabel = formatAltProfile(call);
       if (altProfileLabel) infoSection.appendChild(buildSwipeRow('Perfil alternativo', altProfileLabel));
@@ -12979,9 +13360,110 @@ app.get("/admin/ui", (req, res) => {
 
     function formatDate(value) {
       if (!value) return '—';
+      const formatted = formatMiamiDateTime(value);
+      if (formatted) return formatted;
       const d = new Date(value);
       if (Number.isNaN(d.getTime())) return value;
       return d.toLocaleString();
+    }
+
+    const MIAMI_TZ = 'America/New_York';
+
+    function getZonedParts(date, timeZone) {
+      const d = date instanceof Date ? date : new Date(date);
+      if (Number.isNaN(d.getTime())) return null;
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      const parts = fmt.formatToParts(d);
+      const get = (type) => Number(parts.find((p) => p.type === type)?.value || 0);
+      return {
+        year: get('year'),
+        month: get('month'),
+        day: get('day'),
+        hour: get('hour'),
+        minute: get('minute')
+      };
+    }
+
+    function getTimeZoneOffset(date, timeZone) {
+      const parts = getZonedParts(date, timeZone);
+      if (!parts) return 0;
+      const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+      return (utcTime - date.getTime()) / 60000;
+    }
+
+    function zonedTimeToUtc(localValue, timeZone) {
+      if (!localValue) return null;
+      const [datePart, timePart] = String(localValue).split('T');
+      if (!datePart || !timePart) return null;
+      const [year, month, day] = datePart.split('-').map(Number);
+      const [hour, minute] = timePart.split(':').map(Number);
+      if (!year || !month || !day || Number.isNaN(hour) || Number.isNaN(minute)) return null;
+      const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+      const offset = getTimeZoneOffset(utcGuess, timeZone);
+      const utcMs = Date.UTC(year, month - 1, day, hour, minute, 0) - offset * 60000;
+      return new Date(utcMs);
+    }
+
+    function formatMiamiDateTime(value, { withYear = true } = {}) {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      const dateOpts = { timeZone: MIAMI_TZ, month: '2-digit', day: '2-digit' };
+      if (withYear) dateOpts.year = 'numeric';
+      const dateFmt = new Intl.DateTimeFormat('en-US', dateOpts);
+      const timeFmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: MIAMI_TZ,
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      return (dateFmt.format(d) + " " + timeFmt.format(d)).trim();
+    }
+
+    function formatMiamiTime(value) {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: MIAMI_TZ,
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(d);
+    }
+
+    function formatMiamiInputValue(value) {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      const parts = getZonedParts(d, MIAMI_TZ);
+      if (!parts) return '';
+      const pad = (num) => String(num).padStart(2, '0');
+      return parts.year + "-" + pad(parts.month) + "-" + pad(parts.day) + "T" + pad(parts.hour) + ":" + pad(parts.minute);
+    }
+
+    function miamiDateKey(value) {
+      if (!value) return '';
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return '';
+      const fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: MIAMI_TZ,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      });
+      return fmt.format(d);
+    }
+
+    function formatTrialLabel(value) {
+      if (!value) return 'Agendar';
+      return formatMiamiDateTime(value, { withYear: false });
     }
 
     function buildDateCell(value) {
@@ -12995,8 +13477,19 @@ app.get("/admin/ui", (req, res) => {
         td.textContent = value;
         return td;
       }
-      const dateText = d.toLocaleDateString();
-      const timeText = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const dateFmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: MIAMI_TZ,
+        month: 'numeric',
+        day: 'numeric',
+        year: 'numeric'
+      });
+      const timeFmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: MIAMI_TZ,
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      const dateText = dateFmt.format(d);
+      const timeText = timeFmt.format(d);
       const stack = document.createElement('div');
       stack.className = 'date-stack';
       const dateLine = document.createElement('div');
@@ -13291,6 +13784,7 @@ app.get("/admin/ui", (req, res) => {
       addDetailItem(grid, 'Inglés', englishLabel);
       addDetailItem(grid, 'Zona', call.area || '');
       addDetailItem(grid, 'Disponibilidad', call.availability || '');
+      addDetailItem(grid, 'Prueba', formatMiamiDateTime(call.trial_at || call.cv_trial_at || ''));
       addDetailItem(grid, 'Se queda en EE.UU.', stay || '');
       addDetailItem(grid, 'Expectativa salarial', call.salary || '');
 
@@ -13478,6 +13972,8 @@ app.get("/admin/ui", (req, res) => {
       push('Zona', call.area || '');
       push('Disponibilidad', call.availability || '');
       push('Expectativa salarial', call.salary || '');
+      const trialLabel = formatMiamiDateTime(call.trial_at || call.cv_trial_at || '');
+      if (trialLabel) push('Prueba', trialLabel);
       const altProfileLabel = formatAltProfile(call);
       if (altProfileLabel) {
         push('Perfil alternativo', altProfileLabel);
@@ -13590,6 +14086,7 @@ app.get("/admin/ui", (req, res) => {
         if (!entry) {
           entry = {
             ...call,
+            trial_at: call.trial_at || call.cv_trial_at || call.trialAt || "",
             attempts: 0,
             noAnswerAttempts: 0,
             callIds: [],
@@ -13611,6 +14108,7 @@ app.get("/admin/ui", (req, res) => {
         if (!entry.notes && call.notes) entry.notes = call.notes;
         if (!entry.alt_brand_key && call.alt_brand_key) entry.alt_brand_key = call.alt_brand_key;
         if (!entry.alt_role_key && call.alt_role_key) entry.alt_role_key = call.alt_role_key;
+        if (!entry.trial_at && (call.trial_at || call.cv_trial_at)) entry.trial_at = call.trial_at || call.cv_trial_at;
         const prevSource = entry.source || '';
         const prevCvUrl = entry.cv_url || '';
         const prevCvText = entry.cv_text || '';
@@ -13618,6 +14116,7 @@ app.get("/admin/ui", (req, res) => {
         const prevNotes = entry.notes || '';
         const prevAltBrand = entry.alt_brand_key || '';
         const prevAltRole = entry.alt_role_key || '';
+        const prevTrialAt = entry.trial_at || '';
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           Object.assign(entry, call);
           entry._latestAt = createdAt;
@@ -13628,6 +14127,7 @@ app.get("/admin/ui", (req, res) => {
           if (!entry.notes && prevNotes) entry.notes = prevNotes;
           if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
           if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
+          if (!entry.trial_at && prevTrialAt) entry.trial_at = prevTrialAt;
         } else {
           if (!entry.source && prevSource) entry.source = prevSource;
           if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
@@ -13636,6 +14136,7 @@ app.get("/admin/ui", (req, res) => {
           if (!entry.notes && prevNotes) entry.notes = prevNotes;
           if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
           if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
+          if (!entry.trial_at && prevTrialAt) entry.trial_at = prevTrialAt;
         }
         if (!entry.decision && call.decision) {
           entry.decision = call.decision;
@@ -13676,6 +14177,13 @@ app.get("/admin/ui", (req, res) => {
         }
         if (item.id) entry.cvIds.push(item.id);
         entry.call_count = Math.max(entry.call_count || 0, Number(item.call_count || 0));
+        if (item.trial_at) {
+          const currentTrial = entry.trial_at ? new Date(entry.trial_at).getTime() : 0;
+          const nextTrial = new Date(item.trial_at).getTime();
+          if (!currentTrial || (Number.isFinite(nextTrial) && nextTrial >= currentTrial)) {
+            entry.trial_at = item.trial_at;
+          }
+        }
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           entry._latestAt = createdAt;
           entry.brand = item.brand;
@@ -13687,6 +14195,7 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_text = item.cv_text;
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
+          if (item.trial_at && !entry.trial_at) entry.trial_at = item.trial_at;
           entry.custom_question = item.custom_question || entry.custom_question || "";
           entry.custom_question_mode = item.custom_question_mode || entry.custom_question_mode || "exact";
           entry.decision = item.decision || entry.decision || "";
@@ -13749,6 +14258,214 @@ app.get("/admin/ui", (req, res) => {
 
     function hideSummaryTooltip() {
       summaryTooltipEl.classList.remove('visible');
+    }
+
+    function showToast(title, lines = []) {
+      if (!toastContainerEl) return;
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      const t = document.createElement('div');
+      t.className = 'toast-title';
+      t.textContent = title || 'Aviso';
+      toast.appendChild(t);
+      const body = document.createElement('div');
+      const text = Array.isArray(lines) ? lines.filter(Boolean).join(' · ') : (lines || '');
+      body.textContent = text;
+      toast.appendChild(body);
+      toastContainerEl.appendChild(toast);
+      setTimeout(() => toast.remove(), 9000);
+    }
+
+    function collectTrialItems() {
+      const map = new Map();
+      (lastResults || []).forEach((call) => {
+        if (!call) return;
+        const trialAt = call.trial_at || call.cv_trial_at || '';
+        if (!trialAt) return;
+        const key = call.cv_id ? ("cv:" + call.cv_id) : ("call:" + (call.callId || ""));
+        if (!key || map.has(key)) return;
+        const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+        const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+        map.set(key, {
+          key,
+          type: 'interview',
+          name: call.applicant || 'Sin nombre',
+          brand: brandLabel,
+          role: roleLabel,
+          trial_at: trialAt,
+          dateKey: miamiDateKey(trialAt)
+        });
+      });
+      (lastCvList || []).forEach((cv) => {
+        if (!cv || !cv.trial_at) return;
+        const key = cv.id
+          ? ("cv:" + cv.id)
+          : (Array.isArray(cv.cvIds) && cv.cvIds.length ? ("cv:" + cv.cvIds[0]) : '');
+        if (!key || map.has(key)) return;
+        const brandLabel = cv.brandKey ? getBrandDisplayByKey(cv.brandKey) : (cv.brand || '');
+        const roleLabel = getRoleDisplayForBrand(cv.brandKey || cv.brand, cv.role || cv.roleKey || '');
+        map.set(key, {
+          key,
+          type: 'candidate',
+          name: cv.applicant || 'Sin nombre',
+          brand: brandLabel,
+          role: roleLabel,
+          trial_at: cv.trial_at,
+          dateKey: miamiDateKey(cv.trial_at)
+        });
+      });
+      return Array.from(map.values()).sort((a, b) => {
+        const at = a.trial_at ? new Date(a.trial_at).getTime() : 0;
+        const bt = b.trial_at ? new Date(b.trial_at).getTime() : 0;
+        return at - bt;
+      });
+    }
+
+    function renderTrialCalendar(items) {
+      if (!calendarGridEl || !calendarMonthEl) return;
+      const nowParts = getZonedParts(new Date(), MIAMI_TZ);
+      if (!calendarMonth && nowParts) {
+        calendarMonth = { year: nowParts.year, month: nowParts.month };
+      }
+      if (!calendarMonth) return;
+      const pad = (num) => String(num).padStart(2, '0');
+      const monthYearLabel = new Intl.DateTimeFormat('en-US', { timeZone: MIAMI_TZ, month: 'long', year: 'numeric' })
+        .format(new Date(Date.UTC(calendarMonth.year, calendarMonth.month - 1, 1, 12)));
+      calendarMonthEl.textContent = monthYearLabel;
+
+      if (calendarWeekdaysEl && !calendarWeekdaysEl.childElementCount) {
+        const weekdays = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+        calendarWeekdaysEl.innerHTML = '';
+        weekdays.forEach((label) => {
+          const div = document.createElement('div');
+          div.className = 'calendar-weekday';
+          div.textContent = label;
+          calendarWeekdaysEl.appendChild(div);
+        });
+      }
+
+      const itemsByDay = new Map();
+      (items || []).forEach((item) => {
+        if (!item.dateKey) return;
+        if (!itemsByDay.has(item.dateKey)) itemsByDay.set(item.dateKey, []);
+        itemsByDay.get(item.dateKey).push(item);
+      });
+
+      const firstDay = new Date(Date.UTC(calendarMonth.year, calendarMonth.month - 1, 1, 12));
+      const firstWeekdayLabel = new Intl.DateTimeFormat('en-US', { timeZone: MIAMI_TZ, weekday: 'short' }).format(firstDay);
+      const weekIndex = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(firstWeekdayLabel);
+      const daysInMonth = new Date(Date.UTC(calendarMonth.year, calendarMonth.month, 0)).getUTCDate();
+      calendarGridEl.innerHTML = '';
+      const todayKey = nowParts ? (nowParts.year + "-" + pad(nowParts.month) + "-" + pad(nowParts.day)) : '';
+      if (!calendarSelectedKey) calendarSelectedKey = todayKey;
+      for (let i = 0; i < weekIndex; i += 1) {
+        const blank = document.createElement('div');
+        blank.className = 'calendar-day inactive';
+        calendarGridEl.appendChild(blank);
+      }
+      for (let day = 1; day <= daysInMonth; day += 1) {
+        const cellDate = new Date(Date.UTC(calendarMonth.year, calendarMonth.month - 1, day, 12));
+        const dayKey = miamiDateKey(cellDate);
+        const cell = document.createElement('div');
+        cell.className = 'calendar-day';
+        if (dayKey === todayKey) cell.classList.add('today');
+        if (dayKey === calendarSelectedKey) cell.classList.add('selected');
+        const num = document.createElement('div');
+        num.className = 'calendar-day-number';
+        num.textContent = String(day);
+        cell.appendChild(num);
+        const list = itemsByDay.get(dayKey) || [];
+        if (list.length) {
+          const count = document.createElement('div');
+          count.className = 'calendar-day-count';
+          count.textContent = list.length + ' prueba' + (list.length > 1 ? 's' : '');
+          cell.appendChild(count);
+        }
+        cell.addEventListener('click', () => {
+          calendarSelectedKey = dayKey;
+          renderTrialCalendar(trialItemsCache);
+        });
+        calendarGridEl.appendChild(cell);
+      }
+      renderCalendarList(calendarSelectedKey, itemsByDay);
+    }
+
+    function renderCalendarList(dayKey, itemsByDay) {
+      if (!calendarListEl) return;
+      calendarListEl.innerHTML = '';
+      const list = (itemsByDay && dayKey) ? (itemsByDay.get(dayKey) || []) : [];
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'Sin pruebas para este día.';
+        calendarListEl.appendChild(empty);
+        return;
+      }
+      list.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'calendar-item';
+        const left = document.createElement('div');
+        const name = document.createElement('div');
+        name.className = 'calendar-item-name';
+        name.textContent = item.name || 'Sin nombre';
+        const meta = document.createElement('div');
+        meta.className = 'calendar-item-meta';
+        meta.textContent = [item.brand, item.role].filter(Boolean).join(' • ');
+        left.appendChild(name);
+        left.appendChild(meta);
+        const right = document.createElement('div');
+        right.className = 'calendar-item-time';
+        right.textContent = formatMiamiTime(item.trial_at);
+        card.appendChild(left);
+        card.appendChild(right);
+        calendarListEl.appendChild(card);
+      });
+    }
+
+    function refreshTrialViews() {
+      trialItemsCache = collectTrialItems();
+      renderTrialCalendar(trialItemsCache);
+      checkTrialReminder();
+    }
+
+    function shiftCalendarMonth(delta) {
+      const nowParts = getZonedParts(new Date(), MIAMI_TZ);
+      if (!calendarMonth && nowParts) {
+        calendarMonth = { year: nowParts.year, month: nowParts.month };
+      }
+      if (!calendarMonth) return;
+      let year = calendarMonth.year;
+      let month = calendarMonth.month + delta;
+      while (month > 12) { month -= 12; year += 1; }
+      while (month < 1) { month += 12; year -= 1; }
+      calendarMonth = { year, month };
+      renderTrialCalendar(trialItemsCache);
+    }
+
+    function checkTrialReminder() {
+      if (!trialItemsCache.length) return;
+      const parts = getZonedParts(new Date(), MIAMI_TZ);
+      if (!parts) return;
+      const pad = (num) => String(num).padStart(2, '0');
+      const key = parts.year + "-" + pad(parts.month) + "-" + pad(parts.day);
+      const last = localStorage.getItem('hrbot_trial_notify_date') || '';
+      if (last === key) return;
+      if (parts.hour < 7) return;
+      const todays = trialItemsCache.filter((item) => item.dateKey === key);
+      if (todays.length) {
+        const lines = todays.slice(0, 4).map((item) => {
+          const time = formatMiamiTime(item.trial_at);
+          return time + " · " + item.name;
+        });
+        showToast('Pruebas de hoy', lines);
+      }
+      localStorage.setItem('hrbot_trial_notify_date', key);
+    }
+
+    function startTrialReminder() {
+      if (trialReminderTimer) return;
+      trialReminderTimer = setInterval(checkTrialReminder, 60000);
+      checkTrialReminder();
     }
 
     window.addEventListener('scroll', hideSummaryTooltip, true);
@@ -13836,6 +14553,21 @@ app.get("/admin/ui", (req, res) => {
       };
       (lastResultsRaw || []).forEach(apply);
       (lastResults || []).forEach(apply);
+    }
+
+    function applyCvPatch(ids, patch) {
+      const set = new Set((ids || []).filter(Boolean));
+      if (!set.size) return;
+      const apply = (item) => {
+        if (!item) return;
+        const id = item.id || '';
+        if (id && set.has(id)) Object.assign(item, patch);
+        const groupIds = Array.isArray(item.cvIds) ? item.cvIds : [];
+        if (groupIds.some((cvId) => set.has(cvId))) Object.assign(item, patch);
+      };
+      (lastCvRaw || []).forEach(apply);
+      (lastCvList || []).forEach(apply);
+      (lastCvFiltered || []).forEach(apply);
     }
 
     async function saveInterviewNotes(call, notes, altBrandKey, altRoleKey) {
@@ -13983,6 +14715,37 @@ app.get("/admin/ui", (req, res) => {
         }
         statusTd.appendChild(statusDiv);
         tr.appendChild(statusTd);
+        const trialTd = document.createElement('td');
+        trialTd.dataset.label = 'Prueba';
+        const trialAt = call.trial_at || call.cv_trial_at || '';
+        const trialLabel = formatTrialLabel(trialAt);
+        if (canPermission('calls_notes')) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'trial-chip' + (trialAt ? ' has-trial' : '');
+          btn.textContent = trialLabel;
+          btn.title = trialAt ? formatMiamiDateTime(trialAt) : 'Agendar prueba';
+          btn.onclick = (event) => {
+            event.stopPropagation();
+            const callIds = Array.isArray(call.callIds) && call.callIds.length
+              ? call.callIds
+              : (call.callId ? [call.callId] : []);
+            const cvIds = Array.isArray(call.cvIds) && call.cvIds.length
+              ? call.cvIds
+              : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
+            openTrialModal({
+              type: 'call',
+              callIds,
+              cvIds,
+              trial_at: trialAt,
+              label: call.applicant || ''
+            });
+          };
+          trialTd.appendChild(btn);
+        } else {
+          trialTd.textContent = trialAt ? formatMiamiDateTime(trialAt) : '—';
+        }
+        tr.appendChild(trialTd);
         const notesTd = document.createElement('td');
         notesTd.dataset.label = 'Notas';
         if (call.notes) {
@@ -14113,6 +14876,7 @@ app.get("/admin/ui", (req, res) => {
         setResultsCount(shown + ' de ' + total + ' llamadas');
       }
       updateInterviewsBadge(raw);
+      refreshTrialViews();
       if (activeView === 'interviews') {
         markInterviewsSeen(raw);
       }
@@ -14267,6 +15031,32 @@ app.get("/admin/ui", (req, res) => {
         if (statusText) statusTd.title = statusText;
         statusTd.dataset.label = 'Estado';
         tr.appendChild(statusTd);
+        const trialTd = document.createElement('td');
+        trialTd.dataset.label = 'Prueba';
+        const trialLabel = formatTrialLabel(item.trial_at);
+        if (canPermission('cvs_write')) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'trial-chip' + (item.trial_at ? ' has-trial' : '');
+          btn.textContent = trialLabel;
+          btn.title = item.trial_at ? formatMiamiDateTime(item.trial_at) : 'Agendar prueba';
+          btn.onclick = (event) => {
+            event.stopPropagation();
+            const ids = Array.isArray(item.cvIds) && item.cvIds.length
+              ? item.cvIds
+              : (item.id ? [item.id] : []);
+            openTrialModal({
+              type: 'cv',
+              ids,
+              trial_at: item.trial_at || '',
+              label: item.applicant || ''
+            });
+          };
+          trialTd.appendChild(btn);
+        } else {
+          trialTd.textContent = item.trial_at ? formatMiamiDateTime(item.trial_at) : '—';
+        }
+        tr.appendChild(trialTd);
         const decisionTd = document.createElement('td');
         decisionTd.className = 'decision-cell';
         decisionTd.dataset.label = 'Decisión';
@@ -14443,6 +15233,7 @@ app.get("/admin/ui", (req, res) => {
         setCvListCount(shown + ' de ' + total + ' Candidates');
       }
       updateCandidatesBadge(raw);
+      refreshTrialViews();
       if (activeView === 'calls') {
         markCandidatesSeen(raw);
       }
@@ -14565,6 +15356,7 @@ app.get("/admin/ui", (req, res) => {
       refreshPushStatus();
       loadMe();
       startBadgePolling();
+      startTrialReminder();
       return true;
     }
 
@@ -14610,6 +15402,7 @@ app.get("/admin/ui", (req, res) => {
           refreshPushStatus();
           loadMe();
           startBadgePolling();
+          startTrialReminder();
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
         }
@@ -14636,6 +15429,7 @@ app.get("/admin/ui", (req, res) => {
         refreshPushStatus();
         loadMe();
         startBadgePolling();
+        startTrialReminder();
         if (pendingPortalView === VIEW_PORTAL) {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
@@ -14927,6 +15721,18 @@ app.get("/admin/ui", (req, res) => {
     callClearEl.onclick = clearCallForm;
     cvSaveBtnEl.onclick = saveCv;
     resultsRefreshEl.onclick = loadResults;
+    if (calendarPrevEl) calendarPrevEl.onclick = () => shiftCalendarMonth(-1);
+    if (calendarNextEl) calendarNextEl.onclick = () => shiftCalendarMonth(1);
+    if (calendarTodayEl) {
+      calendarTodayEl.onclick = () => {
+        const parts = getZonedParts(new Date(), MIAMI_TZ);
+        if (parts) {
+          calendarMonth = { year: parts.year, month: parts.month };
+          calendarSelectedKey = String(parts.year) + "-" + String(parts.month).padStart(2, '0') + "-" + String(parts.day).padStart(2, '0');
+        }
+        renderTrialCalendar(trialItemsCache);
+      };
+    }
     resultsBrandEl.addEventListener('change', () => {
       updateResultsRoleOptions();
       scheduleResultsLoad();
@@ -15063,6 +15869,14 @@ app.get("/admin/ui", (req, res) => {
     if (cvQuestionModalEl) {
       cvQuestionModalEl.addEventListener('click', (event) => {
         if (event.target === cvQuestionModalEl) closeCvQuestionModal();
+      });
+    }
+    if (trialModalCloseEl) trialModalCloseEl.addEventListener('click', closeTrialModal);
+    if (trialSaveEl) trialSaveEl.addEventListener('click', () => saveTrialFromModal(false));
+    if (trialClearEl) trialClearEl.addEventListener('click', () => saveTrialFromModal(true));
+    if (trialModalEl) {
+      trialModalEl.addEventListener('click', (event) => {
+        if (event.target === trialModalEl) closeTrialModal();
       });
     }
     if (interviewModalCloseEl) {
@@ -16403,6 +17217,7 @@ function buildCallHistoryEntry(call) {
   const createdAt = call.startedAt ? new Date(call.startedAt).toISOString() : new Date().toISOString();
   const brandDisplay = resolveBrandDisplay(call.brand || DEFAULT_BRAND);
   const roleDisplay = call.spokenRole || displayRole(call.role || DEFAULT_ROLE, call.brand || DEFAULT_BRAND);
+  const trialAt = normalizeIso(call.trial_at || call.trialAt || "");
   return {
     callId: call.callSid || null,
     brand: brandDisplay,
@@ -16423,6 +17238,7 @@ function buildCallHistoryEntry(call) {
     availability: ex.availability || "",
     salary: ex.salary_expectation || "",
     trial: ex.trial_date || ex.trial_availability || "",
+    trial_at: trialAt || "",
     stay_plan: ex.stay_plan || "",
     stay_detail: ex.stay_detail || "",
     mobility: ex.mobility || "",
@@ -16451,10 +17267,12 @@ function recordCallHistory(call) {
     const prevNotes = existing.notes || "";
     const prevAltBrand = existing.alt_brand_key || "";
     const prevAltRole = existing.alt_role_key || "";
+    const prevTrialAt = existing.trial_at || "";
     Object.assign(existing, entry);
     if (!existing.notes && prevNotes) existing.notes = prevNotes;
     if (!existing.alt_brand_key && prevAltBrand) existing.alt_brand_key = prevAltBrand;
     if (!existing.alt_role_key && prevAltRole) existing.alt_role_key = prevAltRole;
+    if ((!existing.trial_at || existing.trial_at === "") && prevTrialAt) existing.trial_at = prevTrialAt;
     scheduleCallHistorySave();
     if (dbPool) {
       upsertCallDb(existing).catch((err) => console.error("[call-history] db upsert failed", err));
@@ -16485,6 +17303,7 @@ function buildCvEntry(payload = {}) {
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
+  const trialAt = normalizeIso(payload.trial_at || payload.trialAt || "");
   const customQuestion = (payload.custom_question || payload.customQuestion || "").toString().trim();
   const customQuestionModeRaw = (payload.custom_question_mode || payload.customQuestionMode || "").toString().trim();
   const customQuestionMode = customQuestionModeRaw === "ai" ? "ai" : "exact";
@@ -16502,6 +17321,7 @@ function buildCvEntry(payload = {}) {
     cv_len: cvText.length,
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
+    trial_at: trialAt || "",
     custom_question: customQuestion,
     custom_question_mode: customQuestionMode,
     decision,
@@ -16519,6 +17339,9 @@ function recordCvEntry(entry) {
     }
     if (!next.custom_question_mode && existing.custom_question_mode) {
       next.custom_question_mode = existing.custom_question_mode;
+    }
+    if ((next.trial_at === undefined || next.trial_at === "") && existing.trial_at) {
+      next.trial_at = existing.trial_at;
     }
     Object.assign(existing, next);
     scheduleCvStoreSave();
@@ -16544,9 +17367,9 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, custom_question, custom_question_mode, decision, source
+      cv_text, cv_url, cv_photo_url, trial_at, custom_question, custom_question_mode, decision, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -16558,6 +17381,7 @@ async function upsertCvDb(entry) {
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
+      trial_at = EXCLUDED.trial_at,
       custom_question = EXCLUDED.custom_question,
       custom_question_mode = EXCLUDED.custom_question_mode,
       decision = EXCLUDED.decision,
@@ -16575,6 +17399,7 @@ async function upsertCvDb(entry) {
     entry.cv_text || "",
     entry.cv_url || "",
     entry.cv_photo_url || "",
+    entry.trial_at === undefined || entry.trial_at === "" ? null : entry.trial_at,
     entry.custom_question || "",
     entry.custom_question_mode || "exact",
     entry.decision || "",
@@ -16597,15 +17422,15 @@ async function upsertCallDb(entry) {
     INSERT INTO calls (
       call_sid, created_at, brand, brand_key, role, role_key, applicant, phone,
       score, recommendation, summary, warmth, fluency, english, english_detail,
-      experience, area, availability, salary, trial, stay_plan, stay_detail,
+      experience, area, availability, salary, trial, trial_at, stay_plan, stay_detail,
       mobility, outcome, outcome_detail, duration_sec, audio_url,
       english_required, cv_id, cv_text, cv_url, notes, alt_brand_key, alt_role_key
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
       $9,$10,$11,$12,$13,$14,$15,
-      $16,$17,$18,$19,$20,$21,$22,
-      $23,$24,$25,$26,$27,
-      $28,$29,$30,$31,$32,$33,$34
+      $16,$17,$18,$19,$20,$21,$22,$23,
+      $24,$25,$26,$27,$28,
+      $29,$30,$31,$32,$33,$34,$35
     )
     ON CONFLICT (call_sid) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -16626,6 +17451,7 @@ async function upsertCallDb(entry) {
       availability = EXCLUDED.availability,
       salary = EXCLUDED.salary,
       trial = EXCLUDED.trial,
+      trial_at = COALESCE(EXCLUDED.trial_at, calls.trial_at),
       stay_plan = EXCLUDED.stay_plan,
       stay_detail = EXCLUDED.stay_detail,
       mobility = EXCLUDED.mobility,
@@ -16662,6 +17488,7 @@ async function upsertCallDb(entry) {
     entry.availability || "",
     entry.salary || "",
     entry.trial || "",
+    entry.trial_at === undefined || entry.trial_at === "" ? null : entry.trial_at,
     entry.stay_plan || "",
     entry.stay_detail || "",
     entry.mobility || "",
@@ -16764,6 +17591,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.availability,
       c.salary,
       c.trial,
+      c.trial_at,
       c.stay_plan,
       c.stay_detail,
       c.mobility,
@@ -16775,6 +17603,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      cv.trial_at AS cv_trial_at,
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
@@ -16814,6 +17643,8 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       availability: row.availability || "",
       salary: row.salary || "",
       trial: row.trial || "",
+      trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+      cv_trial_at: row.cv_trial_at ? new Date(row.cv_trial_at).toISOString() : "",
       stay_plan: row.stay_plan || "",
       stay_detail: row.stay_detail || "",
       mobility: row.mobility || "",
@@ -16860,6 +17691,7 @@ async function fetchCallById(callId) {
       c.availability,
       c.salary,
       c.trial,
+      c.trial_at,
       c.stay_plan,
       c.stay_detail,
       c.mobility,
@@ -16871,6 +17703,7 @@ async function fetchCallById(callId) {
       c.cv_id,
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      cv.trial_at AS cv_trial_at,
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
@@ -16908,6 +17741,8 @@ async function fetchCallById(callId) {
     availability: row.availability || "",
     salary: row.salary || "",
     trial: row.trial || "",
+    trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+    cv_trial_at: row.cv_trial_at ? new Date(row.cv_trial_at).toISOString() : "",
     stay_plan: row.stay_plan || "",
     stay_detail: row.stay_detail || "",
     mobility: row.mobility || "",
@@ -16990,7 +17825,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.custom_question, c.custom_question_mode, c.decision, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.trial_at, c.custom_question, c.custom_question_mode, c.decision, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -17023,6 +17858,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
+      trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
       custom_question: row.custom_question || "",
       custom_question_mode: row.custom_question_mode || "exact",
       decision: row.decision || "",
