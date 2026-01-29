@@ -1074,6 +1074,70 @@ function normalizeIso(value) {
   return d.toISOString();
 }
 
+const MIAMI_TIMEZONE = "America/New_York";
+
+function getZonedPartsServer(date, timeZone) {
+  const d = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(d.getTime())) return null;
+  const fmt = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  });
+  const parts = fmt.formatToParts(d);
+  const get = (type) => Number(parts.find((p) => p.type === type)?.value || 0);
+  return {
+    year: get("year"),
+    month: get("month"),
+    day: get("day"),
+    hour: get("hour"),
+    minute: get("minute")
+  };
+}
+
+function getTimeZoneOffsetMinutesServer(date, timeZone) {
+  const parts = getZonedPartsServer(date, timeZone);
+  if (!parts) return 0;
+  const utcTime = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+  return (utcTime - date.getTime()) / 60000;
+}
+
+function zonedTimeToUtcServer({ year, month, day, hour, minute }, timeZone) {
+  const utcGuess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  const offset = getTimeZoneOffsetMinutesServer(utcGuess, timeZone);
+  const utcMs = Date.UTC(year, month - 1, day, hour, minute, 0) - offset * 60000;
+  return new Date(utcMs);
+}
+
+function addDaysToLocalDate({ year, month, day }, days) {
+  const base = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  const target = new Date(base.getTime() + days * 86400000);
+  return { year: target.getUTCFullYear(), month: target.getUTCMonth() + 1, day: target.getUTCDate() };
+}
+
+function computeFollowUpAt(trialAtIso, daysAfter = 1, hour = 7, minute = 0) {
+  if (!trialAtIso) return "";
+  const d = new Date(trialAtIso);
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = getZonedPartsServer(d, MIAMI_TIMEZONE);
+  if (!parts) return "";
+  const nextDate = addDaysToLocalDate(parts, daysAfter);
+  const utc = zonedTimeToUtcServer(
+    { year: nextDate.year, month: nextDate.month, day: nextDate.day, hour, minute },
+    MIAMI_TIMEZONE
+  );
+  return utc.toISOString();
+}
+
+function computeFollowUpAfterHours(hours = 48) {
+  const ms = Math.max(0, Number(hours) || 0) * 3600000;
+  return new Date(Date.now() + ms).toISOString();
+}
+
 function sanitizeRole(role) {
   if (!role) return role;
   const r = String(role);
@@ -2482,6 +2546,8 @@ async function initDb() {
         cv_url TEXT,
         cv_photo_url TEXT,
         trial_at TIMESTAMPTZ,
+        trial_follow_up_status TEXT,
+        trial_follow_up_at TIMESTAMPTZ,
         custom_question TEXT,
         custom_question_mode TEXT,
         decision TEXT,
@@ -2490,6 +2556,8 @@ async function initDb() {
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_follow_up_status TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question_mode TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
@@ -2519,6 +2587,8 @@ async function initDb() {
         salary TEXT,
         trial TEXT,
         trial_at TIMESTAMPTZ,
+        trial_follow_up_status TEXT,
+        trial_follow_up_at TIMESTAMPTZ,
         stay_plan TEXT,
         stay_detail TEXT,
         mobility TEXT,
@@ -2537,6 +2607,8 @@ async function initDb() {
     `);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_status TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_brand_key TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_role_key TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_brand ON calls (brand_key);`);
@@ -3573,10 +3645,12 @@ app.post("/admin/calls/:callId/trial", requirePermission("calls_notes"), async (
   const normalized = raw ? normalizeIso(raw) : "";
   if (raw && !normalized) return res.status(400).json({ error: "invalid_trial_at" });
   const trial_at = normalized || "";
+  const trial_follow_up_at = trial_at ? computeFollowUpAt(trial_at, 1) : "";
+  const trial_follow_up_status = trial_at ? "" : "";
   const callIds = Array.isArray(req.body?.callIds) ? req.body.callIds.filter(Boolean) : [];
   const cvIds = Array.isArray(req.body?.cvIds) ? req.body.cvIds.filter(Boolean) : [];
   const targetIds = callIds.length ? callIds : [callId];
-  const patch = { trial_at };
+  const patch = { trial_at, trial_follow_up_at, trial_follow_up_status };
 
   for (const id of targetIds) {
     const tracked = callsByCallSid.get(id);
@@ -3591,10 +3665,18 @@ app.post("/admin/calls/:callId/trial", requirePermission("calls_notes"), async (
   if (cvIds.length) {
     for (const id of cvIds) {
       const entry = cvStoreById.get(id);
-      if (entry) entry.trial_at = trial_at;
+      if (entry) {
+        entry.trial_at = trial_at;
+        entry.trial_follow_up_at = trial_follow_up_at;
+        entry.trial_follow_up_status = trial_follow_up_status;
+      }
     }
     for (const entry of cvStore) {
-      if (entry && entry.id && cvIds.includes(entry.id)) entry.trial_at = trial_at;
+      if (entry && entry.id && cvIds.includes(entry.id)) {
+        entry.trial_at = trial_at;
+        entry.trial_follow_up_at = trial_follow_up_at;
+        entry.trial_follow_up_status = trial_follow_up_status;
+      }
     }
     scheduleCvStoreSave();
   }
@@ -3603,19 +3685,28 @@ app.post("/admin/calls/:callId/trial", requirePermission("calls_notes"), async (
   if (dbPool) {
     try {
       if (targetIds.length > 1) {
-        await dbQuery("UPDATE calls SET trial_at = $2 WHERE call_sid = ANY($1)", [targetIds, trial_at || null]);
+        await dbQuery(
+          "UPDATE calls SET trial_at = $2, trial_follow_up_at = $3, trial_follow_up_status = $4 WHERE call_sid = ANY($1)",
+          [targetIds, trial_at || null, trial_follow_up_at || null, trial_follow_up_status]
+        );
       } else {
-        await dbQuery("UPDATE calls SET trial_at = $2 WHERE call_sid = $1", [callId, trial_at || null]);
+        await dbQuery(
+          "UPDATE calls SET trial_at = $2, trial_follow_up_at = $3, trial_follow_up_status = $4 WHERE call_sid = $1",
+          [callId, trial_at || null, trial_follow_up_at || null, trial_follow_up_status]
+        );
       }
       if (cvIds.length) {
-        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = ANY($1)", [cvIds, trial_at || null]);
+        await dbQuery(
+          "UPDATE cvs SET trial_at = $2, trial_follow_up_at = $3, trial_follow_up_status = $4 WHERE id = ANY($1)",
+          [cvIds, trial_at || null, trial_follow_up_at || null, trial_follow_up_status]
+        );
       }
     } catch (err) {
       console.error("[admin/calls] trial update failed", err);
       return res.status(400).json({ error: "trial_failed", detail: err.message });
     }
   }
-  return res.json({ ok: true, trial_at });
+  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status });
 });
 
 app.post("/admin/calls/:callId/whatsapp", requirePermission("calls_whatsapp"), async (req, res) => {
@@ -3638,11 +3729,161 @@ app.post("/admin/calls/:callId/whatsapp", requirePermission("calls_whatsapp"), a
     await sendWhatsappReport(hydrated, { force: true });
     const mediaUrl = await getCallAudioMediaUrl(hydrated);
     const cvUrl = await getCallCvMediaUrl(hydrated);
-    return res.json({ ok: true, audio: !!mediaUrl, cv: !!cvUrl });
+  return res.json({ ok: true, audio: !!mediaUrl, cv: !!cvUrl });
   } catch (err) {
     console.error("[admin/whatsapp] failed", err);
     return res.status(400).json({ error: "whatsapp_failed", detail: err.message });
   }
+});
+
+app.post("/admin/calls/:callId/trial-review", requirePermission("calls_notes"), async (req, res) => {
+  const callId = (req.params?.callId || "").trim();
+  if (!callId) return res.status(400).json({ error: "missing_call_id" });
+  const statusRaw = String(req.body?.status || req.body?.trial_review_status || "").toLowerCase().trim();
+  const status = statusRaw === "hired" || statusRaw === "rejected" || statusRaw === "pending" ? statusRaw : "";
+  if (!status) return res.status(400).json({ error: "invalid_status" });
+  const callIds = Array.isArray(req.body?.callIds) ? req.body.callIds.filter(Boolean) : [];
+  const cvIds = Array.isArray(req.body?.cvIds) ? req.body.cvIds.filter(Boolean) : [];
+  const targetIds = callIds.length ? callIds : [callId];
+  const decision = status === "hired" ? "hired" : status === "rejected" ? "declined" : "maybe";
+  const nextFollowUpAt = status === "pending" ? computeFollowUpAfterHours(48) : "";
+  const patch = {
+    trial_follow_up_status: status,
+    trial_follow_up_at: nextFollowUpAt
+  };
+
+  for (const id of targetIds) {
+    const tracked = callsByCallSid.get(id);
+    if (tracked) {
+      tracked.trial_follow_up_status = status;
+      tracked.trial_follow_up_at = nextFollowUpAt;
+      tracked.decision = decision;
+    }
+    for (const entry of callHistory) {
+      if (!entry) continue;
+      if (entry.callId === id || entry.callSid === id) {
+        entry.trial_follow_up_status = status;
+        entry.trial_follow_up_at = nextFollowUpAt;
+        entry.decision = decision;
+      }
+    }
+  }
+  if (cvIds.length) {
+    for (const id of cvIds) {
+      const entry = cvStoreById.get(id);
+      if (entry) {
+        entry.trial_follow_up_status = status;
+        entry.trial_follow_up_at = nextFollowUpAt;
+        entry.decision = decision;
+      }
+    }
+    for (const entry of cvStore) {
+      if (entry && entry.id && cvIds.includes(entry.id)) {
+        entry.trial_follow_up_status = status;
+        entry.trial_follow_up_at = nextFollowUpAt;
+        entry.decision = decision;
+      }
+    }
+    scheduleCvStoreSave();
+  }
+  scheduleCallHistorySave();
+
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery(
+          "UPDATE calls SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE call_sid = ANY($1)",
+          [targetIds, status, nextFollowUpAt || null, decision]
+        );
+      } else {
+        await dbQuery(
+          "UPDATE calls SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE call_sid = $1",
+          [callId, status, nextFollowUpAt || null, decision]
+        );
+      }
+      if (cvIds.length) {
+        await dbQuery(
+          "UPDATE cvs SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE id = ANY($1)",
+          [cvIds, status, nextFollowUpAt || null, decision]
+        );
+      }
+    } catch (err) {
+      console.error("[admin/calls] trial review failed", err);
+      return res.status(400).json({ error: "trial_review_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, status, decision, trial_follow_up_at: nextFollowUpAt });
+});
+
+app.post("/admin/cv/:id/trial-review", requirePermission("cvs_write"), async (req, res) => {
+  const cvId = (req.params?.id || "").trim();
+  if (!cvId) return res.status(400).json({ error: "missing_cv_id" });
+  const statusRaw = String(req.body?.status || req.body?.trial_review_status || "").toLowerCase().trim();
+  const status = statusRaw === "hired" || statusRaw === "rejected" || statusRaw === "pending" ? statusRaw : "";
+  if (!status) return res.status(400).json({ error: "invalid_status" });
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+  const targetIds = ids.length ? ids : [cvId];
+  const decision = status === "hired" ? "hired" : status === "rejected" ? "declined" : "maybe";
+  const nextFollowUpAt = status === "pending" ? computeFollowUpAfterHours(48) : "";
+
+  for (const id of targetIds) {
+    const entry = cvStoreById.get(id);
+    if (entry) {
+      entry.trial_follow_up_status = status;
+      entry.trial_follow_up_at = nextFollowUpAt;
+      entry.decision = decision;
+    }
+    for (const item of cvStore) {
+      if (item && item.id === id) {
+        item.trial_follow_up_status = status;
+        item.trial_follow_up_at = nextFollowUpAt;
+        item.decision = decision;
+      }
+    }
+  }
+  for (const entry of callHistory) {
+    if (!entry || !entry.cv_id) continue;
+    if (targetIds.includes(entry.cv_id)) {
+      entry.trial_follow_up_status = status;
+      entry.trial_follow_up_at = nextFollowUpAt;
+      entry.decision = decision;
+    }
+  }
+  for (const call of callsByCallSid.values()) {
+    if (!call || !call.cvId) continue;
+    if (targetIds.includes(call.cvId)) {
+      call.trial_follow_up_status = status;
+      call.trial_follow_up_at = nextFollowUpAt;
+      call.decision = decision;
+    }
+  }
+  scheduleCvStoreSave();
+
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery(
+          "UPDATE cvs SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE id = ANY($1)",
+          [targetIds, status, nextFollowUpAt || null, decision]
+        );
+      } else {
+        await dbQuery(
+          "UPDATE cvs SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE id = $1",
+          [cvId, status, nextFollowUpAt || null, decision]
+        );
+      }
+      if (targetIds.length) {
+        await dbQuery(
+          "UPDATE calls SET trial_follow_up_status = $2, trial_follow_up_at = $3, decision = $4 WHERE cv_id = ANY($1)",
+          [targetIds, status, nextFollowUpAt || null, decision]
+        );
+      }
+    } catch (err) {
+      console.error("[admin/cv] trial review failed", err);
+      return res.status(400).json({ error: "trial_review_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, status, decision, trial_follow_up_at: nextFollowUpAt });
 });
 
 app.get("/admin/calls/:callId/audio", requirePermission("calls_audio"), async (req, res) => {
@@ -3940,7 +4181,7 @@ app.post("/admin/cv/status", requirePermission("cvs_write"), async (req, res) =>
   const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : (body.id ? [body.id] : []);
   if (!ids.length) return res.status(400).json({ error: "missing_cv_id" });
   const raw = String(body.decision || body.status || "").toLowerCase().trim();
-  const decision = raw === "approved" || raw === "declined" || raw === "maybe" ? raw : "";
+  const decision = raw === "approved" || raw === "declined" || raw === "maybe" || raw === "hired" ? raw : "";
   ids.forEach((id) => {
     const entry = cvStoreById.get(id);
     if (entry) entry.decision = decision;
@@ -4001,37 +4242,61 @@ app.post("/admin/cv/:id/trial", requirePermission("cvs_write"), async (req, res)
   const normalized = raw ? normalizeIso(raw) : "";
   if (raw && !normalized) return res.status(400).json({ error: "invalid_trial_at" });
   const trial_at = normalized || "";
+  const trial_follow_up_at = trial_at ? computeFollowUpAt(trial_at, 1) : "";
+  const trial_follow_up_status = trial_at ? "" : "";
   const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
   const targetIds = ids.length ? ids : [cvId];
   for (const id of targetIds) {
     const entry = cvStoreById.get(id);
-    if (entry) entry.trial_at = trial_at;
+    if (entry) {
+      entry.trial_at = trial_at;
+      entry.trial_follow_up_at = trial_follow_up_at;
+      entry.trial_follow_up_status = trial_follow_up_status;
+    }
     for (const item of cvStore) {
-      if (item && item.id === id) item.trial_at = trial_at;
+      if (item && item.id === id) {
+        item.trial_at = trial_at;
+        item.trial_follow_up_at = trial_follow_up_at;
+        item.trial_follow_up_status = trial_follow_up_status;
+      }
     }
   }
   for (const entry of callHistory) {
     if (!entry || !entry.cv_id) continue;
-    if (targetIds.includes(entry.cv_id)) entry.trial_at = trial_at;
+    if (targetIds.includes(entry.cv_id)) {
+      entry.trial_at = trial_at;
+      entry.trial_follow_up_at = trial_follow_up_at;
+      entry.trial_follow_up_status = trial_follow_up_status;
+    }
   }
   for (const call of callsByCallSid.values()) {
     if (!call || !call.cvId) continue;
-    if (targetIds.includes(call.cvId)) call.trial_at = trial_at;
+    if (targetIds.includes(call.cvId)) {
+      call.trial_at = trial_at;
+      call.trial_follow_up_at = trial_follow_up_at;
+      call.trial_follow_up_status = trial_follow_up_status;
+    }
   }
   scheduleCvStoreSave();
   if (dbPool) {
     try {
       if (targetIds.length > 1) {
-        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = ANY($1)", [targetIds, trial_at || null]);
+        await dbQuery(
+          "UPDATE cvs SET trial_at = $2, trial_follow_up_at = $3, trial_follow_up_status = $4 WHERE id = ANY($1)",
+          [targetIds, trial_at || null, trial_follow_up_at || null, trial_follow_up_status]
+        );
       } else {
-        await dbQuery("UPDATE cvs SET trial_at = $2 WHERE id = $1", [cvId, trial_at || null]);
+        await dbQuery(
+          "UPDATE cvs SET trial_at = $2, trial_follow_up_at = $3, trial_follow_up_status = $4 WHERE id = $1",
+          [cvId, trial_at || null, trial_follow_up_at || null, trial_follow_up_status]
+        );
       }
     } catch (err) {
       console.error("[admin/cv] trial update failed", err);
       return res.status(400).json({ error: "trial_failed", detail: err.message });
     }
   }
-  return res.json({ ok: true, trial_at });
+  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status });
 });
 
 app.delete("/admin/cv/:id", requirePermission("cvs_delete"), async (req, res) => {
@@ -5389,6 +5654,7 @@ app.get("/admin/ui", (req, res) => {
     }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
+    .status-hired { color: #136a3a; font-weight: 700; }
     .status-live::after {
       content: "...";
       display: inline-block;
@@ -5853,6 +6119,12 @@ app.get("/admin/ui", (req, res) => {
       border-color: rgba(31,111,92,0.45);
       color: #1f6f5c;
     }
+    .decision-btn.active.hired {
+      background: rgba(31,111,92,0.22);
+      border-color: rgba(31,111,92,0.6);
+      color: #1f6f5c;
+      box-shadow: 0 8px 18px rgba(31, 111, 92, 0.18);
+    }
     .decision-btn.active.declined {
       background: rgba(180,35,24,0.14);
       border-color: rgba(180,35,24,0.45);
@@ -6130,11 +6402,70 @@ app.get("/admin/ui", (req, res) => {
       border: 1px solid var(--border);
       border-radius: 14px;
       background: #fff;
-      align-items: center;
+      align-items: flex-start;
+    }
+    .calendar-item-content {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex: 1;
+      min-width: 0;
     }
     .calendar-item-name { font-weight: 700; }
     .calendar-item-meta { font-size: 12px; color: var(--muted); }
-    .calendar-item-time { font-weight: 700; color: var(--primary-dark); }
+    .calendar-item-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .calendar-item-actions .btn-compact {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    .calendar-item-actions .audio-player {
+      max-width: 260px;
+      min-width: 200px;
+    }
+    .calendar-item-time {
+      font-weight: 700;
+      color: var(--primary-dark);
+      white-space: nowrap;
+      align-self: flex-start;
+    }
+    .trial-review-card { width: min(620px, 94vw); }
+    .trial-review-list { display: grid; gap: 12px; margin-top: 12px; }
+    .trial-review-item {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 12px;
+      background: #fff;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+    .trial-review-info { display: grid; gap: 4px; }
+    .trial-review-name { font-weight: 700; }
+    .trial-review-meta { font-size: 12px; color: var(--muted); }
+    .trial-review-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .trial-review-actions .decision-btn {
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      border: 1px solid rgba(27, 122, 140, 0.25);
+      background: rgba(27, 122, 140, 0.08);
+      color: var(--primary-dark);
+    }
+    .trial-review-actions .decision-btn.hired { border-color: rgba(24, 116, 62, 0.4); background: rgba(24, 116, 62, 0.12); color: #0f3d2b; }
+    .trial-review-actions .decision-btn.pending { border-color: rgba(245, 200, 86, 0.45); background: rgba(245, 200, 86, 0.18); color: #7a5b00; }
+    .trial-review-actions .decision-btn.rejected { border-color: rgba(176, 36, 36, 0.35); background: rgba(176, 36, 36, 0.12); color: #7a1b1b; }
     .toast-container {
       position: fixed;
       right: 24px;
@@ -6525,13 +6856,32 @@ app.get("/admin/ui", (req, res) => {
       .calendar-title {
         grid-column: 1 / -1;
         font-size: 14px;
+        order: 2;
+      }
+      #calendar-prev { order: 1; }
+      #calendar-next { order: 3; justify-self: end; }
+      #calendar-today {
+        grid-column: 1 / -1;
+        order: 4;
+        width: 100%;
+        justify-self: stretch;
       }
       .calendar-header .btn-compact { padding: 4px 8px; font-size: 12px; }
       .calendar-grid { gap: 6px; }
-      .calendar-day { min-height: 56px; padding: 6px; border-radius: 12px; }
+      .calendar-day { min-height: 62px; padding: 6px; border-radius: 12px; }
       .calendar-day-number { font-size: 11px; }
-      .calendar-day-count { display: none; }
-      .calendar-item { padding: 10px; border-radius: 12px; }
+      .calendar-day-count {
+        display: inline-flex;
+        font-size: 9px;
+        padding: 2px 6px;
+        border-radius: 999px;
+      }
+      .calendar-item { padding: 10px; border-radius: 12px; flex-direction: column; }
+      .calendar-item-actions { width: 100%; }
+      .calendar-item-actions .audio-player { width: 100%; min-width: 0; }
+      .calendar-item-time { align-self: flex-end; }
+      .trial-review-item { flex-direction: column; align-items: flex-start; }
+      .trial-review-actions { width: 100%; justify-content: flex-start; }
       .brand-list { max-height: 200px; overflow-y: auto; }
       .icon-btn { width: 36px; height: 36px; }
       .btn-compact { padding: 6px 8px; }
@@ -7106,6 +7456,7 @@ app.get("/admin/ui", (req, res) => {
               <button class="tab-pill active" data-filter="no_calls" type="button">No llamados</button>
               <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
               <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
+              <button class="tab-pill" data-filter="hired" type="button">Contratados</button>
               <button class="tab-pill" data-filter="all" type="button">Todos</button>
             </div>
           </div>
@@ -7199,6 +7550,7 @@ app.get("/admin/ui", (req, res) => {
             <div class="inline" id="results-decision-tabs" style="margin-top:8px;">
               <button class="tab-pill active" data-decision="all" type="button">Todas</button>
               <button class="tab-pill" data-decision="approved" type="button">Aprobados</button>
+              <button class="tab-pill" data-decision="hired" type="button">Contratados</button>
               <button class="tab-pill" data-decision="maybe" type="button">Indecisos</button>
               <button class="tab-pill" data-decision="declined" type="button">Descartados</button>
             </div>
@@ -7971,6 +8323,16 @@ app.get("/admin/ui", (req, res) => {
       </div>
     </div>
   </div>
+  <div id="trial-review-modal" class="cv-modal">
+    <div class="cv-modal-card trial-review-card">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div style="font-weight:700;">Seguimiento de prueba</div>
+        <button class="secondary" id="trial-review-close" type="button">Cerrar</button>
+      </div>
+      <div class="small">Registrá el resultado de las pruebas (hora Miami).</div>
+      <div class="trial-review-list" id="trial-review-list"></div>
+    </div>
+  </div>
   <div id="assistant-widget" class="assistant-widget" style="display:none;">
     <button class="assistant-fab" id="assistant-fab" type="button" aria-label="Abrir asistente">AI</button>
     <div class="assistant-panel" id="assistant-panel" aria-live="polite">
@@ -8008,6 +8370,7 @@ app.get("/admin/ui", (req, res) => {
   <div id="toast-container" class="toast-container"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
+    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     const appEl = document.getElementById('app');
     const loginScreenEl = document.getElementById('login-screen');
     const loginTokenEl = document.getElementById('login-token');
@@ -8274,6 +8637,9 @@ app.get("/admin/ui", (req, res) => {
     const trialSaveEl = document.getElementById('trial-save');
     const trialClearEl = document.getElementById('trial-clear');
     const trialStatusEl = document.getElementById('trial-status');
+    const trialReviewModalEl = document.getElementById('trial-review-modal');
+    const trialReviewListEl = document.getElementById('trial-review-list');
+    const trialReviewCloseEl = document.getElementById('trial-review-close');
     const toastContainerEl = document.getElementById('toast-container');
     const assistantWidgetEl = document.getElementById('assistant-widget');
     const assistantFabEl = document.getElementById('assistant-fab');
@@ -8320,7 +8686,6 @@ app.get("/admin/ui", (req, res) => {
     const calendarGridEl = document.getElementById('calendar-grid');
     const calendarWeekdaysEl = document.getElementById('calendar-weekdays');
     const calendarListEl = document.getElementById('calendar-list');
-    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
@@ -8352,6 +8717,7 @@ app.get("/admin/ui", (req, res) => {
     let cvTimer = null;
     let cvActiveTimer = null;
     let badgeTimer = null;
+    let trialReviewTimer = null;
     let cvPollUntil = 0;
     let cvFilterMode = 'no_calls';
     let resultsFilterMode = 'completed';
@@ -8367,9 +8733,11 @@ app.get("/admin/ui", (req, res) => {
     let cvSwipeIndex = 0;
     let resultsSwipeIndex = 0;
     let trialItemsCache = [];
+    let trialReviewItemsCache = [];
     let calendarMonth = null;
     let calendarSelectedKey = '';
     let trialReminderTimer = null;
+    let trialReviewSnoozeUntil = 0;
     let currentCvSource = '';
     let currentCvFileDataUrl = '';
     let currentCvPhotoDataUrl = '';
@@ -9500,7 +9868,12 @@ app.get("/admin/ui", (req, res) => {
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || 'trial_failed');
-      applyCvPatch(ids, { trial_at: data.trial_at || '' });
+      const patch = {
+        trial_at: data.trial_at || '',
+        trial_follow_up_at: data.trial_follow_up_at || '',
+        trial_follow_up_status: data.trial_follow_up_status || ''
+      };
+      applyCvPatch(ids, patch);
       renderCvList(lastCvRaw);
     }
 
@@ -9513,9 +9886,14 @@ app.get("/admin/ui", (req, res) => {
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data.error || 'trial_failed');
-      applyCallPatch(callIds, { trial_at: data.trial_at || '' });
+      const patch = {
+        trial_at: data.trial_at || '',
+        trial_follow_up_at: data.trial_follow_up_at || '',
+        trial_follow_up_status: data.trial_follow_up_status || ''
+      };
+      applyCallPatch(callIds, patch);
       if (Array.isArray(cvIds) && cvIds.length) {
-        applyCvPatch(cvIds, { trial_at: data.trial_at || '' });
+        applyCvPatch(cvIds, patch);
       }
       renderResults(lastResultsRaw);
       renderCvList(lastCvRaw);
@@ -11616,6 +11994,7 @@ app.get("/admin/ui", (req, res) => {
       decisionWrap.className = 'decision-buttons';
       const decisionOptions = [
         { key: 'approved', label: '✓', title: 'Aprobado' },
+        { key: 'hired', label: '★', title: 'Contratado' },
         { key: 'declined', label: '✕', title: 'Declinado' },
         { key: 'maybe', label: '?', title: 'Indeciso' }
       ];
@@ -11838,6 +12217,7 @@ app.get("/admin/ui", (req, res) => {
       decisionWrap.className = 'decision-buttons';
       const decisionOptions = [
         { key: 'approved', label: '✓', title: 'Aprobado' },
+        { key: 'hired', label: '★', title: 'Contratado' },
         { key: 'declined', label: '✕', title: 'Descartado' },
         { key: 'maybe', label: '?', title: 'Indeciso' }
       ];
@@ -13473,6 +13853,22 @@ app.get("/admin/ui", (req, res) => {
       return new Date(utcMs);
     }
 
+    function addDaysLocalDate(year, month, day, days) {
+      const base = new Date(Date.UTC(year, month - 1, day, 12));
+      base.setUTCDate(base.getUTCDate() + days);
+      return { year: base.getUTCFullYear(), month: base.getUTCMonth() + 1, day: base.getUTCDate() };
+    }
+
+    function computeFollowUpAtClient(trialAt, days = 1) {
+      if (!trialAt) return '';
+      const parts = getZonedParts(new Date(trialAt), MIAMI_TZ);
+      if (!parts) return '';
+      const next = addDaysLocalDate(parts.year, parts.month, parts.day, days);
+      const localVal = String(next.year).padStart(4, '0') + "-" + String(next.month).padStart(2, '0') + "-" + String(next.day).padStart(2, '0') + "T07:00";
+      const utcDate = zonedTimeToUtc(localVal, MIAMI_TZ);
+      return utcDate ? utcDate.toISOString() : '';
+    }
+
     function formatMiamiDateTime(value, { withYear = true } = {}) {
       if (!value) return '';
       const d = new Date(value);
@@ -14083,7 +14479,12 @@ app.get("/admin/ui", (req, res) => {
       if (!inCall && isNoAnswer && attempts > 1) {
         statusText = statusText + " (" + attempts + " intentos)";
       }
-      const category = inCall ? 'in_call' : (!hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed'));
+      let category = inCall ? 'in_call' : (!hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed'));
+      if (!inCall && item.decision === 'hired') {
+        statusText = 'Contratado';
+        statusClass = 'status-hired';
+        category = 'hired';
+      }
       return { hasCalls, isNoAnswer, statusText, statusClass, category, attempts, inCall };
     }
 
@@ -14148,6 +14549,8 @@ app.get("/admin/ui", (req, res) => {
           entry = {
             ...call,
             trial_at: call.trial_at || call.cv_trial_at || call.trialAt || "",
+            trial_follow_up_status: call.trial_follow_up_status || call.cv_trial_follow_up_status || call.trialFollowUpStatus || "",
+            trial_follow_up_at: call.trial_follow_up_at || call.cv_trial_follow_up_at || call.trialFollowUpAt || "",
             attempts: 0,
             noAnswerAttempts: 0,
             callIds: [],
@@ -14170,6 +14573,12 @@ app.get("/admin/ui", (req, res) => {
         if (!entry.alt_brand_key && call.alt_brand_key) entry.alt_brand_key = call.alt_brand_key;
         if (!entry.alt_role_key && call.alt_role_key) entry.alt_role_key = call.alt_role_key;
         if (!entry.trial_at && (call.trial_at || call.cv_trial_at)) entry.trial_at = call.trial_at || call.cv_trial_at;
+        if (!entry.trial_follow_up_status && (call.trial_follow_up_status || call.cv_trial_follow_up_status)) {
+          entry.trial_follow_up_status = call.trial_follow_up_status || call.cv_trial_follow_up_status;
+        }
+        if (!entry.trial_follow_up_at && (call.trial_follow_up_at || call.cv_trial_follow_up_at)) {
+          entry.trial_follow_up_at = call.trial_follow_up_at || call.cv_trial_follow_up_at;
+        }
         const prevSource = entry.source || '';
         const prevCvUrl = entry.cv_url || '';
         const prevCvText = entry.cv_text || '';
@@ -14178,6 +14587,8 @@ app.get("/admin/ui", (req, res) => {
         const prevAltBrand = entry.alt_brand_key || '';
         const prevAltRole = entry.alt_role_key || '';
         const prevTrialAt = entry.trial_at || '';
+        const prevFollowStatus = entry.trial_follow_up_status || '';
+        const prevFollowAt = entry.trial_follow_up_at || '';
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           Object.assign(entry, call);
           entry._latestAt = createdAt;
@@ -14189,6 +14600,8 @@ app.get("/admin/ui", (req, res) => {
           if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
           if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
           if (!entry.trial_at && prevTrialAt) entry.trial_at = prevTrialAt;
+          if (!entry.trial_follow_up_status && prevFollowStatus) entry.trial_follow_up_status = prevFollowStatus;
+          if (!entry.trial_follow_up_at && prevFollowAt) entry.trial_follow_up_at = prevFollowAt;
         } else {
           if (!entry.source && prevSource) entry.source = prevSource;
           if (!entry.cv_url && prevCvUrl) entry.cv_url = prevCvUrl;
@@ -14198,6 +14611,8 @@ app.get("/admin/ui", (req, res) => {
           if (!entry.alt_brand_key && prevAltBrand) entry.alt_brand_key = prevAltBrand;
           if (!entry.alt_role_key && prevAltRole) entry.alt_role_key = prevAltRole;
           if (!entry.trial_at && prevTrialAt) entry.trial_at = prevTrialAt;
+          if (!entry.trial_follow_up_status && prevFollowStatus) entry.trial_follow_up_status = prevFollowStatus;
+          if (!entry.trial_follow_up_at && prevFollowAt) entry.trial_follow_up_at = prevFollowAt;
         }
         if (!entry.decision && call.decision) {
           entry.decision = call.decision;
@@ -14245,6 +14660,16 @@ app.get("/admin/ui", (req, res) => {
             entry.trial_at = item.trial_at;
           }
         }
+        if (item.trial_follow_up_at) {
+          const currentFollow = entry.trial_follow_up_at ? new Date(entry.trial_follow_up_at).getTime() : 0;
+          const nextFollow = new Date(item.trial_follow_up_at).getTime();
+          if (!currentFollow || (Number.isFinite(nextFollow) && nextFollow >= currentFollow)) {
+            entry.trial_follow_up_at = item.trial_follow_up_at;
+          }
+        }
+        if (item.trial_follow_up_status && !entry.trial_follow_up_status) {
+          entry.trial_follow_up_status = item.trial_follow_up_status;
+        }
         if (!entry._latestAt || createdAt >= entry._latestAt) {
           entry._latestAt = createdAt;
           entry.brand = item.brand;
@@ -14257,6 +14682,10 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
           if (item.trial_at && !entry.trial_at) entry.trial_at = item.trial_at;
+          if (item.trial_follow_up_at && !entry.trial_follow_up_at) entry.trial_follow_up_at = item.trial_follow_up_at;
+          if (item.trial_follow_up_status && !entry.trial_follow_up_status) {
+            entry.trial_follow_up_status = item.trial_follow_up_status;
+          }
           entry.custom_question = item.custom_question || entry.custom_question || "";
           entry.custom_question_mode = item.custom_question_mode || entry.custom_question_mode || "exact";
           entry.decision = item.decision || entry.decision || "";
@@ -14349,12 +14778,19 @@ app.get("/admin/ui", (req, res) => {
         const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
         map.set(key, {
           key,
-          type: 'interview',
+          type: 'call',
           name: call.applicant || 'Sin nombre',
           brand: brandLabel,
           role: roleLabel,
           trial_at: trialAt,
-          dateKey: miamiDateKey(trialAt)
+          dateKey: miamiDateKey(trialAt),
+          phone: call.phone || '',
+          callId: call.callId || call.callSid || '',
+          cv_id: call.cv_id || call.cvId || '',
+          cv_url: call.cv_url || '',
+          audio_url: call.audio_url || '',
+          trial_follow_up_at: call.trial_follow_up_at || call.cv_trial_follow_up_at || '',
+          trial_follow_up_status: call.trial_follow_up_status || call.cv_trial_follow_up_status || ''
         });
       });
       (lastCvList || []).forEach((cv) => {
@@ -14372,7 +14808,14 @@ app.get("/admin/ui", (req, res) => {
           brand: brandLabel,
           role: roleLabel,
           trial_at: cv.trial_at,
-          dateKey: miamiDateKey(cv.trial_at)
+          dateKey: miamiDateKey(cv.trial_at),
+          phone: cv.phone || '',
+          callId: cv.last_call_sid || '',
+          cv_id: cv.id || '',
+          cv_url: cv.cv_url || '',
+          audio_url: cv.last_audio_url || '',
+          trial_follow_up_at: cv.trial_follow_up_at || '',
+          trial_follow_up_status: cv.trial_follow_up_status || ''
         });
       });
       return Array.from(map.values()).sort((a, b) => {
@@ -14466,14 +14909,32 @@ app.get("/admin/ui", (req, res) => {
         const card = document.createElement('div');
         card.className = 'calendar-item';
         const left = document.createElement('div');
+        left.className = 'calendar-item-content';
         const name = document.createElement('div');
         name.className = 'calendar-item-name';
         name.textContent = item.name || 'Sin nombre';
         const meta = document.createElement('div');
         meta.className = 'calendar-item-meta';
-        meta.textContent = [item.brand, item.role].filter(Boolean).join(' • ');
+        meta.textContent = [item.brand, item.role, item.phone].filter(Boolean).join(' • ');
+        const actions = document.createElement('div');
+        actions.className = 'calendar-item-actions';
+        if (item.cv_url) {
+          const cvBtn = document.createElement('button');
+          cvBtn.type = 'button';
+          cvBtn.className = 'secondary btn-compact';
+          cvBtn.textContent = 'Ver CV';
+          cvBtn.onclick = () => window.open(item.cv_url, '_blank', 'noopener');
+          actions.appendChild(cvBtn);
+        }
+        if (item.audio_url && canPermission('calls_audio')) {
+          const downloadId = item.callId || '';
+          const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : item.audio_url;
+          const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
+          actions.appendChild(buildAudioPlayer(item.audio_url, { downloadUrl, downloadName, allowDownload: true }));
+        }
         left.appendChild(name);
         left.appendChild(meta);
+        if (actions.children.length) left.appendChild(actions);
         const right = document.createElement('div');
         right.className = 'calendar-item-time';
         right.textContent = formatMiamiTime(item.trial_at);
@@ -14483,10 +14944,200 @@ app.get("/admin/ui", (req, res) => {
       });
     }
 
+    function collectTrialReviewItems() {
+      const map = new Map();
+      const now = Date.now();
+      const isDue = (iso) => {
+        if (!iso) return false;
+        const ts = new Date(iso).getTime();
+        return Number.isFinite(ts) && ts <= now;
+      };
+      (lastResults || []).forEach((call) => {
+        if (!call) return;
+        const baseTrial = call.trial_at || call.cv_trial_at || '';
+        const followAt = call.trial_follow_up_at || call.cv_trial_follow_up_at || (baseTrial ? computeFollowUpAtClient(baseTrial, 1) : '');
+        if (!isDue(followAt)) return;
+        const status = String(call.trial_follow_up_status || call.cv_trial_follow_up_status || '').toLowerCase();
+        if (status === 'hired' || status === 'rejected') return;
+        const key = call.cv_id ? ("cv:" + call.cv_id) : ("call:" + (call.callId || ""));
+        if (!key || map.has(key)) return;
+        const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+        const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+        map.set(key, {
+          key,
+          type: 'call',
+          name: call.applicant || 'Sin nombre',
+          brand: brandLabel,
+          role: roleLabel,
+          phone: call.phone || '',
+          trial_at: baseTrial || '',
+          trial_follow_up_at: followAt,
+          trial_follow_up_status: status,
+          callIds: Array.isArray(call.callIds) && call.callIds.length ? call.callIds : (call.callId ? [call.callId] : []),
+          cvIds: Array.isArray(call.cvIds) && call.cvIds.length ? call.cvIds : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : [])
+        });
+      });
+      (lastCvList || []).forEach((cv) => {
+        const baseTrial = cv.trial_at || '';
+        const followAt = cv.trial_follow_up_at || (baseTrial ? computeFollowUpAtClient(baseTrial, 1) : '');
+        if (!followAt) return;
+        if (!isDue(followAt)) return;
+        const status = String(cv.trial_follow_up_status || '').toLowerCase();
+        if (status === 'hired' || status === 'rejected') return;
+        const key = cv.id ? ("cv:" + cv.id) : '';
+        if (!key || map.has(key)) return;
+        const brandLabel = cv.brandKey ? getBrandDisplayByKey(cv.brandKey) : (cv.brand || '');
+        const roleLabel = getRoleDisplayForBrand(cv.brandKey || cv.brand, cv.role || cv.roleKey || '');
+        map.set(key, {
+          key,
+          type: 'candidate',
+          name: cv.applicant || 'Sin nombre',
+          brand: brandLabel,
+          role: roleLabel,
+          phone: cv.phone || '',
+          trial_at: baseTrial || '',
+          trial_follow_up_at: followAt || '',
+          trial_follow_up_status: status,
+          callIds: cv.last_call_sid ? [cv.last_call_sid] : [],
+          cvIds: cv.id ? [cv.id] : (Array.isArray(cv.cvIds) ? cv.cvIds : [])
+        });
+      });
+      return Array.from(map.values()).sort((a, b) => {
+        const at = a.trial_follow_up_at ? new Date(a.trial_follow_up_at).getTime() : 0;
+        const bt = b.trial_follow_up_at ? new Date(b.trial_follow_up_at).getTime() : 0;
+        return at - bt;
+      });
+    }
+
+    function renderTrialReviewList(items) {
+      if (!trialReviewListEl) return;
+      trialReviewListEl.innerHTML = '';
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'No hay seguimientos pendientes.';
+        trialReviewListEl.appendChild(empty);
+        return;
+      }
+      items.forEach((item) => {
+        const card = document.createElement('div');
+        card.className = 'trial-review-item';
+        const info = document.createElement('div');
+        info.className = 'trial-review-info';
+        const name = document.createElement('div');
+        name.className = 'trial-review-name';
+        name.textContent = item.name || 'Sin nombre';
+        const meta = document.createElement('div');
+        meta.className = 'trial-review-meta';
+        meta.textContent = [item.brand, item.role, item.phone].filter(Boolean).join(' • ');
+        const time = document.createElement('div');
+        time.className = 'trial-review-meta';
+        const trialLabel = item.trial_at ? formatMiamiDateTime(item.trial_at) : 'Sin fecha';
+        time.textContent = 'Prueba: ' + trialLabel;
+        info.appendChild(name);
+        info.appendChild(meta);
+        info.appendChild(time);
+        const actions = document.createElement('div');
+        actions.className = 'trial-review-actions';
+        const canUpdate = canPermission('calls_notes') || canPermission('cvs_write');
+        const makeBtn = (label, status, cls) => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'decision-btn ' + cls;
+          btn.textContent = label;
+          btn.disabled = !canUpdate;
+          btn.onclick = () => submitTrialReview(item, status);
+          return btn;
+        };
+        actions.appendChild(makeBtn('Contratar', 'hired', 'hired'));
+        actions.appendChild(makeBtn('Más tiempo', 'pending', 'pending'));
+        actions.appendChild(makeBtn('Descartar', 'rejected', 'rejected'));
+        card.appendChild(info);
+        card.appendChild(actions);
+        trialReviewListEl.appendChild(card);
+      });
+    }
+
+    function openTrialReviewModal(items) {
+      if (!trialReviewModalEl) return;
+      renderTrialReviewList(items);
+      trialReviewModalEl.style.display = 'flex';
+    }
+
+    function closeTrialReviewModal() {
+      if (!trialReviewModalEl) return;
+      trialReviewModalEl.style.display = 'none';
+      const snoozeUntil = Date.now() + 60 * 60 * 1000;
+      localStorage.setItem('hrbot_trial_review_snooze_until', String(snoozeUntil));
+      trialReviewSnoozeUntil = snoozeUntil;
+    }
+
+    async function submitTrialReview(item, status) {
+      const callIds = Array.isArray(item.callIds) ? item.callIds.filter(Boolean) : [];
+      const cvIds = Array.isArray(item.cvIds) ? item.cvIds.filter(Boolean) : [];
+      try {
+        let url = '';
+        let payload = { status };
+        if (item.type === 'call') {
+          const callId = callIds[0] || '';
+          if (!callId) throw new Error('missing_call_id');
+          url = '/admin/calls/' + encodeURIComponent(callId) + '/trial-review';
+          payload = { status, callIds, cvIds };
+        } else {
+          const cvId = cvIds[0] || '';
+          if (!cvId) throw new Error('missing_cv_id');
+          url = '/admin/cv/' + encodeURIComponent(cvId) + '/trial-review';
+          payload = { status, ids: cvIds, callIds };
+        }
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'review_failed');
+        const patch = {
+          trial_follow_up_status: status,
+          trial_follow_up_at: data.trial_follow_up_at || '',
+          decision: data.decision || ''
+        };
+        if (callIds.length) applyCallPatch(callIds, patch);
+        if (cvIds.length) applyCvPatch(cvIds, patch);
+        refreshTrialReviewItems();
+        renderResults(lastResultsRaw);
+        renderCvList(lastCvRaw);
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
+    function refreshTrialReviewItems() {
+      trialReviewItemsCache = collectTrialReviewItems();
+      if (!trialReviewItemsCache.length && trialReviewModalEl) {
+        trialReviewModalEl.style.display = 'none';
+      }
+      checkTrialReviewReminder();
+    }
+
+    function checkTrialReviewReminder() {
+      if (!trialReviewItemsCache.length) return;
+      if (!(canPermission('calls_notes') || canPermission('cvs_write'))) return;
+      const snooze = Number(localStorage.getItem('hrbot_trial_review_snooze_until') || trialReviewSnoozeUntil || 0);
+      if (snooze && Date.now() < snooze) return;
+      openTrialReviewModal(trialReviewItemsCache);
+    }
+
+    function startTrialReviewReminder() {
+      if (trialReviewTimer) return;
+      trialReviewTimer = setInterval(checkTrialReviewReminder, 60000);
+      checkTrialReviewReminder();
+    }
+
     function refreshTrialViews() {
       trialItemsCache = collectTrialItems();
       renderTrialCalendar(trialItemsCache);
       checkTrialReminder();
+      refreshTrialReviewItems();
     }
 
     function shiftCalendarMonth(delta) {
@@ -14712,6 +15363,7 @@ app.get("/admin/ui", (req, res) => {
         return true;
       }).filter((call) => {
         if (resultsDecisionMode === 'approved') return call.decision === 'approved';
+        if (resultsDecisionMode === 'hired') return call.decision === 'hired';
         if (resultsDecisionMode === 'declined') return call.decision === 'declined';
         if (resultsDecisionMode === 'maybe') return call.decision === 'maybe';
         return true;
@@ -14827,6 +15479,7 @@ app.get("/admin/ui", (req, res) => {
         decisionWrap.className = 'decision-buttons';
         const decisionOptions = [
           { key: 'approved', label: '✓', title: 'Aprobado' },
+          { key: 'hired', label: '★', title: 'Contratado' },
           { key: 'declined', label: '✕', title: 'Descartado' },
           { key: 'maybe', label: '?', title: 'Indeciso' }
         ];
@@ -14967,13 +15620,13 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function scheduleResultsLoad() {
-      if (activeView !== 'interviews') return;
+      if (activeView !== 'interviews' && activeView !== 'calendar') return;
       if (resultsTimer) clearTimeout(resultsTimer);
       resultsTimer = setTimeout(loadResults, 300);
     }
 
     function scheduleCvLoad() {
-      if (activeView !== 'calls') return;
+      if (activeView !== 'calls' && activeView !== 'calendar') return;
       if (cvTimer) clearTimeout(cvTimer);
       cvTimer = setTimeout(loadCvList, 300);
     }
@@ -15025,6 +15678,7 @@ app.get("/admin/ui", (req, res) => {
         if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
         if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
         if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
+        if (cvFilterMode === 'hired') return item.decision === 'hired' || info.category === 'hired';
         return true;
       });
       lastCvFiltered = filtered.slice();
@@ -15125,6 +15779,7 @@ app.get("/admin/ui", (req, res) => {
         decisionWrap.className = 'decision-buttons';
         const decisionOptions = [
           { key: 'approved', label: '✓', title: 'Aprobado' },
+          { key: 'hired', label: '★', title: 'Contratado' },
           { key: 'declined', label: '✕', title: 'Declinado' },
           { key: 'maybe', label: '?', title: 'Indeciso' }
         ];
@@ -15418,6 +16073,7 @@ app.get("/admin/ui", (req, res) => {
       loadMe();
       startBadgePolling();
       startTrialReminder();
+      startTrialReviewReminder();
       return true;
     }
 
@@ -15464,6 +16120,7 @@ app.get("/admin/ui", (req, res) => {
           loadMe();
           startBadgePolling();
           startTrialReminder();
+          startTrialReviewReminder();
         } catch (err) {
           setLoginStatus('Error: ' + err.message);
         }
@@ -15491,6 +16148,7 @@ app.get("/admin/ui", (req, res) => {
         loadMe();
         startBadgePolling();
         startTrialReminder();
+        startTrialReviewReminder();
         if (pendingPortalView === VIEW_PORTAL) {
           pendingPortalView = '';
           setActiveView(VIEW_PORTAL);
@@ -15939,6 +16597,12 @@ app.get("/admin/ui", (req, res) => {
     if (trialModalEl) {
       trialModalEl.addEventListener('click', (event) => {
         if (event.target === trialModalEl) closeTrialModal();
+      });
+    }
+    if (trialReviewCloseEl) trialReviewCloseEl.addEventListener('click', closeTrialReviewModal);
+    if (trialReviewModalEl) {
+      trialReviewModalEl.addEventListener('click', (event) => {
+        if (event.target === trialReviewModalEl) closeTrialReviewModal();
       });
     }
     if (interviewModalCloseEl) {
@@ -17282,6 +17946,8 @@ function buildCallHistoryEntry(call) {
   const brandDisplay = resolveBrandDisplay(call.brand || DEFAULT_BRAND);
   const roleDisplay = call.spokenRole || displayRole(call.role || DEFAULT_ROLE, call.brand || DEFAULT_BRAND);
   const trialAt = normalizeIso(call.trial_at || call.trialAt || "");
+  const trialFollowUpAt = normalizeIso(call.trial_follow_up_at || call.trialFollowUpAt || "");
+  const trialFollowUpStatus = (call.trial_follow_up_status || call.trialFollowUpStatus || "").toString().trim();
   return {
     callId: call.callSid || null,
     brand: brandDisplay,
@@ -17303,6 +17969,8 @@ function buildCallHistoryEntry(call) {
     salary: ex.salary_expectation || "",
     trial: ex.trial_date || ex.trial_availability || "",
     trial_at: trialAt || "",
+    trial_follow_up_status: trialFollowUpStatus || "",
+    trial_follow_up_at: trialFollowUpAt || "",
     stay_plan: ex.stay_plan || "",
     stay_detail: ex.stay_detail || "",
     mobility: ex.mobility || "",
@@ -17332,11 +18000,19 @@ function recordCallHistory(call) {
     const prevAltBrand = existing.alt_brand_key || "";
     const prevAltRole = existing.alt_role_key || "";
     const prevTrialAt = existing.trial_at || "";
+    const prevFollowStatus = existing.trial_follow_up_status || "";
+    const prevFollowAt = existing.trial_follow_up_at || "";
     Object.assign(existing, entry);
     if (!existing.notes && prevNotes) existing.notes = prevNotes;
     if (!existing.alt_brand_key && prevAltBrand) existing.alt_brand_key = prevAltBrand;
     if (!existing.alt_role_key && prevAltRole) existing.alt_role_key = prevAltRole;
     if ((!existing.trial_at || existing.trial_at === "") && prevTrialAt) existing.trial_at = prevTrialAt;
+    if ((!existing.trial_follow_up_status || existing.trial_follow_up_status === "") && prevFollowStatus) {
+      existing.trial_follow_up_status = prevFollowStatus;
+    }
+    if ((!existing.trial_follow_up_at || existing.trial_follow_up_at === "") && prevFollowAt) {
+      existing.trial_follow_up_at = prevFollowAt;
+    }
     scheduleCallHistorySave();
     if (dbPool) {
       upsertCallDb(existing).catch((err) => console.error("[call-history] db upsert failed", err));
@@ -17368,6 +18044,8 @@ function buildCvEntry(payload = {}) {
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
   const trialAt = normalizeIso(payload.trial_at || payload.trialAt || "");
+  const trialFollowUpAt = normalizeIso(payload.trial_follow_up_at || payload.trialFollowUpAt || "");
+  const trialFollowUpStatus = (payload.trial_follow_up_status || payload.trialFollowUpStatus || "").toString().trim();
   const customQuestion = (payload.custom_question || payload.customQuestion || "").toString().trim();
   const customQuestionModeRaw = (payload.custom_question_mode || payload.customQuestionMode || "").toString().trim();
   const customQuestionMode = customQuestionModeRaw === "ai" ? "ai" : "exact";
@@ -17386,6 +18064,8 @@ function buildCvEntry(payload = {}) {
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
     trial_at: trialAt || "",
+    trial_follow_up_status: trialFollowUpStatus || "",
+    trial_follow_up_at: trialFollowUpAt || "",
     custom_question: customQuestion,
     custom_question_mode: customQuestionMode,
     decision,
@@ -17406,6 +18086,12 @@ function recordCvEntry(entry) {
     }
     if ((next.trial_at === undefined || next.trial_at === "") && existing.trial_at) {
       next.trial_at = existing.trial_at;
+    }
+    if ((next.trial_follow_up_status === undefined || next.trial_follow_up_status === "") && existing.trial_follow_up_status) {
+      next.trial_follow_up_status = existing.trial_follow_up_status;
+    }
+    if ((next.trial_follow_up_at === undefined || next.trial_follow_up_at === "") && existing.trial_follow_up_at) {
+      next.trial_follow_up_at = existing.trial_follow_up_at;
     }
     Object.assign(existing, next);
     scheduleCvStoreSave();
@@ -17431,9 +18117,10 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, trial_at, custom_question, custom_question_mode, decision, source
+      cv_text, cv_url, cv_photo_url, trial_at, trial_follow_up_status, trial_follow_up_at,
+      custom_question, custom_question_mode, decision, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -17446,6 +18133,8 @@ async function upsertCvDb(entry) {
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
       trial_at = EXCLUDED.trial_at,
+      trial_follow_up_status = EXCLUDED.trial_follow_up_status,
+      trial_follow_up_at = EXCLUDED.trial_follow_up_at,
       custom_question = EXCLUDED.custom_question,
       custom_question_mode = EXCLUDED.custom_question_mode,
       decision = EXCLUDED.decision,
@@ -17464,6 +18153,8 @@ async function upsertCvDb(entry) {
     entry.cv_url || "",
     entry.cv_photo_url || "",
     entry.trial_at === undefined || entry.trial_at === "" ? null : entry.trial_at,
+    entry.trial_follow_up_status || "",
+    entry.trial_follow_up_at === undefined || entry.trial_follow_up_at === "" ? null : entry.trial_follow_up_at,
     entry.custom_question || "",
     entry.custom_question_mode || "exact",
     entry.decision || "",
@@ -17486,15 +18177,15 @@ async function upsertCallDb(entry) {
     INSERT INTO calls (
       call_sid, created_at, brand, brand_key, role, role_key, applicant, phone,
       score, recommendation, summary, warmth, fluency, english, english_detail,
-      experience, area, availability, salary, trial, trial_at, stay_plan, stay_detail,
+      experience, area, availability, salary, trial, trial_at, trial_follow_up_status, trial_follow_up_at, stay_plan, stay_detail,
       mobility, outcome, outcome_detail, duration_sec, audio_url,
       english_required, cv_id, cv_text, cv_url, notes, alt_brand_key, alt_role_key
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
       $9,$10,$11,$12,$13,$14,$15,
-      $16,$17,$18,$19,$20,$21,$22,$23,
-      $24,$25,$26,$27,$28,
-      $29,$30,$31,$32,$33,$34,$35
+      $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+      $26,$27,$28,$29,$30,
+      $31,$32,$33,$34,$35,$36,$37
     )
     ON CONFLICT (call_sid) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -17516,6 +18207,8 @@ async function upsertCallDb(entry) {
       salary = EXCLUDED.salary,
       trial = EXCLUDED.trial,
       trial_at = COALESCE(EXCLUDED.trial_at, calls.trial_at),
+      trial_follow_up_status = COALESCE(EXCLUDED.trial_follow_up_status, calls.trial_follow_up_status),
+      trial_follow_up_at = COALESCE(EXCLUDED.trial_follow_up_at, calls.trial_follow_up_at),
       stay_plan = EXCLUDED.stay_plan,
       stay_detail = EXCLUDED.stay_detail,
       mobility = EXCLUDED.mobility,
@@ -17553,6 +18246,8 @@ async function upsertCallDb(entry) {
     entry.salary || "",
     entry.trial || "",
     entry.trial_at === undefined || entry.trial_at === "" ? null : entry.trial_at,
+    entry.trial_follow_up_status || "",
+    entry.trial_follow_up_at === undefined || entry.trial_follow_up_at === "" ? null : entry.trial_follow_up_at,
     entry.stay_plan || "",
     entry.stay_detail || "",
     entry.mobility || "",
@@ -17656,6 +18351,8 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.salary,
       c.trial,
       c.trial_at,
+      c.trial_follow_up_status,
+      c.trial_follow_up_at,
       c.stay_plan,
       c.stay_detail,
       c.mobility,
@@ -17668,6 +18365,8 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
       cv.trial_at AS cv_trial_at,
+      cv.trial_follow_up_status AS cv_trial_follow_up_status,
+      cv.trial_follow_up_at AS cv_trial_follow_up_at,
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
@@ -17708,7 +18407,11 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       salary: row.salary || "",
       trial: row.trial || "",
       trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+      trial_follow_up_status: row.trial_follow_up_status || "",
+      trial_follow_up_at: row.trial_follow_up_at ? new Date(row.trial_follow_up_at).toISOString() : "",
       cv_trial_at: row.cv_trial_at ? new Date(row.cv_trial_at).toISOString() : "",
+      cv_trial_follow_up_status: row.cv_trial_follow_up_status || "",
+      cv_trial_follow_up_at: row.cv_trial_follow_up_at ? new Date(row.cv_trial_follow_up_at).toISOString() : "",
       stay_plan: row.stay_plan || "",
       stay_detail: row.stay_detail || "",
       mobility: row.mobility || "",
@@ -17756,6 +18459,8 @@ async function fetchCallById(callId) {
       c.salary,
       c.trial,
       c.trial_at,
+      c.trial_follow_up_status,
+      c.trial_follow_up_at,
       c.stay_plan,
       c.stay_detail,
       c.mobility,
@@ -17768,6 +18473,8 @@ async function fetchCallById(callId) {
       COALESCE(c.cv_text, cv.cv_text) AS cv_text,
       COALESCE(c.cv_url, cv.cv_url) AS cv_url,
       cv.trial_at AS cv_trial_at,
+      cv.trial_follow_up_status AS cv_trial_follow_up_status,
+      cv.trial_follow_up_at AS cv_trial_follow_up_at,
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
@@ -17806,7 +18513,11 @@ async function fetchCallById(callId) {
     salary: row.salary || "",
     trial: row.trial || "",
     trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+    trial_follow_up_status: row.trial_follow_up_status || "",
+    trial_follow_up_at: row.trial_follow_up_at ? new Date(row.trial_follow_up_at).toISOString() : "",
     cv_trial_at: row.cv_trial_at ? new Date(row.cv_trial_at).toISOString() : "",
+    cv_trial_follow_up_status: row.cv_trial_follow_up_status || "",
+    cv_trial_follow_up_at: row.cv_trial_follow_up_at ? new Date(row.cv_trial_follow_up_at).toISOString() : "",
     stay_plan: row.stay_plan || "",
     stay_detail: row.stay_detail || "",
     mobility: row.mobility || "",
@@ -17889,7 +18600,9 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       GROUP BY phone, brand_key
     )
     SELECT
-      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url, c.trial_at, c.custom_question, c.custom_question_mode, c.decision, c.source,
+      c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url,
+      c.trial_at, c.trial_follow_up_status, c.trial_follow_up_at,
+      c.custom_question, c.custom_question_mode, c.decision, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -17923,6 +18636,8 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
       trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+      trial_follow_up_status: row.trial_follow_up_status || "",
+      trial_follow_up_at: row.trial_follow_up_at ? new Date(row.trial_follow_up_at).toISOString() : "",
       custom_question: row.custom_question || "",
       custom_question_mode: row.custom_question_mode || "exact",
       decision: row.decision || "",
