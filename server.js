@@ -6517,8 +6517,21 @@ app.get("/admin/ui", (req, res) => {
       .brand-sub { font-size: 10px; }
       .nav-item { padding: 8px 10px; }
       .nav-label { font-size: 12px; }
-      .calendar-day { min-height: 72px; padding: 8px; }
-      .calendar-grid { gap: 8px; }
+      .calendar-header {
+        grid-template-columns: auto 1fr auto;
+        grid-template-rows: auto auto;
+        gap: 6px;
+      }
+      .calendar-title {
+        grid-column: 1 / -1;
+        font-size: 14px;
+      }
+      .calendar-header .btn-compact { padding: 4px 8px; font-size: 12px; }
+      .calendar-grid { gap: 6px; }
+      .calendar-day { min-height: 56px; padding: 6px; border-radius: 12px; }
+      .calendar-day-number { font-size: 11px; }
+      .calendar-day-count { display: none; }
+      .calendar-item { padding: 10px; border-radius: 12px; }
       .brand-list { max-height: 200px; overflow-y: auto; }
       .icon-btn { width: 36px; height: 36px; }
       .btn-compact { padding: 6px 8px; }
