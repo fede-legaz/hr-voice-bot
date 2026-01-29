@@ -4422,7 +4422,7 @@ app.get("/admin/ui", (req, res) => {
       background: rgba(255, 255, 255, 0.18);
       display: grid;
       place-items: center;
-      font-size: 12px;
+      font-size: 13px;
       font-weight: 700;
     }
     .nav-label { white-space: nowrap; min-width: 0; flex: 1; }
@@ -6058,17 +6058,24 @@ app.get("/admin/ui", (req, res) => {
     .trial-chip:disabled { opacity: 0.6; cursor: not-allowed; }
     .calendar-panel { margin-top: 16px; }
     .calendar-header {
-      display: flex;
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 10px;
+      gap: 10px;
+      padding: 6px 4px 8px;
+      border-bottom: 1px solid rgba(228, 218, 200, 0.6);
+      margin-bottom: 12px;
     }
-    .calendar-title { font-weight: 700; }
+    .calendar-title {
+      font-weight: 700;
+      font-size: 16px;
+      text-align: center;
+      letter-spacing: 0.02em;
+    }
     .calendar-grid {
       display: grid;
       grid-template-columns: repeat(7, minmax(0, 1fr));
-      gap: 8px;
+      gap: 10px;
     }
     .calendar-weekday {
       font-size: 11px;
@@ -6078,42 +6085,56 @@ app.get("/admin/ui", (req, res) => {
       text-align: center;
     }
     .calendar-day {
-      background: #fff;
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 8px;
-      min-height: 86px;
+      background: #fffdf8;
+      border: 1px solid rgba(228, 218, 200, 0.75);
+      border-radius: 16px;
+      padding: 10px;
+      min-height: 92px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
       cursor: pointer;
+      transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+    }
+    .calendar-day:hover {
+      border-color: rgba(27, 122, 140, 0.35);
+      box-shadow: 0 10px 22px rgba(27, 122, 140, 0.12);
+      transform: translateY(-1px);
     }
     .calendar-day.inactive { opacity: 0.4; cursor: default; }
     .calendar-day.today {
       border-color: #6fb0b7;
       box-shadow: 0 0 0 2px rgba(111, 176, 183, 0.2);
     }
-    .calendar-day.selected { background: #f3fafb; }
-    .calendar-day-number { font-weight: 600; font-size: 13px; }
-    .calendar-day-count { font-size: 11px; color: var(--muted); }
+    .calendar-day.selected { background: #eef6f7; }
+    .calendar-day-number { font-weight: 700; font-size: 13px; }
+    .calendar-day-count {
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+      background: #1b7a8c;
+      padding: 2px 7px;
+      border-radius: 999px;
+      align-self: flex-start;
+    }
     .calendar-list {
-      margin-top: 12px;
+      margin-top: 14px;
       display: grid;
-      gap: 8px;
+      gap: 10px;
     }
     .calendar-item {
       display: flex;
       justify-content: space-between;
-      gap: 12px;
-      padding: 10px 12px;
+      gap: 14px;
+      padding: 12px 14px;
       border: 1px solid var(--border);
-      border-radius: 12px;
+      border-radius: 14px;
       background: #fff;
       align-items: center;
     }
-    .calendar-item-name { font-weight: 600; }
+    .calendar-item-name { font-weight: 700; }
     .calendar-item-meta { font-size: 12px; color: var(--muted); }
-    .calendar-item-time { font-weight: 600; }
+    .calendar-item-time { font-weight: 700; color: var(--primary-dark); }
     .toast-container {
       position: fixed;
       right: 24px;
@@ -6496,6 +6517,8 @@ app.get("/admin/ui", (req, res) => {
       .brand-sub { font-size: 10px; }
       .nav-item { padding: 8px 10px; }
       .nav-label { font-size: 12px; }
+      .calendar-day { min-height: 72px; padding: 8px; }
+      .calendar-grid { gap: 8px; }
       .brand-list { max-height: 200px; overflow-y: auto; }
       .icon-btn { width: 36px; height: 36px; }
       .btn-compact { padding: 6px 8px; }
@@ -6559,6 +6582,10 @@ app.get("/admin/ui", (req, res) => {
           <span class="nav-icon">I</span>
           <span class="nav-label">Interviews</span>
           <span class="nav-badge" id="nav-interviews-badge"></span>
+        </button>
+        <button class="nav-item" id="nav-calendar" type="button" title="Calendario">
+          <span class="nav-icon">🗓</span>
+          <span class="nav-label">Calendario</span>
         </button>
         <button class="nav-item" id="nav-portal" type="button" title="Portal">
           <span class="nav-icon">P</span>
@@ -7198,13 +7225,16 @@ app.get("/admin/ui", (req, res) => {
           </div>
           <div class="small" id="results-count" style="margin-top:8px;"></div>
         </div>
-        <div class="panel calendar-panel" id="trial-calendar-panel" style="--delay:.08s;">
+      </section>
+
+      <section id="calendar-view" class="view" style="display:none;">
+        <div class="panel calendar-panel" id="trial-calendar-panel" style="--delay:.06s;">
           <div class="panel-title">Calendario de pruebas</div>
           <div class="panel-sub">Agenda en hora Miami (ET).</div>
           <div class="calendar-header">
-            <button class="secondary btn-compact" id="calendar-prev" type="button">‹</button>
+            <button class="secondary btn-compact" id="calendar-prev" type="button" aria-label="Mes anterior">‹</button>
             <div class="calendar-title" id="calendar-month">Mes</div>
-            <button class="secondary btn-compact" id="calendar-next" type="button">›</button>
+            <button class="secondary btn-compact" id="calendar-next" type="button" aria-label="Mes siguiente">›</button>
             <button class="secondary btn-compact" id="calendar-today" type="button">Hoy</button>
           </div>
           <div class="calendar-grid" id="calendar-weekdays"></div>
@@ -7986,6 +8016,7 @@ app.get("/admin/ui", (req, res) => {
     const navGeneralEl = document.getElementById('nav-general');
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
+    const navCalendarEl = document.getElementById('nav-calendar');
     const navPortalEl = document.getElementById('nav-portal');
     const navCallsBadgeEl = document.getElementById('nav-calls-badge');
     const navInterviewsBadgeEl = document.getElementById('nav-interviews-badge');
@@ -7996,6 +8027,7 @@ app.get("/admin/ui", (req, res) => {
     const generalViewEl = document.getElementById('general-view');
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
+    const calendarViewEl = document.getElementById('calendar-view');
     const portalViewEl = document.getElementById('portal-view');
     const brandViewEl = document.getElementById('brand-view');
     const loadBtnEl = document.getElementById('load');
@@ -8439,6 +8471,7 @@ app.get("/admin/ui", (req, res) => {
     };
     const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
+    const VIEW_CALENDAR = '__calendar__';
     const VIEW_PORTAL = '__portal__';
 
     if (window.pdfjsLib) {
@@ -12271,6 +12304,7 @@ app.get("/admin/ui", (req, res) => {
       navGeneralEl.classList.toggle('active', activeView === 'general');
       navCallsEl.classList.toggle('active', activeView === 'calls');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
+      if (navCalendarEl) navCalendarEl.classList.toggle('active', activeView === 'calendar');
       if (navPortalEl) navPortalEl.classList.toggle('active', activeView === 'portal');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
         btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
@@ -12278,7 +12312,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function setActiveView(key) {
-      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS) {
+      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS && key !== VIEW_CALENDAR) {
         key = VIEW_CALLS;
       }
       if (key === VIEW_CALLS) {
@@ -12286,6 +12320,9 @@ app.get("/admin/ui", (req, res) => {
         activeBrandKey = '';
       } else if (key === VIEW_INTERVIEWS) {
         activeView = 'interviews';
+        activeBrandKey = '';
+      } else if (key === VIEW_CALENDAR) {
+        activeView = 'calendar';
         activeBrandKey = '';
       } else if (key === VIEW_PORTAL) {
         activeView = 'portal';
@@ -12300,6 +12337,7 @@ app.get("/admin/ui", (req, res) => {
       generalViewEl.style.display = activeView === 'general' ? 'block' : 'none';
       callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
+      if (calendarViewEl) calendarViewEl.style.display = activeView === 'calendar' ? 'block' : 'none';
       if (portalViewEl) portalViewEl.style.display = activeView === 'portal' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
@@ -12315,6 +12353,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'interviews') {
         viewTitleEl.textContent = 'Interviews';
         viewLabelEl.textContent = 'Listado';
+      } else if (activeView === 'calendar') {
+        viewTitleEl.textContent = 'Calendario';
+        viewLabelEl.textContent = 'Agenda';
       } else if (activeView === 'portal') {
         viewTitleEl.textContent = 'Portal';
         viewLabelEl.textContent = 'Aplicaciones';
@@ -12331,6 +12372,11 @@ app.get("/admin/ui", (req, res) => {
       setPreviewDefaults(activeView === 'brand' ? activeBrandKey : '');
       if (activeView === 'interviews') {
         scheduleResultsLoad();
+      }
+      if (activeView === 'calendar') {
+        scheduleResultsLoad();
+        scheduleCvLoad();
+        refreshTrialViews();
       }
       if (activeView === 'calls') {
         scheduleCvLoad();
@@ -12521,6 +12567,8 @@ app.get("/admin/ui", (req, res) => {
         setActiveView(VIEW_CALLS);
       } else if (activeView === 'interviews') {
         setActiveView(VIEW_INTERVIEWS);
+      } else if (activeView === 'calendar') {
+        setActiveView(VIEW_CALENDAR);
       } else {
         setActiveView('');
       }
@@ -15543,6 +15591,7 @@ app.get("/admin/ui", (req, res) => {
     navGeneralEl.onclick = () => setActiveView('');
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
+    if (navCalendarEl) navCalendarEl.onclick = () => setActiveView(VIEW_CALENDAR);
     if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
     if (portalNewEl) {
       portalNewEl.onclick = () => {
@@ -15923,6 +15972,8 @@ app.get("/admin/ui", (req, res) => {
         pendingView = VIEW_PORTAL;
       } else if (viewParam === 'interviews') {
         pendingView = VIEW_INTERVIEWS;
+      } else if (viewParam === 'calendar') {
+        pendingView = VIEW_CALENDAR;
       } else if (viewParam === 'candidates' || viewParam === 'calls') {
         pendingView = VIEW_CALLS;
       } else if (viewParam === 'general') {
