@@ -76,6 +76,35 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
 const DEFAULT_ENGLISH_REQUIRED = true;
+const DEFAULT_ROLE_PERMISSIONS = {
+  admin: {
+    calls_whatsapp: true,
+    calls_audio: true,
+    calls_delete: true,
+    calls_notes: true,
+    cvs_call: true,
+    cvs_write: true,
+    cvs_delete: true
+  },
+  interviewer: {
+    calls_whatsapp: true,
+    calls_audio: true,
+    calls_delete: false,
+    calls_notes: true,
+    cvs_call: true,
+    cvs_write: true,
+    cvs_delete: false
+  },
+  viewer: {
+    calls_whatsapp: false,
+    calls_audio: false,
+    calls_delete: false,
+    calls_notes: false,
+    cvs_call: false,
+    cvs_write: false,
+    cvs_delete: false
+  }
+};
 
 const ROLE_NOTES = {
   server: "Requiere inglés conversacional. Calidez con clientes, servicio de salón, manejo de POS/bandeja.",
@@ -1962,6 +1991,27 @@ function normalizeUserRole(role) {
   return USER_ROLES.has(value) ? value : "viewer";
 }
 
+function getRolePermissionsConfig() {
+  const meta = roleConfig?.meta || {};
+  const stored = meta.permissions || {};
+  const mergeRole = (role) => ({
+    ...(DEFAULT_ROLE_PERMISSIONS[role] || {}),
+    ...(stored[role] || {})
+  });
+  return {
+    admin: mergeRole("admin"),
+    interviewer: mergeRole("interviewer"),
+    viewer: mergeRole("viewer")
+  };
+}
+
+function hasRolePermission(role, key) {
+  const roleKey = normalizeUserRole(role);
+  const perms = getRolePermissionsConfig();
+  const rolePerms = perms[roleKey] || {};
+  return !!rolePerms[key];
+}
+
 function normalizeAllowedBrands(list) {
   if (!Array.isArray(list)) return [];
   const out = [];
@@ -2078,6 +2128,26 @@ function requireWrite(req, res, next) {
   req.allowedBrands = ctx.allowedBrands;
   req.userEmail = ctx.email || "";
   next();
+}
+
+function requirePermission(permission) {
+  return (req, res, next) => {
+    const auth = req.headers.authorization || "";
+    const ctx = resolveAuthContext(auth);
+    if (!ctx) {
+      if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
+        return res.status(403).json({ error: "auth not configured" });
+      }
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    if (!hasRolePermission(ctx.role, permission)) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+    req.userRole = ctx.role;
+    req.allowedBrands = ctx.allowedBrands;
+    req.userEmail = ctx.email || "";
+    next();
+  };
 }
 
 function requireAdminUser(req, res, next) {
@@ -3414,7 +3484,7 @@ app.get("/admin/calls", requireConfigOrViewer, async (req, res) => {
   return res.json({ ok: true, calls: results });
 });
 
-app.delete("/admin/calls/:callId", requireAdminUser, async (req, res) => {
+app.delete("/admin/calls/:callId", requirePermission("calls_delete"), async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   let removed = 0;
@@ -3439,7 +3509,7 @@ app.delete("/admin/calls/:callId", requireAdminUser, async (req, res) => {
   return res.json({ ok: true, removed });
 });
 
-app.post("/admin/calls/:callId/notes", requireWrite, async (req, res) => {
+app.post("/admin/calls/:callId/notes", requirePermission("calls_notes"), async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   const rawNotes = typeof req.body?.notes === "string" ? req.body.notes : "";
@@ -3485,7 +3555,7 @@ app.post("/admin/calls/:callId/notes", requireWrite, async (req, res) => {
   return res.json({ ok: true, notes, alt_brand_key, alt_role_key });
 });
 
-app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => {
+app.post("/admin/calls/:callId/whatsapp", requirePermission("calls_whatsapp"), async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   try {
@@ -3512,7 +3582,7 @@ app.post("/admin/calls/:callId/whatsapp", requireAdminUser, async (req, res) => 
   }
 });
 
-app.get("/admin/calls/:callId/audio", requireConfigOrViewer, async (req, res) => {
+app.get("/admin/calls/:callId/audio", requirePermission("calls_audio"), async (req, res) => {
   const callId = (req.params?.callId || "").trim();
   if (!callId) return res.status(400).json({ error: "missing_call_id" });
   try {
@@ -3683,7 +3753,7 @@ app.get("/admin/cv", requireConfigOrViewer, async (req, res) => {
   return res.json({ ok: true, cvs: results });
 });
 
-app.post("/admin/cv", requireWrite, async (req, res) => {
+app.post("/admin/cv", requirePermission("cvs_write"), async (req, res) => {
   try {
     const body = req.body || {};
     const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
@@ -3802,7 +3872,7 @@ app.post("/admin/cv", requireWrite, async (req, res) => {
   }
 });
 
-app.post("/admin/cv/status", requireWrite, async (req, res) => {
+app.post("/admin/cv/status", requirePermission("cvs_write"), async (req, res) => {
   const body = req.body || {};
   const ids = Array.isArray(body.ids) ? body.ids.filter(Boolean) : (body.id ? [body.id] : []);
   if (!ids.length) return res.status(400).json({ error: "missing_cv_id" });
@@ -3824,7 +3894,7 @@ app.post("/admin/cv/status", requireWrite, async (req, res) => {
   return res.json({ ok: true, decision });
 });
 
-app.post("/admin/cv/question", requireWrite, async (req, res) => {
+app.post("/admin/cv/question", requirePermission("cvs_write"), async (req, res) => {
   try {
     const body = req.body || {};
     const id = (body.id || "").toString().trim();
@@ -3861,7 +3931,7 @@ app.post("/admin/cv/question", requireWrite, async (req, res) => {
   }
 });
 
-app.delete("/admin/cv/:id", requireAdminUser, async (req, res) => {
+app.delete("/admin/cv/:id", requirePermission("cvs_delete"), async (req, res) => {
   const id = (req.params?.id || "").trim();
   if (!id) return res.status(400).json({ error: "missing_cv_id" });
   let removed = 0;
@@ -3884,7 +3954,7 @@ app.delete("/admin/cv/:id", requireAdminUser, async (req, res) => {
   return res.json({ ok: true, removed });
 });
 
-app.post("/admin/ocr", requireWrite, async (req, res) => {
+app.post("/admin/ocr", requirePermission("cvs_write"), async (req, res) => {
   try {
     const images = normalizeOcrImages(req.body?.images || []);
     if (!images.length) {
@@ -4050,7 +4120,7 @@ app.post("/admin/cv-photo", requireConfigOrViewer, async (req, res) => {
   }
 });
 
-app.post("/admin/extract-contact", requireWrite, async (req, res) => {
+app.post("/admin/extract-contact", requirePermission("cvs_write"), async (req, res) => {
   try {
     const rawText = (req.body?.text || "").toString();
     if (!rawText.trim()) {
@@ -5481,6 +5551,42 @@ app.get("/admin/ui", (req, res) => {
       pointer-events: none;
     }
     .user-panel > * { position: relative; }
+    .permissions-grid {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .perm-row {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) 120px 120px;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #fff;
+    }
+    .perm-row.perm-head {
+      background: #f7f2e8;
+      border-color: transparent;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .perm-name { font-weight: 600; color: #1f2a24; }
+    .perm-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .perm-toggle input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--primary);
+    }
     .user-hero {
       display: flex;
       align-items: flex-start;
@@ -6123,6 +6229,12 @@ app.get("/admin/ui", (req, res) => {
         flex: 1;
         min-width: 96px;
       }
+      .perm-row {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+      }
+      .perm-row.perm-head { display: none; }
+      .perm-toggle { justify-content: flex-start; }
       #cv-tabs, #results-tabs, #results-decision-tabs {
         display: flex;
         flex-wrap: nowrap;
@@ -6422,6 +6534,51 @@ app.get("/admin/ui", (req, res) => {
               <button class="secondary" id="admin-unlock" type="button">Unlock</button>
             </div>
             <span class="small" id="admin-status"></span>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-title" id="section-permissions">Permisos por rol</div>
+          <div class="panel-sub">Definí hasta dónde llega el acceso de Interviewer y Viewer.</div>
+          <div class="permissions-grid" id="permissions-grid">
+            <div class="perm-row perm-head">
+              <span>Acción</span>
+              <span>Interviewer</span>
+              <span>Viewer</span>
+            </div>
+            <div class="perm-row" data-perm="cvs_call">
+              <span class="perm-name">Llamar candidatos</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="cvs_write">
+              <span class="perm-name">Subir/editar CVs y preguntas</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="cvs_delete">
+              <span class="perm-name">Eliminar candidatos</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="calls_notes">
+              <span class="perm-name">Editar notas y perfil alternativo</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="calls_whatsapp">
+              <span class="perm-name">Enviar WhatsApp de entrevistas</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="calls_audio">
+              <span class="perm-name">Descargar audio de entrevistas</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="calls_delete">
+              <span class="perm-name">Eliminar entrevistas</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
           </div>
         </div>
         <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
@@ -7774,6 +7931,7 @@ app.get("/admin/ui", (req, res) => {
     const previewOutputEl = document.getElementById('preview-output');
     const previewStatusEl = document.getElementById('preview-status');
     const usersPanelEl = document.getElementById('users-panel');
+    const permissionsGridEl = document.getElementById('permissions-grid');
     const userEmailEl = document.getElementById('user-email');
     const userPasswordEl = document.getElementById('user-password');
     const userRoleEl = document.getElementById('user-role');
@@ -7867,6 +8025,7 @@ app.get("/admin/ui", (req, res) => {
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
+    let authPermissions = { ...(defaultRolePermissions?.admin || {}) };
     let authBrands = [];
     let authEmail = '';
     let adminToken = '';
@@ -7879,6 +8038,17 @@ app.get("/admin/ui", (req, res) => {
     let activeView = 'general';
     let activeBrandKey = '';
     let suppressSidebarSync = false;
+    const permissionInputs = {};
+    if (permissionsGridEl) {
+      permissionsGridEl.querySelectorAll('[data-perm]').forEach((row) => {
+        const key = row.dataset.perm || '';
+        if (!key) return;
+        permissionInputs[key] = {
+          interviewer: row.querySelector('input[data-role="interviewer"]'),
+          viewer: row.querySelector('input[data-role="viewer"]')
+        };
+      });
+    }
     let resultsTimer = null;
     let cvTimer = null;
     let cvActiveTimer = null;
@@ -7973,6 +8143,7 @@ app.get("/admin/ui", (req, res) => {
     const defaultRecordingDeclineEs = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_ES)};
     const defaultRecordingDeclineEn = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_EN)};
     const defaultAssistantKb = ${JSON.stringify(DEFAULT_ASSISTANT_KB_TEMPLATE)};
+    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
@@ -7996,7 +8167,8 @@ app.get("/admin/ui", (req, res) => {
       recording_no_response_en: defaultRecordingNoResponseEn,
       recording_decline_es: defaultRecordingDeclineEs,
       recording_decline_en: defaultRecordingDeclineEn,
-      assistant_kb: defaultAssistantKb
+      assistant_kb: defaultAssistantKb,
+      permissions: defaultRolePermissions
     };
     const OUTCOME_LABELS = {
       NO_ANSWER: "No contestó",
@@ -8589,9 +8761,58 @@ app.get("/admin/ui", (req, res) => {
       } catch (err) {}
     }
 
+    function mergeRolePermissions(role, overrides) {
+      return {
+        ...(defaultRolePermissions?.[role] || {}),
+        ...(overrides || {})
+      };
+    }
+
+    function getPermissionsConfig() {
+      const meta = state?.config?.meta || {};
+      const stored = meta.permissions || {};
+      return {
+        admin: mergeRolePermissions('admin', stored.admin),
+        interviewer: mergeRolePermissions('interviewer', stored.interviewer),
+        viewer: mergeRolePermissions('viewer', stored.viewer)
+      };
+    }
+
+    function updateAuthPermissions() {
+      const perms = getPermissionsConfig();
+      authPermissions = perms[authRole] || mergeRolePermissions('viewer');
+    }
+
+    function canPermission(key) {
+      if (authRole === 'admin') return true;
+      return !!(authPermissions && authPermissions[key]);
+    }
+
+    function renderPermissions(perms) {
+      const merged = {
+        interviewer: mergeRolePermissions('interviewer', perms?.interviewer),
+        viewer: mergeRolePermissions('viewer', perms?.viewer)
+      };
+      Object.entries(permissionInputs).forEach(([key, inputs]) => {
+        if (inputs.interviewer) inputs.interviewer.checked = !!merged.interviewer[key];
+        if (inputs.viewer) inputs.viewer.checked = !!merged.viewer[key];
+      });
+    }
+
+    function collectPermissions() {
+      const permissions = { interviewer: {}, viewer: {} };
+      Object.entries(permissionInputs).forEach(([key, inputs]) => {
+        if (inputs.interviewer) permissions.interviewer[key] = !!inputs.interviewer.checked;
+        if (inputs.viewer) permissions.viewer[key] = !!inputs.viewer.checked;
+      });
+      return permissions;
+    }
+
     function applyRoleAccess() {
       const isAdmin = authRole === 'admin';
-      const canWrite = authRole !== 'viewer';
+      updateAuthPermissions();
+      const canWrite = canPermission('cvs_write');
+      const canCall = canPermission('cvs_call');
       if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
       if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
       if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
@@ -8599,10 +8820,10 @@ app.get("/admin/ui", (req, res) => {
       if (loadBtnEl) loadBtnEl.style.display = isAdmin ? '' : 'none';
       if (saveBtnEl) saveBtnEl.style.display = isAdmin ? '' : 'none';
       if (usersPanelEl) usersPanelEl.style.display = isAdmin ? 'block' : 'none';
-      if (callPanelEl) callPanelEl.classList.toggle('readonly', !canWrite);
-      if (callBtnEl) callBtnEl.disabled = !canWrite;
+      if (callPanelEl) callPanelEl.classList.toggle('readonly', !(canWrite || canCall));
+      if (callBtnEl) callBtnEl.disabled = !canCall;
       if (cvSaveBtnEl) cvSaveBtnEl.disabled = !canWrite;
-      if (callClearEl) callClearEl.disabled = !canWrite;
+      if (callClearEl) callClearEl.disabled = !(canWrite || canCall);
       if (cvFileEl) cvFileEl.disabled = !canWrite;
       if (!isAdmin && activeView === 'general') {
         setActiveView(VIEW_CALLS);
@@ -8937,6 +9158,7 @@ app.get("/admin/ui", (req, res) => {
 
     function openCvQuestionModal(item) {
       if (!cvQuestionModalEl || !cvQuestionTextEl) return;
+      if (!canPermission('cvs_write')) return;
       pendingCvQuestionId = item?.id || (Array.isArray(item?.cvIds) ? item.cvIds[0] : '') || '';
       cvQuestionTextEl.value = item?.custom_question || '';
       if (cvQuestionAiEl) cvQuestionAiEl.checked = item?.custom_question_mode === 'ai';
@@ -8953,6 +9175,7 @@ app.get("/admin/ui", (req, res) => {
 
     async function saveCvQuestion() {
       if (!pendingCvQuestionId) return;
+      if (!canPermission('cvs_write')) return;
       const question = (cvQuestionTextEl.value || '').trim();
       const mode = cvQuestionAiEl && cvQuestionAiEl.checked ? 'ai' : 'exact';
       setCvQuestionStatus('Guardando...');
@@ -11004,10 +11227,10 @@ app.get("/admin/ui", (req, res) => {
         btn.textContent = opt.label;
         btn.title = opt.title;
         btn.setAttribute('aria-label', opt.title);
-        btn.disabled = authRole === 'viewer';
+        btn.disabled = !canPermission('cvs_write');
         btn.onclick = async (event) => {
           event.stopPropagation();
-          if (authRole === 'viewer') return;
+          if (!canPermission('cvs_write')) return;
         const ids = Array.isArray(item.cvIds) && item.cvIds.length
           ? item.cvIds
           : (item.id ? [item.id] : []);
@@ -11050,8 +11273,9 @@ app.get("/admin/ui", (req, res) => {
         btn.onclick = () => openCvModal(item.cv_text || '');
         cvActions.appendChild(btn);
       }
-      const canWrite = authRole !== 'viewer';
-      if (canWrite) {
+      const canCall = canPermission('cvs_call');
+      const canWrite = canPermission('cvs_write');
+      if (canCall) {
         const callBtn = document.createElement('button');
         callBtn.type = 'button';
         callBtn.className = 'btn-compact';
@@ -11090,6 +11314,8 @@ app.get("/admin/ui", (req, res) => {
           });
         };
         cvActions.appendChild(callBtn);
+      }
+      if (canWrite) {
         const qBtn = document.createElement('button');
         qBtn.type = 'button';
         qBtn.className = 'secondary btn-compact';
@@ -11105,7 +11331,7 @@ app.get("/admin/ui", (req, res) => {
         viewBtn.onclick = () => goToInterviewFromCv(item);
         cvActions.appendChild(viewBtn);
       }
-      if (authRole === 'admin') {
+      if (canPermission('cvs_delete')) {
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'secondary btn-compact icon-only';
@@ -11191,7 +11417,7 @@ app.get("/admin/ui", (req, res) => {
       const decisionIds = Array.isArray(call.cvIds) && call.cvIds.length
         ? call.cvIds
         : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
-      const canUpdateDecision = authRole !== 'viewer' && decisionIds.length;
+      const canUpdateDecision = canPermission('cvs_write') && decisionIds.length;
       decisionOptions.forEach((opt) => {
         const btn = document.createElement('button');
         btn.type = 'button';
@@ -11239,7 +11465,7 @@ app.get("/admin/ui", (req, res) => {
         const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
         const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
         const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
-        mediaWrap.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
+        mediaWrap.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName, allowDownload: canPermission('calls_audio') }));
       }
       mediaSection.appendChild(buildSwipeRow('Audio', mediaWrap));
       card.appendChild(mediaSection);
@@ -11248,7 +11474,7 @@ app.get("/admin/ui", (req, res) => {
       actionSection.className = 'swipe-section';
       const actionWrap = document.createElement('div');
       actionWrap.className = 'action-stack';
-      if (authRole === 'admin' && call.callId) {
+      if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
         waBtn.className = 'secondary btn-compact';
@@ -11256,7 +11482,7 @@ app.get("/admin/ui", (req, res) => {
         waBtn.onclick = () => sendInterviewWhatsapp(call);
         actionWrap.appendChild(waBtn);
       }
-      if (authRole === 'admin' && call.callId) {
+      if (canPermission('calls_delete') && call.callId) {
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.className = 'secondary btn-compact icon-only';
@@ -11873,6 +12099,8 @@ app.get("/admin/ui", (req, res) => {
           ? meta.assistant_kb
           : defaults.assistant_kb;
       }
+      renderPermissions(meta.permissions || defaults.permissions || {});
+      updateAuthPermissions();
       setSystemPromptBaseline(systemPromptEl.value || '');
       if (!systemPromptUnlocked) {
         lockSystemPrompt();
@@ -12005,7 +12233,8 @@ app.get("/admin/ui", (req, res) => {
           recording_no_response_en: recordingNoResponseEnEl?.value || '',
           recording_decline_es: recordingDeclineEsEl?.value || '',
           recording_decline_en: recordingDeclineEnEl?.value || '',
-          assistant_kb: assistantKbEl?.value || ''
+          assistant_kb: assistantKbEl?.value || '',
+          permissions: collectPermissions()
         }
       };
       getBrandCards().forEach((bCard) => {
@@ -12687,8 +12916,8 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function placeCall(payloadOverride = null) {
-      if (authRole === 'viewer') {
-        setCallStatus('Solo lectura.');
+      if (!canPermission('cvs_call')) {
+        setCallStatus('Sin permisos para llamar.');
         return;
       }
       setCallStatus('Enviando llamada...');
@@ -12819,6 +13048,7 @@ app.get("/admin/ui", (req, res) => {
     function buildAudioPlayer(url, opts = {}) {
       const downloadUrl = opts.downloadUrl || url;
       const downloadName = opts.downloadName || 'audio.mp3';
+      const allowDownload = opts.allowDownload !== false && canPermission('calls_audio');
       const wrap = document.createElement('div');
       wrap.className = 'audio-player';
       const audio = document.createElement('audio');
@@ -12943,7 +13173,7 @@ app.get("/admin/ui", (req, res) => {
       wrap.appendChild(playBtn);
       wrap.appendChild(progress);
       wrap.appendChild(time);
-      wrap.appendChild(downloadBtn);
+      if (allowDownload) wrap.appendChild(downloadBtn);
       wrap.appendChild(menu);
       wrap.appendChild(audio);
       return wrap;
@@ -13075,9 +13305,10 @@ app.get("/admin/ui", (req, res) => {
       const notesArea = document.createElement('textarea');
       notesArea.className = 'detail-notes';
       notesArea.rows = 3;
-      notesArea.placeholder = authRole === 'viewer' ? 'Sin notas.' : 'Escribí notas internas sobre el candidato.';
+      const canNotes = canPermission('calls_notes');
+      notesArea.placeholder = canNotes ? 'Escribí notas internas sobre el candidato.' : 'Sin notas.';
       notesArea.value = call.notes || '';
-      notesArea.disabled = authRole === 'viewer';
+      notesArea.disabled = !canNotes;
       notesBlock.appendChild(notesLabel);
       notesBlock.appendChild(notesArea);
 
@@ -13115,13 +13346,13 @@ app.get("/admin/ui", (req, res) => {
             altRoleSelect.appendChild(option);
           });
         }
-        altRoleSelect.disabled = authRole === 'viewer' || !brandKey;
+        altRoleSelect.disabled = !canNotes || !brandKey;
         if (preserveValue && brandKey && call.alt_role_key) {
           altRoleSelect.value = call.alt_role_key;
         }
       };
       setAltRoleOptions(true);
-      altBrandSelect.disabled = authRole === 'viewer';
+      altBrandSelect.disabled = !canNotes;
       altBrandSelect.addEventListener('change', () => setAltRoleOptions(false));
       altRow.appendChild(altBrandSelect);
       altRow.appendChild(altRoleSelect);
@@ -13135,12 +13366,12 @@ app.get("/admin/ui", (req, res) => {
       saveNotesBtn.type = 'button';
       saveNotesBtn.className = 'primary btn-compact';
       saveNotesBtn.textContent = 'Guardar notas';
-      saveNotesBtn.disabled = authRole === 'viewer';
+      saveNotesBtn.disabled = !canNotes;
       const notesStatus = document.createElement('span');
       notesStatus.className = 'detail-note-status';
       saveNotesBtn.onclick = async (event) => {
         event.stopPropagation();
-        if (authRole === 'viewer') return;
+        if (!canNotes) return;
         const nextNotes = notesArea.value.trim();
         const nextAltBrand = altBrandSelect.value || '';
         const nextAltRole = nextAltBrand ? (altRoleSelect.value || '') : '';
@@ -13152,7 +13383,7 @@ app.get("/admin/ui", (req, res) => {
         } catch (err) {
           notesStatus.textContent = 'Error: ' + err.message;
         } finally {
-          saveNotesBtn.disabled = authRole === 'viewer';
+          saveNotesBtn.disabled = !canNotes;
           setTimeout(() => { notesStatus.textContent = ''; }, 2000);
         }
       };
@@ -13177,9 +13408,9 @@ app.get("/admin/ui", (req, res) => {
         const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
         const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
         const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
-        actions.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
+        actions.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName, allowDownload: canPermission('calls_audio') }));
       }
-      if (authRole === 'admin' && call.callId) {
+      if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
         waBtn.className = 'secondary btn-compact';
@@ -13571,6 +13802,10 @@ app.get("/admin/ui", (req, res) => {
     async function sendInterviewWhatsapp(call) {
       const callId = call?.callId || '';
       if (!callId) return;
+      if (!canPermission('calls_whatsapp')) {
+        setStatus('Sin permisos para WhatsApp.');
+        return;
+      }
       setStatus('Enviando entrevista por WhatsApp...');
       try {
         const resp = await fetch('/admin/calls/' + encodeURIComponent(callId) + '/whatsapp', {
@@ -13774,7 +14009,7 @@ app.get("/admin/ui", (req, res) => {
         const decisionIds = Array.isArray(call.cvIds) && call.cvIds.length
           ? call.cvIds
           : (call.cv_id || call.cvId ? [call.cv_id || call.cvId] : []);
-        const canUpdateDecision = authRole !== 'viewer' && decisionIds.length;
+        const canUpdateDecision = canPermission('cvs_write') && decisionIds.length;
         decisionOptions.forEach((opt) => {
           const btn = document.createElement('button');
           btn.type = 'button';
@@ -13830,7 +14065,7 @@ app.get("/admin/ui", (req, res) => {
           const downloadId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
           const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : call.audio_url;
           const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
-          audioTd.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName }));
+          audioTd.appendChild(buildAudioPlayer(call.audio_url, { downloadUrl, downloadName, allowDownload: canPermission('calls_audio') }));
         } else {
           audioTd.textContent = '—';
         }
@@ -13839,7 +14074,7 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        if (authRole === 'admin' && call.callId) {
+        if (canPermission('calls_whatsapp') && call.callId) {
           const waBtn = document.createElement('button');
           waBtn.type = 'button';
           waBtn.className = 'secondary btn-compact';
@@ -13850,7 +14085,7 @@ app.get("/admin/ui", (req, res) => {
           };
           actionWrap.appendChild(waBtn);
         }
-        if (authRole === 'admin' && call.callId) {
+        if (canPermission('calls_delete') && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'secondary btn-compact icon-only';
@@ -14050,10 +14285,10 @@ app.get("/admin/ui", (req, res) => {
           btn.textContent = opt.label;
           btn.title = opt.title;
           btn.setAttribute('aria-label', opt.title);
-          btn.disabled = authRole === 'viewer';
+          btn.disabled = !canPermission('cvs_write');
           btn.onclick = async (event) => {
             event.stopPropagation();
-            if (authRole === 'viewer') return;
+            if (!canPermission('cvs_write')) return;
             const ids = Array.isArray(item.cvIds) && item.cvIds.length
               ? item.cvIds
               : (item.id ? [item.id] : []);
@@ -14109,8 +14344,9 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        const canWrite = authRole !== 'viewer';
-        if (canWrite) {
+        const canWrite = canPermission('cvs_write');
+        const canCall = canPermission('cvs_call');
+        if (canCall) {
           const callBtn = document.createElement('button');
           callBtn.type = 'button';
           callBtn.className = 'btn-compact';
@@ -14149,6 +14385,8 @@ app.get("/admin/ui", (req, res) => {
             });
           };
           actionWrap.appendChild(callBtn);
+        }
+        if (canWrite) {
           const qBtn = document.createElement('button');
           qBtn.type = 'button';
           qBtn.className = 'secondary btn-compact';
@@ -14164,7 +14402,7 @@ app.get("/admin/ui", (req, res) => {
           viewBtn.onclick = () => goToInterviewFromCv(item);
           actionWrap.appendChild(viewBtn);
         }
-        if (authRole === 'admin') {
+        if (canPermission('cvs_delete')) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
           delBtn.className = 'secondary btn-compact icon-only';
@@ -14230,8 +14468,8 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function saveCvEntry({ silent } = {}) {
-      if (authRole === 'viewer') {
-        if (!silent) setCallStatus('Solo lectura.');
+      if (!canPermission('cvs_write')) {
+        if (!silent) setCallStatus('Sin permisos para guardar.');
         return null;
       }
       if (!silent) setCallStatus('Guardando CV...');
@@ -15292,7 +15530,7 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
   }
 });
 
-app.post("/call", requireWrite, async (req, res) => {
+app.post("/call", requirePermission("cvs_call"), async (req, res) => {
   try {
     const body = req.body || {};
     const {
