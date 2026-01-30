@@ -2672,11 +2672,13 @@ async function initDb() {
         cv_text TEXT,
         cv_url TEXT,
         notes TEXT,
+        decision TEXT,
         alt_brand_key TEXT,
         alt_role_key TEXT
       );
     `);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS decision TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_status TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
@@ -6544,16 +6546,18 @@ app.get("/admin/ui", (req, res) => {
     .trial-review-name { font-weight: 700; }
     .trial-review-meta { font-size: 12px; color: var(--muted); }
     .trial-review-actions {
-      display: flex;
+      display: grid;
       gap: 8px;
-      flex-wrap: wrap;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
       align-items: center;
       justify-content: flex-end;
     }
     .trial-review-actions .decision-btn {
-      padding: 6px 10px;
+      padding: 7px 10px;
       border-radius: 999px;
       font-size: 12px;
+      line-height: 1.2;
+      min-width: 120px;
       border: 1px solid rgba(27, 122, 140, 0.25);
       background: rgba(27, 122, 140, 0.08);
       color: var(--primary-dark);
@@ -6976,7 +6980,7 @@ app.get("/admin/ui", (req, res) => {
       .calendar-item-actions .audio-player { width: 100%; min-width: 0; }
       .calendar-item-time { align-self: flex-end; }
       .trial-review-item { flex-direction: column; align-items: flex-start; }
-      .trial-review-actions { width: 100%; justify-content: flex-start; }
+      .trial-review-actions { width: 100%; justify-content: flex-start; grid-template-columns: 1fr; }
       .brand-list { max-height: 200px; overflow-y: auto; }
       .icon-btn { width: 36px; height: 36px; }
       .btn-compact { padding: 6px 8px; }
@@ -15193,7 +15197,7 @@ app.get("/admin/ui", (req, res) => {
           body: JSON.stringify(payload)
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.error || 'review_failed');
+        if (!resp.ok) throw new Error(data.detail || data.error || 'review_failed');
         const patch = {
           trial_follow_up_status: status,
           trial_follow_up_at: data.trial_follow_up_at || '',
