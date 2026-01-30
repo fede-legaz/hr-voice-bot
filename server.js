@@ -46,7 +46,8 @@ const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
 const WHATSAPP_FROM = process.env.WHATSAPP_FROM || "";
 const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
-const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM;
+const TWILIO_SMS_MESSAGING_SERVICE_SID = process.env.TWILIO_SMS_MESSAGING_SERVICE_SID || "";
+const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM || "+18556431913";
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
@@ -1067,6 +1068,66 @@ function normalizePhone(num) {
   return s;
 }
 
+function normalizeSmsBody(text) {
+  return String(text || "")
+    .toLowerCase()
+    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isSmsOptedOut(phone) {
+  const norm = normalizePhone(phone);
+  if (!norm) return false;
+  return smsOptOutSet.has(norm);
+}
+
+async function setSmsOptOut(phone, optedOut = true) {
+  const norm = normalizePhone(phone);
+  if (!norm) return;
+  if (optedOut) smsOptOutSet.add(norm);
+  else smsOptOutSet.delete(norm);
+  if (!dbPool) return;
+  try {
+    if (optedOut) {
+      await dbPool.query(
+        "INSERT INTO sms_opt_out (phone, opted_out_at) VALUES ($1, NOW()) ON CONFLICT (phone) DO UPDATE SET opted_out_at = NOW()",
+        [norm]
+      );
+    } else {
+      await dbPool.query("DELETE FROM sms_opt_out WHERE phone = $1", [norm]);
+    }
+  } catch (err) {
+    console.error("[sms] opt-out save failed", err);
+  }
+}
+
+function buildNoAnswerPayload(call) {
+  if (!call) return null;
+  const brand = call.brand || DEFAULT_BRAND;
+  const role = call.role || DEFAULT_ROLE;
+  return {
+    to: call.to || "",
+    from: TWILIO_VOICE_FROM || "",
+    brand,
+    role,
+    englishRequired: call.englishRequired ? "1" : "0",
+    address: call.address || resolveAddress(brand, null),
+    applicant: call.applicant || "",
+    cv_summary: call.cvText || call.cvSummary || "",
+    cv_text: call.cvText || call.cvSummary || "",
+    cv_id: call.cvId || call.cv_id || "",
+    resume_url: call.resumeUrl || call.resume_url || call.cvUrl || call.cv_url || "",
+    custom_question: call.customQuestion || call.custom_question || "",
+    custom_question_mode: call.customQuestionMode || call.custom_question_mode || "exact"
+  };
+}
+
+function buildNoAnswerSms(call) {
+  const brandLabel = resolveBrandDisplay(call?.brand || DEFAULT_BRAND);
+  return `Yes Restaurants: We tried calling you from (786) 957-5783 regarding your job interview at ${brandLabel}. Reply YES to receive a call back or NO to opt out. Reply STOP to stop all messages.`;
+}
+
 function normalizeIso(value) {
   if (!value) return "";
   const d = new Date(value);
@@ -1654,12 +1715,16 @@ function attachActiveCall(entry, activeIndex) {
 
 // --- in-memory stores with TTL ---
 const CALL_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const NO_ANSWER_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const callsByStream = new Map(); // streamSid -> call
 const callsByCallSid = new Map(); // callSid -> call
 const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
+const lastNoAnswerByNumber = new Map(); // toNumber -> { payload, expiresAt, lastNoAnswerAt }
+const lastCallbackByNumber = new Map(); // toNumber -> timestamp
 const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
+const smsOptOutSet = new Set();
 const tokens = new Map(); // token -> { path?, callSid?, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const userSessions = new Map(); // token -> { email, role, allowedBrands, expiresAt }
@@ -1732,11 +1797,17 @@ function cleanup() {
   for (const [k, v] of lastCallByNumber.entries()) {
     if (v.expiresAt && v.expiresAt < now) lastCallByNumber.delete(k);
   }
+  for (const [k, v] of lastNoAnswerByNumber.entries()) {
+    if (v.expiresAt && v.expiresAt < now) lastNoAnswerByNumber.delete(k);
+  }
   for (const [k, v] of smsSentBySid.entries()) {
     if (v && v < now) smsSentBySid.delete(k);
   }
   for (const [k, v] of noAnswerSentBySid.entries()) {
     if (v && v < now) noAnswerSentBySid.delete(k);
+  }
+  for (const [k, v] of lastCallbackByNumber.entries()) {
+    if (v && v < now - 10 * 60 * 1000) lastCallbackByNumber.delete(k);
   }
   for (const [k, v] of voiceCtxByToken.entries()) {
     if (v.expiresAt && v.expiresAt < now) voiceCtxByToken.delete(k);
@@ -2644,6 +2715,25 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;`);
     await dbPool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_photo_url TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);`);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS sms_opt_out (
+        phone TEXT PRIMARY KEY,
+        opted_out_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    try {
+      const { rows } = await dbPool.query("SELECT phone FROM sms_opt_out");
+      for (const row of rows) {
+        const norm = normalizePhone(row?.phone || "");
+        if (norm) smsOptOutSet.add(norm);
+      }
+      if (rows.length) {
+        console.log("[sms] loaded opt-outs", rows.length);
+      }
+    } catch (err) {
+      console.error("[sms] failed to load opt-outs", err);
+    }
 
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS portal_pages (
@@ -16987,34 +17077,58 @@ ${paramTags}
   return res.type("text/xml").send(twiml);
 });
 
-app.post("/sms-inbound", express.urlencoded({ extended: false }), async (req, res) => {
-  const from = (req.body?.From || "").trim();
-  const body = (req.body?.Body || "").trim().toLowerCase();
-  const last = lastCallByNumber.get(from);
+function smsInboundTwiml(msg) {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscapeAttr(msg)}</Message></Response>`;
+}
 
-  function twiml(msg) {
-    return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscapeAttr(msg)}</Message></Response>`;
-  }
+async function handleSmsInbound(req, res) {
+  const from = normalizePhone(req.body?.From || "");
+  const rawBody = req.body?.Body || "";
+  const normBody = normalizeSmsBody(rawBody);
+  const tokens = normBody.split(/[^a-z0-9]+/).filter(Boolean);
+  const hasToken = (list) => list.some((t) => tokens.includes(t));
+  const isStop = hasToken(["stop", "unsubscribe", "cancel", "end", "quit"]);
+  const isNo = hasToken(["no"]);
+  const isYes = hasToken(["yes", "si"]);
 
   if (!from) {
-    return res.type("text/xml").send(twiml("No tengo tu número."));
-  }
-  if (!last) {
-    return res.type("text/xml").send(twiml("No encuentro tu última solicitud. Decime el puesto y te llamamos."));
+    return res.type("text/xml").send(smsInboundTwiml("We could not read your number."));
   }
 
-  if (/^(si|sí|yes|call|llama|llamar)/i.test(body)) {
+  if (isStop || isNo) {
+    await setSmsOptOut(from, true);
+    return res.type("text/xml").send(smsInboundTwiml("You have been opted out. Reply YES if you want a call back later."));
+  }
+
+  if (isYes) {
+    if (isSmsOptedOut(from)) {
+      await setSmsOptOut(from, false);
+    }
+    const now = Date.now();
+    const lastCallback = lastCallbackByNumber.get(from);
+    if (lastCallback && now - lastCallback < 10 * 60 * 1000) {
+      return res.type("text/xml").send(smsInboundTwiml("Thanks. We will call you back shortly."));
+    }
+    const ctx = lastNoAnswerByNumber.get(from) || lastCallByNumber.get(from);
+    if (!ctx?.payload) {
+      return res.type("text/xml").send(smsInboundTwiml("Reply YES for a call back or NO/STOP to opt out."));
+    }
+    const payload = { ...ctx.payload, to: from };
+    if (!payload.from) payload.from = TWILIO_VOICE_FROM || "";
+    lastCallbackByNumber.set(from, now);
     try {
-      await placeOutboundCall(last.payload);
-      return res.type("text/xml").send(twiml("Te llamamos ahora."));
+      await placeOutboundCall(payload);
     } catch (err) {
       console.error("[sms-inbound] recall failed", err);
-      return res.type("text/xml").send(twiml("No pude llamar ahora. Lo intentamos de nuevo."));
     }
+    return res.type("text/xml").send(smsInboundTwiml("Thanks. We will call you back shortly."));
   }
 
-  return res.type("text/xml").send(twiml("Recibido. Si querés que te llamemos, responde SI."));
-});
+  return res.type("text/xml").send(smsInboundTwiml("Reply YES for a call back or NO/STOP to opt out."));
+}
+
+app.post("/sms-inbound", express.urlencoded({ extended: false }), handleSmsInbound);
+app.post("/twilio/sms/inbound", express.urlencoded({ extended: false }), handleSmsInbound);
 
 app.post("/call-status", express.urlencoded({ extended: false }), async (req, res) => {
   res.status(200).end();
@@ -18931,17 +19045,27 @@ async function placeOutboundCall(payload) {
 }
 
 async function sendSms(to, body) {
-  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_SMS_FROM) {
-    throw new Error("missing sms credentials/from");
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    throw new Error("missing sms credentials");
   }
   const toNorm = normalizePhone(to);
-  const fromNorm = normalizePhone(TWILIO_SMS_FROM);
-  if (!toNorm || !fromNorm) {
-    throw new Error(`invalid to/from for sms to=${to} from=${TWILIO_SMS_FROM}`);
+  if (!toNorm) {
+    throw new Error(`invalid to for sms to=${to}`);
   }
   const params = new URLSearchParams();
   params.append("To", toNorm);
-  params.append("From", fromNorm);
+  if (TWILIO_SMS_MESSAGING_SERVICE_SID) {
+    params.append("MessagingServiceSid", TWILIO_SMS_MESSAGING_SERVICE_SID);
+  } else {
+    if (!TWILIO_SMS_FROM) {
+      throw new Error("missing sms from/messaging service");
+    }
+    const fromNorm = normalizePhone(TWILIO_SMS_FROM);
+    if (!fromNorm) {
+      throw new Error(`invalid from for sms from=${TWILIO_SMS_FROM}`);
+    }
+    params.append("From", fromNorm);
+  }
   params.append("Body", body);
   const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
     method: "POST",
@@ -19014,15 +19138,29 @@ async function markNoAnswer(call, reason) {
     call.whatsappSent = false;
     call.callStatus = "completed";
     call.expiresAt = Date.now() + CALL_TTL_MS;
+    const toNumber = normalizePhone(call.to || call.from || "");
+    const noAnswerPayload = buildNoAnswerPayload(call);
+    if (toNumber && noAnswerPayload) {
+      noAnswerPayload.to = toNumber;
+      if (!noAnswerPayload.from) noAnswerPayload.from = TWILIO_VOICE_FROM || "";
+      lastNoAnswerByNumber.set(toNumber, {
+        payload: noAnswerPayload,
+        expiresAt: Date.now() + NO_ANSWER_CONTEXT_TTL_MS,
+        lastNoAnswerAt: Date.now()
+      });
+    }
     if (call.hangupTimer) {
       clearTimeout(call.hangupTimer);
       call.hangupTimer = null;
     }
     await hangupCall(call);
-    const smsMsg = `📵 Candidato no contestó: ${call.applicant || "Candidato"} | ${call.brand} | ${call.spokenRole || displayRole(call.role, call.brand)} | callId: ${call.callSid || "n/a"}`;
-    const toNumber = call.to || call.from;
-    if (toNumber) {
-      await sendSms(toNumber, smsMsg);
+    if (toNumber && !isSmsOptedOut(toNumber)) {
+      const smsMsg = buildNoAnswerSms(call);
+      try {
+        await sendSms(toNumber, smsMsg);
+      } catch (err) {
+        console.error("[no-answer] sms failed", err);
+      }
     }
     try {
       await sendWhatsappReport(call);
