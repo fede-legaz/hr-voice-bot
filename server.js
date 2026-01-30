@@ -6414,6 +6414,10 @@ app.get("/admin/ui", (req, res) => {
     .calendar-item-name { font-weight: 700; }
     .calendar-item-meta { font-size: 12px; color: var(--muted); }
     .calendar-item-actions {
+      display: grid;
+      gap: 8px;
+    }
+    .calendar-item-actions-row {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
@@ -6424,8 +6428,9 @@ app.get("/admin/ui", (req, res) => {
       font-size: 12px;
     }
     .calendar-item-actions .audio-player {
-      max-width: 260px;
-      min-width: 200px;
+      width: 100%;
+      max-width: 320px;
+      min-width: 0;
     }
     .calendar-item-time {
       font-weight: 700;
@@ -14918,19 +14923,22 @@ app.get("/admin/ui", (req, res) => {
         meta.textContent = [item.brand, item.role, item.phone].filter(Boolean).join(' • ');
         const actions = document.createElement('div');
         actions.className = 'calendar-item-actions';
+        const actionRow = document.createElement('div');
+        actionRow.className = 'calendar-item-actions-row';
         if (item.cv_url) {
           const cvBtn = document.createElement('button');
           cvBtn.type = 'button';
           cvBtn.className = 'secondary btn-compact';
           cvBtn.textContent = 'Ver CV';
           cvBtn.onclick = () => window.open(item.cv_url, '_blank', 'noopener');
-          actions.appendChild(cvBtn);
+          actionRow.appendChild(cvBtn);
         }
+        if (actionRow.children.length) actions.appendChild(actionRow);
         if (item.audio_url && canPermission('calls_audio')) {
           const downloadId = item.callId || '';
           const downloadUrl = downloadId ? '/admin/calls/' + encodeURIComponent(downloadId) + '/audio' : item.audio_url;
           const downloadName = 'interview_' + (downloadId || 'audio') + '.mp3';
-          actions.appendChild(buildAudioPlayer(item.audio_url, { downloadUrl, downloadName, allowDownload: true }));
+          actions.appendChild(buildAudioPlayer(item.audio_url, { downloadUrl, downloadName, allowDownload: false }));
         }
         left.appendChild(name);
         left.appendChild(meta);
