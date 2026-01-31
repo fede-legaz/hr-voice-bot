@@ -2344,6 +2344,18 @@ function resolveAuthContext(authHeader) {
   return { role, allowedBrands, email: session.email || "" };
 }
 
+function resolveAuthContextFromRequest(req) {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader) return resolveAuthContext(authHeader);
+  const token = (req.query && (req.query.token || req.query.auth || req.query.session)) || "";
+  const tokenValue = String(token || "").trim();
+  if (!tokenValue) return null;
+  if (CONFIG_TOKEN && tokenValue === CONFIG_TOKEN) {
+    return { role: "admin", allowedBrands: null, email: null };
+  }
+  return resolveAuthContext(`Bearer ${tokenValue}`);
+}
+
 function requireConfig(req, res, next) {
   if (!CONFIG_TOKEN) return res.status(403).json({ error: "config token not set" });
   const auth = req.headers.authorization || "";
@@ -2367,8 +2379,7 @@ function requireConfigOrViewer(req, res, next) {
 }
 
 function requireWrite(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const ctx = resolveAuthContext(auth);
+  const ctx = resolveAuthContextFromRequest(req);
   if (!ctx) {
     if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
       return res.status(403).json({ error: "auth not configured" });
@@ -2386,8 +2397,7 @@ function requireWrite(req, res, next) {
 
 function requirePermission(permission) {
   return (req, res, next) => {
-    const auth = req.headers.authorization || "";
-    const ctx = resolveAuthContext(auth);
+    const ctx = resolveAuthContextFromRequest(req);
     if (!ctx) {
       if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
         return res.status(403).json({ error: "auth not configured" });
@@ -2405,8 +2415,7 @@ function requirePermission(permission) {
 }
 
 function requireAdminUser(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const ctx = resolveAuthContext(auth);
+  const ctx = resolveAuthContextFromRequest(req);
   if (!ctx) {
     if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
       return res.status(403).json({ error: "auth not configured" });
@@ -18212,7 +18221,9 @@ app.get("/admin/ui", (req, res) => {
         actions.className = 'onboarding-doc-actions';
         if (latest && (latest.doc_url || latest.doc_data)) {
           const open = document.createElement('a');
-          open.href = latest.doc_url || ('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc/' + encodeURIComponent(latest.id));
+          const token = (tokenEl?.value || '').trim();
+          const qs = token ? '?token=' + encodeURIComponent(token) : '';
+          open.href = latest.doc_url || ('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc/' + encodeURIComponent(latest.id) + qs);
           open.target = '_blank';
           open.rel = 'noopener';
           open.textContent = 'Ver';
@@ -18358,7 +18369,9 @@ app.get("/admin/ui", (req, res) => {
 
     function exportOnboardingPacket() {
       if (!onboardingProfile || !onboardingProfile.id) return;
-      const url = '/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/packet';
+      const token = (tokenEl?.value || '').trim();
+      const qs = token ? '?token=' + encodeURIComponent(token) : '';
+      const url = '/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/packet' + qs;
       window.open(url, '_blank', 'noopener');
     }
 
