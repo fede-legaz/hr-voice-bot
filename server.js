@@ -7682,7 +7682,15 @@ app.get("/admin/ui", (req, res) => {
       max-height: 55vh;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .onboarding-modal-card { width: min(760px, 94vw); }
+    .onboarding-modal-card {
+      width: min(680px, 92vw);
+      max-height: 86vh;
+      overflow: auto;
+      resize: both;
+      min-width: 320px;
+      min-height: 360px;
+      box-sizing: border-box;
+    }
     .onboarding-head {
       display: flex;
       align-items: center;
@@ -8443,6 +8451,13 @@ app.get("/admin/ui", (req, res) => {
       .onboarding-link-row {
         flex-direction: column;
         align-items: stretch;
+      }
+      .onboarding-modal-card {
+        width: 94vw;
+        max-height: 88vh;
+        resize: vertical;
+        min-width: 0;
+        min-height: 0;
       }
     }
   </style>
