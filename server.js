@@ -3398,7 +3398,7 @@ function mapI9FieldsByLayout(fields, layout) {
   const data = fields && typeof fields === "object" ? fields : {};
   const textFields = layout.filter((item) => item.pageIndex === 0 && /TextField/i.test(item.type));
   const checkboxFields = layout.filter((item) => item.pageIndex === 0 && /CheckBox/i.test(item.type));
-  const rows = groupRows(textFields, 12);
+  const rows = groupRows(textFields, 16);
   const out = {};
   const used = new Set();
   const assignRow = (row, keys) => {
@@ -3413,9 +3413,18 @@ function mapI9FieldsByLayout(fields, layout) {
       used.add(item.name);
     });
   };
-  assignRow(rows[0], ["last_name", "first_name", "middle_initial", "other_last_names"]);
-  assignRow(rows[1], ["address", "apt", "city", "state", "zip"]);
-  assignRow(rows[2], ["dob", "ssn", "email", "phone"]);
+  const remaining = rows.slice();
+  const pickRow = (predicate) => {
+    const idx = remaining.findIndex((row) => predicate(row));
+    if (idx >= 0) return remaining.splice(idx, 1)[0];
+    return remaining.shift();
+  };
+  const nameRow = pickRow((row) => (row.items || []).length >= 4);
+  assignRow(nameRow, ["last_name", "first_name", "middle_initial", "other_last_names"]);
+  const addressRow = pickRow((row) => (row.items || []).length >= 4);
+  assignRow(addressRow, ["address", "apt", "city", "state", "zip"]);
+  const contactRow = pickRow((row) => (row.items || []).length >= 3);
+  assignRow(contactRow, ["dob", "ssn", "email", "phone"]);
 
   const remainingText = textFields.filter((item) => !used.has(item.name));
   const remainingRows = groupRows(remainingText, 12);
@@ -3454,7 +3463,7 @@ function mapW4FieldsByLayout(fields, layout) {
   const data = fields && typeof fields === "object" ? fields : {};
   const textFields = layout.filter((item) => item.pageIndex === 0 && /TextField/i.test(item.type));
   const checkboxFields = layout.filter((item) => item.pageIndex === 0 && /CheckBox/i.test(item.type));
-  const rows = groupRows(textFields, 12);
+  const rows = groupRows(textFields, 16);
   const out = {};
   const used = new Set();
   const assignRow = (row, keys) => {
@@ -3469,9 +3478,20 @@ function mapW4FieldsByLayout(fields, layout) {
       used.add(item.name);
     });
   };
-  assignRow(rows[0], ["first_name", "last_name"]);
-  assignRow(rows[1], ["address", "apt", "city", "state", "zip"]);
-  assignRow(rows[2], ["ssn"]);
+  const remaining = rows.slice();
+  const pickRow = (predicate) => {
+    const idx = remaining.findIndex((row) => predicate(row));
+    if (idx >= 0) return remaining.splice(idx, 1)[0];
+    return remaining.shift();
+  };
+  const nameRow = pickRow((row) => (row.items || []).length >= 2);
+  assignRow(nameRow, ["first_name", "last_name"]);
+  const addressRow = pickRow((row) => (row.items || []).length <= 2);
+  assignRow(addressRow, ["address", "apt"]);
+  const cityRow = pickRow((row) => (row.items || []).length >= 3);
+  assignRow(cityRow, ["city", "state", "zip"]);
+  const ssnRow = pickRow((row) => (row.items || []).length === 1);
+  assignRow(ssnRow, ["ssn"]);
   const status = normalizeChoice(data.filing_status);
   const statusOrder = ["single", "married", "head"];
   const sortedChecks = checkboxFields.sort((a, b) => b.y - a.y);
@@ -3480,6 +3500,27 @@ function mapW4FieldsByLayout(fields, layout) {
     if (!item) return;
     out[item.name] = status === key ? "true" : "false";
   });
+  const remainingFields = textFields.filter((item) => !used.has(item.name));
+  const stepKeys = [
+    "dependents_children",
+    "dependents_other",
+    "dependents_total",
+    "other_income",
+    "deductions",
+    "extra_withholding"
+  ];
+  let cursor = 0;
+  remainingFields
+    .sort((a, b) => (b.y - a.y) || (a.x - b.x))
+    .forEach((item) => {
+      if (cursor >= stepKeys.length) return;
+      const key = stepKeys[cursor];
+      const value = data[key];
+      if (value !== undefined && value !== null && value !== "") {
+        out[item.name] = String(value);
+      }
+      cursor += 1;
+    });
   return out;
 }
 
@@ -3619,6 +3660,20 @@ function mapW4Fields(fields, templateFields) {
     if (!fieldName) return;
     out[fieldName] = status === key ? "true" : "false";
   });
+  const stepMap = [
+    ["dependents_children", ["3a", "step 3a", "3(a)"]],
+    ["dependents_other", ["3b", "step 3b", "3(b)"]],
+    ["dependents_total", ["3", "step 3", "3 total", "total"]],
+    ["other_income", ["4a", "step 4a", "4(a)"]],
+    ["deductions", ["4b", "step 4b", "4(b)"]],
+    ["extra_withholding", ["4c", "step 4c", "4(c)"]]
+  ];
+  stepMap.forEach(([key, patterns]) => {
+    const value = data[key];
+    if (value === undefined || value === null || value === "") return;
+    const fieldName = findTemplateField(templateFields, patterns);
+    if (fieldName) out[fieldName] = String(value);
+  });
   const dateField = findTemplateField(templateFields, ["date", "today's date"]);
   if (dateField) out[dateField] = formatDateUs(data.signature_date || new Date());
   return out;
@@ -3751,13 +3806,13 @@ async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDa
       const img = parsed.mime.includes("png")
         ? await pdfDoc.embedPng(parsed.buffer)
         : await pdfDoc.embedJpg(parsed.buffer);
-      const maxW = Math.min(220, size.width - 80);
-      const maxH = 70;
+      const maxW = Math.min(180, size.width - 100);
+      const maxH = 50;
       const scale = Math.min(maxW / img.width, maxH / img.height, 1);
       const imgW = img.width * scale;
       const imgH = img.height * scale;
-      const x = 60;
-      const y = 90;
+      const x = 70;
+      const y = 70;
       firstPage.drawImage(img, { x, y, width: imgW, height: imgH });
     }
   }
@@ -5825,6 +5880,7 @@ function renderOnboardingPageHtml(token) {
               formField('SSN', 'ssn'),
               formField('Email', 'email'),
               formField('Teléfono', 'phone'),
+              formField('Fecha de firma', 'signature_date', 'date'),
               formField('Estatus de elegibilidad', 'status', 'select', [
                 { label: 'Citizen', value: 'citizen' },
                 { label: 'Noncitizen national', value: 'noncitizen' },
@@ -5861,7 +5917,14 @@ function renderOnboardingPageHtml(token) {
                 { label: 'Single or Married filing separately', value: 'single' },
                 { label: 'Married filing jointly', value: 'married' },
                 { label: 'Head of household', value: 'head' }
-              ])
+              ]),
+              formField('Dependientes (Step 3a)', 'dependents_children', 'number'),
+              formField('Otros dependientes (Step 3b)', 'dependents_other', 'number'),
+              formField('Total Step 3', 'dependents_total', 'number'),
+              formField('Other income (4a)', 'other_income', 'number'),
+              formField('Deductions (4b)', 'deductions', 'number'),
+              formField('Extra withholding (4c)', 'extra_withholding', 'number'),
+              formField('Fecha de firma', 'signature_date', 'date')
             ]
           };
         }
@@ -5996,6 +6059,10 @@ function renderOnboardingPageHtml(token) {
                 input.type = field.type || 'text';
               }
               input.dataset.key = field.key;
+              if (field.type === 'number') {
+                input.inputMode = 'numeric';
+                input.placeholder = '0';
+              }
               if (field.type === 'date') {
                 input.placeholder = 'YYYY-MM-DD';
               }
@@ -6009,7 +6076,17 @@ function renderOnboardingPageHtml(token) {
                 });
               }
               const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
-              input.value = existingValue || '';
+              if (existingValue) {
+                input.value = existingValue || '';
+              } else if (lowerKey === 'signature_date') {
+                const today = new Date();
+                const yyyy = today.getFullYear();
+                const mm = String(today.getMonth() + 1).padStart(2, '0');
+                const dd = String(today.getDate()).padStart(2, '0');
+                input.value = yyyy + '-' + mm + '-' + dd;
+              } else {
+                input.value = '';
+              }
               wrap.appendChild(input);
               formFieldsEl.appendChild(wrap);
             });
@@ -6123,6 +6200,15 @@ function renderOnboardingPageHtml(token) {
                 return;
               }
               data.ssn = digits;
+            }
+            if (data.signature_date && data.signature_date.length > 0) {
+              // keep as ISO date for server mapping
+            } else {
+              const today = new Date();
+              const yyyy = today.getFullYear();
+              const mm = String(today.getMonth() + 1).padStart(2, '0');
+              const dd = String(today.getDate()).padStart(2, '0');
+              data.signature_date = yyyy + '-' + mm + '-' + dd;
             }
             delete data.__signature_name;
             const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/pdf', {
