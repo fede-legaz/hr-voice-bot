@@ -11,6 +11,14 @@ const { S3Client, PutObjectCommand, GetObjectCommand } = require("@aws-sdk/clien
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const webpush = require("web-push");
 const { createPortalRouter } = require("./portal");
+let PDFDocument;
+let StandardFonts;
+let rgb;
+try {
+  ({ PDFDocument, StandardFonts, rgb } = require("pdf-lib"));
+} catch (err) {
+  console.warn("[pdf] pdf-lib not available, onboarding PDF export disabled");
+}
 
 const PORT = Number(process.env.PORT || 8080);
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
@@ -374,6 +382,13 @@ function resolveBrandDisplay(brand) {
   const brandEntry = roleConfig?.[bKey];
   const brandMeta = brandEntry && brandEntry._meta;
   return brandMeta?.displayName || brand || DEFAULT_BRAND;
+}
+
+function resolveBrandLogo(brand) {
+  const bKey = brandKey(brand);
+  const brandEntry = roleConfig?.[bKey];
+  const brandMeta = brandEntry && brandEntry._meta;
+  return brandMeta?.logo || brandMeta?.logoUrl || "";
 }
 
 function toWss(httpUrl) {
@@ -3071,6 +3086,207 @@ function parseDataUrl(dataUrl) {
   return { mime, buffer };
 }
 
+function guessFileKind(url, contentType) {
+  const ct = String(contentType || "").toLowerCase();
+  if (ct.includes("pdf")) return "pdf";
+  if (ct.startsWith("image/")) return "image";
+  const lowerUrl = String(url || "").toLowerCase();
+  if (lowerUrl.includes(".pdf")) return "pdf";
+  if (/\.(png|jpe?g|gif|webp|bmp)(\?|$)/i.test(lowerUrl)) return "image";
+  return "file";
+}
+
+async function fetchBinaryFromUrl(url) {
+  if (!url) return null;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`fetch_failed_${resp.status}`);
+  const contentType = resp.headers.get("content-type") || "";
+  const arr = await resp.arrayBuffer();
+  return { buffer: Buffer.from(arr), contentType };
+}
+
+function wrapPdfText(text, maxWidth, font, size) {
+  const words = String(text || "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const next = line ? line + " " + word : word;
+    const width = font.widthOfTextAtSize(next, size);
+    if (width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = next;
+    }
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
+  if (!PDFDocument) throw new Error("pdf_lib_missing");
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const pageSize = [612, 792];
+  const margin = 46;
+  let logoBytes = null;
+  if (logoUrl) {
+    if (logoUrl.startsWith("data:")) {
+      const parsed = parseDataUrl(logoUrl);
+      if (parsed) logoBytes = { buffer: parsed.buffer, contentType: parsed.mime };
+    } else {
+      const signedLogo = await resolveStoredUrl(logoUrl, 24 * 60 * 60);
+      logoBytes = await fetchBinaryFromUrl(signedLogo);
+    }
+  }
+
+  const cover = pdfDoc.addPage(pageSize);
+  const { width, height } = cover.getSize();
+  let y = height - margin;
+  cover.drawText("Onboarding completo", {
+    x: margin,
+    y,
+    size: 18,
+    font: fontBold,
+    color: rgb(0.1, 0.35, 0.45)
+  });
+  y -= 28;
+  const nameLine = `Nombre: ${profile.name || "—"}`;
+  const brandLine = `Restaurant: ${[profile.brand, profile.role].filter(Boolean).join(" • ") || "—"}`;
+  const phoneLine = `Telefono: ${profile.phone || "—"}`;
+  const payLine = profile.pay_rate
+    ? `Salario: ${profile.pay_rate}${profile.pay_unit ? " / " + profile.pay_unit : ""}`
+    : "Salario: —";
+  const startLine = profile.start_date
+    ? `Fecha de ingreso: ${new Date(profile.start_date).toLocaleDateString("en-US")}`
+    : "Fecha de ingreso: —";
+  const policyLine = `Politica firmada: ${profile.policy_ack ? "Si" : "No"}`;
+  const metaLines = [nameLine, brandLine, phoneLine, payLine, startLine, policyLine];
+  metaLines.forEach((line) => {
+    cover.drawText(line, { x: margin, y, size: 11, font });
+    y -= 16;
+  });
+  y -= 6;
+  cover.drawText("Documentos:", { x: margin, y, size: 12, font: fontBold });
+  y -= 16;
+  const docSummary = [];
+  if (cvUrl) docSummary.push("CV: adjunto");
+  docs.forEach((doc) => {
+    const label = doc.doc_type || "Documento";
+    const status = doc.doc_url ? "adjunto" : (doc.doc_data ? "formulario" : "pendiente");
+    docSummary.push(`${label}: ${status}`);
+  });
+  if (!docSummary.length) docSummary.push("Sin documentos.");
+  docSummary.forEach((line) => {
+    const lines = wrapPdfText(line, width - margin * 2, font, 11);
+    lines.forEach((l) => {
+      if (y < margin + 40) return;
+      cover.drawText(l, { x: margin, y, size: 11, font });
+      y -= 14;
+    });
+  });
+  cover.drawText(`Generado: ${new Date().toLocaleString("en-US")}`, {
+    x: margin,
+    y: margin - 6,
+    size: 9,
+    font
+  });
+  if (logoBytes) {
+    const kind = guessFileKind(logoUrl, logoBytes.contentType);
+    try {
+      const img = kind === "image" && logoBytes.contentType?.includes("png")
+        ? await pdfDoc.embedPng(logoBytes.buffer)
+        : await pdfDoc.embedJpg(logoBytes.buffer);
+      const size = 64;
+      cover.drawImage(img, {
+        x: width - margin - size,
+        y: height - margin - size + 4,
+        width: size,
+        height: size
+      });
+    } catch (err) {
+      // ignore logo render errors
+    }
+  }
+
+  async function addTextPage(title, bodyLines) {
+    const page = pdfDoc.addPage(pageSize);
+    let py = height - margin;
+    page.drawText(title || "Documento", { x: margin, y: py, size: 14, font: fontBold });
+    py -= 18;
+    bodyLines.forEach((line) => {
+      const lines = wrapPdfText(line, width - margin * 2, font, 11);
+      lines.forEach((l) => {
+        if (py < margin + 12) return;
+        page.drawText(l, { x: margin, y: py, size: 11, font });
+        py -= 14;
+      });
+    });
+  }
+
+  async function addImagePage(title, bytes, contentType) {
+    const page = pdfDoc.addPage(pageSize);
+    const img = contentType?.includes("png")
+      ? await pdfDoc.embedPng(bytes)
+      : await pdfDoc.embedJpg(bytes);
+    const maxW = width - margin * 2;
+    const maxH = height - margin * 2 - 24;
+    const scale = Math.min(maxW / img.width, maxH / img.height);
+    const imgW = img.width * scale;
+    const imgH = img.height * scale;
+    page.drawText(title || "Documento", { x: margin, y: height - margin - 8, size: 12, font: fontBold });
+    page.drawImage(img, {
+      x: margin,
+      y: height - margin - 24 - imgH,
+      width: imgW,
+      height: imgH
+    });
+  }
+
+  async function addPdfPages(title, bytes) {
+    await addTextPage(title || "Documento", []);
+    const source = await PDFDocument.load(bytes);
+    const pages = await pdfDoc.copyPages(source, source.getPageIndices());
+    pages.forEach((p) => pdfDoc.addPage(p));
+  }
+
+  const entries = [];
+  if (cvUrl) entries.push({ label: "CV", url: cvUrl });
+  docs.forEach((doc) => {
+    entries.push({
+      label: doc.doc_type || "Documento",
+      url: doc.doc_url || "",
+      data: doc.doc_data || null
+    });
+  });
+
+  for (const entry of entries) {
+    if (entry.data) {
+      const lines = Object.entries(entry.data).map(([key, value]) => `${key}: ${value}`);
+      await addTextPage(entry.label || "Documento", lines);
+    }
+    if (!entry.url) continue;
+    try {
+      const signedUrl = await resolveStoredUrl(entry.url, 24 * 60 * 60);
+      const fetched = await fetchBinaryFromUrl(signedUrl);
+      if (!fetched) continue;
+      const kind = guessFileKind(entry.url, fetched.contentType);
+      if (kind === "pdf") {
+        await addPdfPages(entry.label || "Documento", fetched.buffer);
+      } else if (kind === "image") {
+        await addImagePage(entry.label || "Documento", fetched.buffer, fetched.contentType || "");
+      } else {
+        await addTextPage(entry.label || "Documento", ["Archivo adjunto: " + entry.url]);
+      }
+    } catch (err) {
+      await addTextPage(entry.label || "Documento", ["No se pudo cargar el archivo adjunto."]);
+    }
+  }
+
+  return Buffer.from(await pdfDoc.save());
+}
+
 function sanitizeFilename(name = "") {
   if (!name) return "file";
   return name.replace(/[^\w.\-]+/g, "_");
@@ -5415,6 +5631,16 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
     if (!profile) return res.status(404).send("not_found");
     const docs = await fetchOnboardingDocs(id);
     const cvUrl = profile.cv_id ? await fetchCvUrlById(profile.cv_id) : "";
+    const logoUrl = resolveBrandLogo(profile.brand);
+    const wantsPdf = req.query?.download === "1" || req.query?.format === "pdf";
+    if (wantsPdf) {
+      if (!PDFDocument) return res.status(400).send("pdf_unavailable");
+      const pdfBuffer = await buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl });
+      const safeName = (profile.name || "onboarding").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="onboarding-${safeName || "packet"}.pdf"`);
+      return res.send(pdfBuffer);
+    }
     const safe = (v) => String(v || "");
     const safeAttr = (v) => String(v || "").replace(/"/g, "&quot;");
     const isImageUrl = (url) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(url || "");
@@ -7441,6 +7667,22 @@ app.get("/admin/ui", (req, res) => {
       padding: 6px 10px;
       border-radius: 10px;
     }
+    .onboarding-table .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #f2efe9;
+      color: var(--primary-dark);
+      border: 1px solid var(--border);
+    }
+    .onboarding-table .status-pill .status-icon { font-size: 12px; }
+    .onboarding-table .status-hired { background: #e6f5ee; color: #1b6b3a; border-color: rgba(27, 107, 58, 0.2); }
+    .onboarding-table .status-complete { background: #eaf6fb; color: #1b6b85; border-color: rgba(27, 107, 133, 0.2); }
+    .onboarding-table .status-pending { background: #fbf3df; color: #9b6a00; border-color: rgba(155, 106, 0, 0.2); }
     .user-hero {
       display: flex;
       align-items: flex-start;
@@ -7781,12 +8023,13 @@ app.get("/admin/ui", (req, res) => {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
     .onboarding-modal-card {
-      width: min(680px, 92vw);
-      max-height: 86vh;
+      width: min(820px, 94vw);
+      max-width: 94vw;
+      max-height: 90vh;
       overflow: auto;
-      resize: both;
-      min-width: 320px;
-      min-height: 360px;
+      resize: vertical;
+      min-width: 280px;
+      min-height: 260px;
       box-sizing: border-box;
     }
     .onboarding-head {
@@ -12684,6 +12927,20 @@ app.get("/admin/ui", (req, res) => {
       if (!token) return {};
       if (token.startsWith('Bearer ')) return { Authorization: token };
       return { Authorization: 'Bearer ' + token };
+    }
+
+    function portalAuthQuery() {
+      let token = tokenEl && tokenEl.value ? tokenEl.value.trim() : '';
+      if (!token) {
+        try {
+          token = localStorage.getItem(AUTH_TOKEN_KEY) || '';
+        } catch (err) {
+          token = '';
+        }
+      }
+      if (!token) return '';
+      if (token.startsWith('Bearer ')) token = token.slice(7);
+      return '?token=' + encodeURIComponent(token);
     }
 
     function setPushStatus(status, detail) {
@@ -18393,9 +18650,8 @@ app.get("/admin/ui", (req, res) => {
         actions.className = 'onboarding-doc-actions';
         if (latest && (latest.doc_url || latest.doc_data)) {
           const open = document.createElement('a');
-          const token = (tokenEl?.value || '').trim();
-          const qs = token ? '?token=' + encodeURIComponent(token) : '';
-          open.href = latest.doc_url || ('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc/' + encodeURIComponent(latest.id) + qs);
+          const qs = portalAuthQuery();
+          open.href = latest.doc_url || ('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc/' + encodeURIComponent(latest.id) + (qs || ''));
           open.target = '_blank';
           open.rel = 'noopener';
           open.textContent = 'Ver';
@@ -18565,9 +18821,8 @@ app.get("/admin/ui", (req, res) => {
 
     function exportOnboardingPacket() {
       if (!onboardingProfile || !onboardingProfile.id) return;
-      const token = (tokenEl?.value || '').trim();
-      const qs = token ? '?token=' + encodeURIComponent(token) : '';
-      const url = '/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/packet' + qs;
+      const qs = portalAuthQuery();
+      const url = '/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/packet?download=1' + (qs ? '&' + qs.slice(1) : '');
       window.open(url, '_blank', 'noopener');
     }
 
@@ -18759,12 +19014,14 @@ app.get("/admin/ui", (req, res) => {
       });
     }
 
-    function onboardingStatusLabel(item) {
-      if (!item) return '—';
-      if (item.decision === 'hired') return 'Contratado';
-      if (item.docs_count && item.done_count >= item.docs_count) return 'Docs completos';
-      if (item.docs_count) return 'Docs pendientes';
-      return 'Sin documentos';
+    function onboardingStatusMeta(item) {
+      if (!item) return { text: '—', icon: '•', cls: 'status-empty' };
+      if (item.decision === 'hired') return { text: 'Contratado', icon: '★', cls: 'status-hired' };
+      if (item.docs_count && item.done_count >= item.docs_count) {
+        return { text: 'Docs completos', icon: '✓', cls: 'status-complete' };
+      }
+      if (item.docs_count) return { text: 'Docs pendientes', icon: '•', cls: 'status-pending' };
+      return { text: 'Sin documentos', icon: '•', cls: 'status-empty' };
     }
 
     function renderOnboardingList() {
@@ -18838,7 +19095,8 @@ app.get("/admin/ui", (req, res) => {
 
           const statusTd = document.createElement('td');
           statusTd.dataset.label = 'Estado';
-          statusTd.textContent = onboardingStatusLabel(item);
+          const statusMeta = onboardingStatusMeta(item);
+          statusTd.innerHTML = '<span class="status-pill ' + statusMeta.cls + '"><span class="status-icon">' + statusMeta.icon + '</span>' + statusMeta.text + '</span>';
           tr.appendChild(statusTd);
 
           const actionTd = document.createElement('td');
@@ -18894,6 +19152,15 @@ app.get("/admin/ui", (req, res) => {
         renderOnboardingList();
       } catch (err) {
         if (onboardingCountEl) onboardingCountEl.textContent = 'Error: ' + err.message;
+        if (onboardingBodyEl) {
+          onboardingBodyEl.innerHTML = '';
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 8;
+          td.textContent = 'Error: ' + err.message;
+          tr.appendChild(td);
+          onboardingBodyEl.appendChild(tr);
+        }
       }
     }
 
@@ -19600,6 +19867,10 @@ app.get("/admin/ui", (req, res) => {
         pendingView = VIEW_INTERVIEWS;
       } else if (viewParam === 'calendar') {
         pendingView = VIEW_CALENDAR;
+      } else if (viewParam === 'onboarding') {
+        pendingView = VIEW_ONBOARDING;
+      } else if (viewParam === 'analytics') {
+        pendingView = VIEW_ANALYTICS;
       } else if (viewParam === 'candidates' || viewParam === 'calls') {
         pendingView = VIEW_CALLS;
       } else if (viewParam === 'general') {
