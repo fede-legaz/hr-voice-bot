@@ -3249,8 +3249,11 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
     pages.forEach((p) => pdfDoc.addPage(p));
   }
 
+  const skipDocTypes = new Set(["cv", "resume", "resumen", "curriculum", "curriculum vitae"]);
   const entries = [];
   docs.forEach((doc) => {
+    const docKey = (doc.doc_type || "").toString().trim().toLowerCase();
+    if (skipDocTypes.has(docKey)) return;
     entries.push({
       label: doc.doc_type || "Documento",
       url: doc.doc_url || "",
@@ -3259,9 +3262,22 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
   });
 
   for (const entry of entries) {
+    const hasFile = !!entry.url;
     if (entry.data) {
-      const lines = Object.entries(entry.data).map(([key, value]) => `${key}: ${value}`);
-      await addTextPage(entry.label || "Documento", lines);
+      const signatureDataUrl = entry.data.signature_data_url || entry.data.signatureDataUrl || "";
+      const lines = Object.entries(entry.data)
+        .filter(([key, value]) => key !== "signature_data_url" && key !== "signatureDataUrl" && value !== undefined && value !== null && value !== "")
+        .map(([key, value]) => `${key}: ${value}`);
+      if (signatureDataUrl) lines.push("Firma: adjunta");
+      if (lines.length && !hasFile) {
+        await addTextPage(entry.label || "Documento", lines);
+      }
+      if (signatureDataUrl) {
+        const parsed = parseDataUrl(signatureDataUrl);
+        if (parsed) {
+          await addImagePage((entry.label || "Documento") + " - Firma", parsed.buffer, parsed.mime);
+        }
+      }
     }
     if (!entry.url) continue;
     try {
@@ -4977,6 +4993,16 @@ function renderOnboardingPageHtml(token) {
       .doc-status { font-size: 12px; color: var(--muted); }
       .doc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
       .doc-actions input[type="file"] { font-size: 12px; }
+      .sig-pad { display: grid; gap: 8px; margin-top: 10px; }
+      .sig-canvas {
+        width: 100%;
+        height: 140px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: #fff;
+        touch-action: none;
+      }
+      .sig-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
       .form-modal {
         position: fixed;
         inset: 0;
@@ -5074,6 +5100,14 @@ function renderOnboardingPageHtml(token) {
       <div class="card grid" id="onboard-policy-card" style="display:none;">
         <div style="font-weight:700;" id="onboard-policy-title"></div>
         <div class="policy" id="onboard-policy-text"></div>
+        <div class="sig-pad">
+          <div class="label">Firma dibujada</div>
+          <canvas id="onboard-policy-sign" class="sig-canvas" height="140"></canvas>
+          <div class="sig-actions">
+            <button class="secondary" id="onboard-policy-sign-clear" type="button">Limpiar firma</button>
+            <span class="status" id="onboard-policy-sign-status"></span>
+          </div>
+        </div>
         <div class="grid two" style="align-items:center;">
           <div>
             <div class="label">Nombre completo</div>
@@ -5094,6 +5128,14 @@ function renderOnboardingPageHtml(token) {
           <button class="secondary" id="onboard-form-close" type="button">Cerrar</button>
         </div>
         <div class="form-grid" id="onboard-form-fields"></div>
+        <div class="sig-pad">
+          <div class="label">Firma dibujada</div>
+          <canvas id="onboard-form-sign" class="sig-canvas" height="140"></canvas>
+          <div class="sig-actions">
+            <button class="secondary" id="onboard-form-sign-clear" type="button">Limpiar firma</button>
+            <span class="status" id="onboard-form-sign-status"></span>
+          </div>
+        </div>
         <div class="form-actions">
           <button class="secondary" id="onboard-form-cancel" type="button">Cancelar</button>
           <button id="onboard-form-save" type="button">Guardar</button>
@@ -5113,6 +5155,9 @@ function renderOnboardingPageHtml(token) {
       const ackNameEl = document.getElementById('onboard-ack-name');
       const ackBtnEl = document.getElementById('onboard-ack-btn');
       const ackStatusEl = document.getElementById('onboard-ack-status');
+      const policySignCanvas = document.getElementById('onboard-policy-sign');
+      const policySignClearEl = document.getElementById('onboard-policy-sign-clear');
+      const policySignStatusEl = document.getElementById('onboard-policy-sign-status');
       const formModalEl = document.getElementById('onboard-form-modal');
       const formFieldsEl = document.getElementById('onboard-form-fields');
       const formTitleEl = document.getElementById('onboard-form-title');
@@ -5120,11 +5165,116 @@ function renderOnboardingPageHtml(token) {
       const formSaveEl = document.getElementById('onboard-form-save');
       const formCloseEl = document.getElementById('onboard-form-close');
       const formCancelEl = document.getElementById('onboard-form-cancel');
+      const formSignCanvas = document.getElementById('onboard-form-sign');
+      const formSignClearEl = document.getElementById('onboard-form-sign-clear');
+      const formSignStatusEl = document.getElementById('onboard-form-sign-status');
       let activeFormDocType = '';
+      let formSignaturePad = null;
+      let policySignaturePad = null;
+      let formSignatureExisting = '';
+      let policyDocKey = 'policy_renuncia';
 
       function setText(id, value) {
         const el = document.getElementById(id);
         if (el) el.textContent = value || '—';
+      }
+
+      function initSignaturePad(canvas, clearBtn, statusEl) {
+        if (!canvas) return null;
+        const ctx = canvas.getContext('2d');
+        let drawing = false;
+        let hasStroke = false;
+
+        const resize = () => {
+          const rect = canvas.getBoundingClientRect();
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+          canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.scale(ratio, ratio);
+          ctx.lineWidth = 2;
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = '#0f5563';
+        };
+
+        const getPos = (event) => {
+          const rect = canvas.getBoundingClientRect();
+          const clientX = event.touches ? event.touches[0].clientX : event.clientX;
+          const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+          return { x: clientX - rect.left, y: clientY - rect.top };
+        };
+
+        const start = (event) => {
+          if (event.cancelable) event.preventDefault();
+          drawing = true;
+          hasStroke = true;
+          const pos = getPos(event);
+          ctx.beginPath();
+          ctx.moveTo(pos.x, pos.y);
+          if (event.pointerId && canvas.setPointerCapture) {
+            try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
+          }
+        };
+        const move = (event) => {
+          if (!drawing) return;
+          if (event.cancelable) event.preventDefault();
+          const pos = getPos(event);
+          ctx.lineTo(pos.x, pos.y);
+          ctx.stroke();
+        };
+        const end = (event) => {
+          if (event.cancelable) event.preventDefault();
+          drawing = false;
+          if (event.pointerId && canvas.releasePointerCapture) {
+            try { canvas.releasePointerCapture(event.pointerId); } catch (err) {}
+          }
+        };
+        const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
+        if (supportsPointer) {
+          canvas.addEventListener('pointerdown', start);
+          canvas.addEventListener('pointermove', move);
+          canvas.addEventListener('pointerup', end);
+          canvas.addEventListener('pointercancel', end);
+          canvas.addEventListener('pointerleave', end);
+        } else {
+          canvas.addEventListener('mousedown', start);
+          canvas.addEventListener('mousemove', move);
+          canvas.addEventListener('mouseup', end);
+          canvas.addEventListener('mouseleave', end);
+          canvas.addEventListener('touchstart', start, { passive: false });
+          canvas.addEventListener('touchmove', move, { passive: false });
+          canvas.addEventListener('touchend', end);
+        }
+        canvas.style.touchAction = 'none';
+
+        if (clearBtn) {
+          clearBtn.onclick = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hasStroke = false;
+            if (statusEl) statusEl.textContent = '';
+          };
+        }
+        resize();
+        window.addEventListener('resize', resize);
+        return {
+          clear: () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            hasStroke = false;
+          },
+          isEmpty: () => !hasStroke,
+          getDataUrl: () => (hasStroke ? canvas.toDataURL('image/png') : ''),
+          loadDataUrl: (dataUrl) => {
+            if (!dataUrl) return;
+            const img = new Image();
+            img.onload = () => {
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              ctx.drawImage(img, 0, 0, canvas.width / (window.devicePixelRatio || 1), canvas.height / (window.devicePixelRatio || 1));
+              hasStroke = true;
+            };
+            img.src = dataUrl;
+          }
+        };
       }
 
       function formField(label, key, type = 'text', options) {
@@ -5165,6 +5315,7 @@ function renderOnboardingPageHtml(token) {
         activeFormDocType = docType || '';
         formFieldsEl.innerHTML = '';
         formStatusEl.textContent = '';
+        formSignatureExisting = (existing && (existing.signature_data_url || existing.signatureDataUrl)) ? (existing.signature_data_url || existing.signatureDataUrl) : '';
         const fields = getFormFields(docType);
         if (formTitleEl) formTitleEl.textContent = 'Formulario ' + (docType || '').toUpperCase();
         fields.forEach((field) => {
@@ -5193,6 +5344,18 @@ function renderOnboardingPageHtml(token) {
           wrap.appendChild(input);
           formFieldsEl.appendChild(wrap);
         });
+        if (!formSignaturePad && formSignCanvas) {
+          formSignaturePad = initSignaturePad(formSignCanvas, formSignClearEl, formSignStatusEl);
+        }
+        if (formSignaturePad) {
+          formSignaturePad.clear();
+          if (formSignatureExisting) {
+            formSignaturePad.loadDataUrl(formSignatureExisting);
+            if (formSignStatusEl) formSignStatusEl.textContent = 'Firma cargada';
+          } else if (formSignStatusEl) {
+            formSignStatusEl.textContent = '';
+          }
+        }
         formModalEl.style.display = 'flex';
       }
 
@@ -5212,6 +5375,13 @@ function renderOnboardingPageHtml(token) {
           formStatusEl.textContent = 'La firma es obligatoria.';
           return;
         }
+        const signatureDataUrl = formSignaturePad ? formSignaturePad.getDataUrl() : '';
+        const signaturePayload = signatureDataUrl || formSignatureExisting;
+        if (!signaturePayload) {
+          formStatusEl.textContent = 'Falta la firma dibujada.';
+          return;
+        }
+        data.signature_data_url = signaturePayload;
         formStatusEl.textContent = 'Guardando...';
         try {
           const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/form', {
@@ -5237,6 +5407,12 @@ function renderOnboardingPageHtml(token) {
         docsCardEl.style.display = 'grid';
         policyCardEl.style.display = 'grid';
         subEl.textContent = 'Completá tus documentos obligatorios.';
+        if (!policySignaturePad && policySignCanvas) {
+          policySignaturePad = initSignaturePad(policySignCanvas, policySignClearEl, policySignStatusEl);
+        }
+        const docTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
+        const policyDoc = docTypes.find((doc) => doc && doc.mode === 'policy');
+        policyDocKey = policyDoc?.key || policyDocKey;
         setText('onboard-name', p.name || '');
         setText('onboard-role', [p.brand, p.role].filter(Boolean).join(' • '));
         setText('onboard-phone', p.phone || '');
@@ -5251,6 +5427,13 @@ function renderOnboardingPageHtml(token) {
           if (ackNameEl) ackNameEl.value = p.policy_ack_name || '';
           if (ackBtnEl) ackBtnEl.disabled = true;
           if (ackNameEl) ackNameEl.disabled = true;
+          if (policySignStatusEl) policySignStatusEl.textContent = 'Firmada';
+          if (policySignaturePad) policySignaturePad.clear();
+          if (policySignClearEl) policySignClearEl.disabled = true;
+          if (policySignCanvas) policySignCanvas.style.pointerEvents = 'none';
+        } else {
+          if (policySignClearEl) policySignClearEl.disabled = false;
+          if (policySignCanvas) policySignCanvas.style.pointerEvents = 'auto';
         }
         renderDocs();
       }
@@ -5376,16 +5559,30 @@ function renderOnboardingPageHtml(token) {
           ackBtnEl.disabled = true;
           ackStatusEl.textContent = 'Guardando...';
           try {
+            const signatureDataUrl = policySignaturePad ? policySignaturePad.getDataUrl() : '';
+            if (!signatureDataUrl) {
+              ackStatusEl.textContent = 'Falta la firma dibujada.';
+              ackBtnEl.disabled = false;
+              return;
+            }
             const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/ack', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: (ackNameEl.value || '').trim() })
+              body: JSON.stringify({
+                name: (ackNameEl.value || '').trim(),
+                signature_data_url: signatureDataUrl,
+                policy_key: policyDocKey
+              })
             });
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) throw new Error(data.detail || data.error || 'ack_failed');
             ackStatusEl.textContent = 'Política aceptada.';
             ackBtnEl.disabled = true;
             ackNameEl.disabled = true;
+            if (data.docs) {
+              state.docs = data.docs || [];
+              renderDocs();
+            }
           } catch (err) {
             ackStatusEl.textContent = 'Error: ' + err.message;
             ackBtnEl.disabled = false;
@@ -5862,8 +6059,47 @@ app.post("/onboard/:token/ack", async (req, res) => {
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
     const name = String(req.body?.name || "").trim();
+    const signatureDataUrl = (req.body?.signature_data_url || req.body?.signatureDataUrl || "").toString();
+    const policyKey = String(req.body?.policy_key || "").trim()
+      || (Array.isArray(profile.doc_types) ? (profile.doc_types.find((d) => d && d.mode === "policy")?.key || "") : "")
+      || "policy_renuncia";
+    if (signatureDataUrl) {
+      try {
+        const ip = (req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").toString().split(",")[0].trim();
+        const userAgent = (req.get("user-agent") || "").toString();
+        await dbQuery(
+          "DELETE FROM onboarding_docs WHERE profile_id = $1 AND doc_type = $2",
+          [profile.id, policyKey]
+        );
+        const signatureUrl = await saveOnboardingDoc({
+          dataUrl: signatureDataUrl,
+          fileName: `signature-${Date.now()}.png`,
+          profileId: profile.id,
+          docType: policyKey,
+          uploadsDir: adminUploadsDir,
+          uploadToSpacesFn: portalUploadToSpaces,
+          publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+        });
+        await insertOnboardingDoc({
+          profileId: profile.id,
+          cvId: profile.cv_id || "",
+          docType: policyKey,
+          docUrl: signatureUrl,
+          docData: {
+            signed_name: name,
+            signed_at: new Date().toISOString(),
+            ip,
+            user_agent: userAgent
+          },
+          uploadedBy: "candidate"
+        });
+      } catch (err) {
+        console.error("[onboard] signature save failed", err.message);
+      }
+    }
     const updated = await updateOnboardingPolicyAck(profile.id, { name });
-    return res.json({ ok: true, profile: updated });
+    const docs = await fetchOnboardingDocs(profile.id);
+    return res.json({ ok: true, profile: updated, docs });
   } catch (err) {
     console.error("[onboard] ack failed", err);
     return res.status(400).json({ error: "onboard_ack_failed", detail: err.message });
