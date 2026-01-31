@@ -6035,6 +6035,24 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
   }
 });
 
+app.post("/admin/onboarding/:id/docs-sync", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const id = (req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    if (dbPool) {
+      await loadOnboardingConfigFromDb();
+    }
+    const config = getOnboardingConfig();
+    const updated = await updateOnboardingProfile(id, { doc_types: config?.doc_types || [] });
+    if (!updated) return res.status(404).json({ error: "not_found" });
+    const docs = await fetchOnboardingDocs(id);
+    return res.json({ ok: true, profile: updated, docs });
+  } catch (err) {
+    console.error("[admin/onboarding] docs sync failed", err);
+    return res.status(400).json({ error: "onboarding_docs_sync_failed", detail: err.message });
+  }
+});
+
 app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), async (req, res) => {
   try {
     const id = (req.params?.id || "").trim();
@@ -11021,6 +11039,7 @@ app.get("/admin/ui", (req, res) => {
       </div>
       <div class="inline" style="justify-content:flex-end; gap:8px; margin-top:8px;">
         <button class="secondary btn-compact" id="onboarding-save-profile" type="button">Guardar datos</button>
+        <button class="secondary btn-compact" id="onboarding-sync-docs" type="button">Actualizar documentos</button>
         <button class="secondary btn-compact" id="onboarding-export" type="button">Exportar PDF</button>
       </div>
       <div class="divider"></div>
@@ -11372,6 +11391,7 @@ app.get("/admin/ui", (req, res) => {
     const onboardingStartDateEl = document.getElementById('onboarding-start-date');
     const onboardingAdminNotesEl = document.getElementById('onboarding-admin-notes');
     const onboardingSaveProfileEl = document.getElementById('onboarding-save-profile');
+    const onboardingSyncDocsEl = document.getElementById('onboarding-sync-docs');
     const onboardingExportEl = document.getElementById('onboarding-export');
     const toastContainerEl = document.getElementById('toast-container');
     const assistantWidgetEl = document.getElementById('assistant-widget');
@@ -19354,6 +19374,27 @@ app.get("/admin/ui", (req, res) => {
       window.open(url, '_blank', 'noopener');
     }
 
+    async function syncOnboardingDocs() {
+      if (!onboardingProfile || !onboardingProfile.id) return;
+      if (!canPermission('onboarding_manage')) return;
+      setOnboardingDocStatus('Actualizando documentos...');
+      try {
+        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/docs-sync', {
+          method: 'POST',
+          headers: portalAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'docs_sync_failed');
+        onboardingProfile = data.profile || onboardingProfile;
+        onboardingDocs = data.docs || onboardingDocs;
+        renderOnboardingDocList();
+        setOnboardingDocStatus('Documentos actualizados');
+        setTimeout(() => setOnboardingDocStatus(''), 2000);
+      } catch (err) {
+        setOnboardingDocStatus('Error: ' + err.message, true);
+      }
+    }
+
     async function deleteOnboardingDoc(docId) {
       if (!onboardingProfile || !onboardingProfile.id || !docId) return;
       if (!confirm('¿Eliminar este documento?')) return;
@@ -19950,6 +19991,7 @@ app.get("/admin/ui", (req, res) => {
       });
     }
     if (onboardingSaveProfileEl) onboardingSaveProfileEl.onclick = saveOnboardingProfileFields;
+    if (onboardingSyncDocsEl) onboardingSyncDocsEl.onclick = syncOnboardingDocs;
     if (onboardingExportEl) onboardingExportEl.onclick = exportOnboardingPacket;
     if (onboardingRefreshEl) onboardingRefreshEl.onclick = loadOnboardingList;
     if (onboardingBrandEl) onboardingBrandEl.onchange = renderOnboardingList;
