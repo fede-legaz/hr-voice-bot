@@ -34,6 +34,7 @@ const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
 const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
 const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
+const ONBOARDING_DOC_MAX_BYTES = Number(process.env.ONBOARDING_DOC_MAX_BYTES) || 12 * 1024 * 1024;
 const CV_PHOTO_MAX_BYTES = Number(process.env.CV_PHOTO_MAX_BYTES) || 350 * 1024;
 const PROFILE_PHOTO_MAX_BYTES = Number(process.env.PROFILE_PHOTO_MAX_BYTES) || 2 * 1024 * 1024;
 const AUDIO_UPLOAD_MAX_BYTES = Number(process.env.AUDIO_UPLOAD_MAX_BYTES) || 25 * 1024 * 1024;
@@ -85,7 +86,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     calls_notes: true,
     cvs_call: true,
     cvs_write: true,
-    cvs_delete: true
+    cvs_delete: true,
+    onboarding_manage: true,
+    analytics_view: true
   },
   interviewer: {
     calls_whatsapp: true,
@@ -94,7 +97,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     calls_notes: true,
     cvs_call: true,
     cvs_write: true,
-    cvs_delete: false
+    cvs_delete: false,
+    onboarding_manage: true,
+    analytics_view: true
   },
   viewer: {
     calls_whatsapp: false,
@@ -103,7 +108,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     calls_notes: false,
     cvs_call: false,
     cvs_write: false,
-    cvs_delete: false
+    cvs_delete: false,
+    onboarding_manage: false,
+    analytics_view: false
   }
 };
 
@@ -118,6 +125,21 @@ const ROLE_NOTES = {
   dish: "Lavaplatos: experiencia previa en volumen, químicos, orden.",
   pizzero: "Experiencia previa pizzero; sabe hacer masa desde cero.",
   foodtruck: "Food truck: atiende público y cocina. Preguntar experiencia en plancha y atención."
+};
+
+const ONBOARDING_CONFIG_KEY = "onboarding_config";
+const DEFAULT_ONBOARDING_CONFIG = {
+  dress_code: "Vestimenta prolija y cómoda. Remera negra, pantalón oscuro y calzado cerrado.",
+  instructions: "Llegá 10 minutos antes. Traé documento con foto y confirmá tu disponibilidad con el manager.",
+  policy_title: "Política de renuncia",
+  policy_text: "Confirmo que leí y entiendo la política de renuncia y los lineamientos internos.",
+  doc_types: [
+    { key: "id", label: "ID / Licencia" },
+    { key: "i9", label: "I-9" },
+    { key: "ss", label: "Social Security" },
+    { key: "w4", label: "W-4" },
+    { key: "policy_renuncia", label: "Política de renuncia (firmada)" }
+  ]
 };
 
 const BRAND_NOTES = {
@@ -1076,6 +1098,42 @@ function normalizeSmsBody(text) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function inferSourceFromReferrer(referrer) {
+  if (!referrer) return "";
+  try {
+    const url = new URL(referrer);
+    const host = (url.hostname || "").toLowerCase();
+    if (!host) return "";
+    if (host.includes("linkedin")) return "linkedin";
+    if (host.includes("indeed")) return "indeed";
+    if (host.includes("glassdoor")) return "glassdoor";
+    if (host.includes("facebook") || host.includes("fb.")) return "facebook";
+    if (host.includes("instagram")) return "instagram";
+    return host.replace(/^www\./, "");
+  } catch (err) {
+    return "";
+  }
+}
+
+function resolvePayloadSource(payload = {}) {
+  const direct = (payload.source || payload.src || payload.utm_source || payload.utmSource || "").toString().trim();
+  if (direct) return direct;
+  const utm = payload.__utm || payload.answers?.__utm || payload.utm || {};
+  const utmSource = (utm.source || utm.utm_source || utm.utmSource || utm.ref || "").toString().trim();
+  if (utmSource) return utmSource;
+  const ref = (utm.referrer || utm.referral || "").toString().trim();
+  if (!ref) return "";
+  try {
+    const url = new URL(ref);
+    const params = url.searchParams;
+    const refSource = (params.get("utm_source") || params.get("src") || params.get("source") || "").toString().trim();
+    if (refSource) return refSource;
+    return inferSourceFromReferrer(ref);
+  } catch (err) {
+    return inferSourceFromReferrer(ref);
+  }
+}
+
 function isSmsOptedOut(phone) {
   const norm = normalizePhone(phone);
   if (!norm) return false;
@@ -1894,6 +1952,58 @@ async function persistRoleConfig(config) {
   }
 }
 
+let onboardingConfig = null;
+async function loadOnboardingConfigFromDb() {
+  if (!dbPool) return false;
+  try {
+    const resp = await dbPool.query("SELECT value FROM app_config WHERE key = $1", [ONBOARDING_CONFIG_KEY]);
+    const config = resp.rows?.[0]?.value;
+    if (config && typeof config === "object") {
+      onboardingConfig = config;
+      return true;
+    }
+  } catch (err) {
+    console.error("[onboarding] failed to load config", err.message);
+  }
+  return false;
+}
+
+async function saveOnboardingConfigToDb(config) {
+  if (!dbPool || !config) return false;
+  try {
+    await dbPool.query(
+      `
+      INSERT INTO app_config (key, value, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (key) DO UPDATE
+      SET value = EXCLUDED.value,
+          updated_at = NOW()
+    `,
+      [ONBOARDING_CONFIG_KEY, config]
+    );
+    onboardingConfig = config;
+    return true;
+  } catch (err) {
+    console.error("[onboarding] failed to save config", err.message);
+    return false;
+  }
+}
+
+function getOnboardingConfig() {
+  const cfg = onboardingConfig && typeof onboardingConfig === "object" ? onboardingConfig : {};
+  const docTypes = Array.isArray(cfg.doc_types) && cfg.doc_types.length
+    ? cfg.doc_types
+    : DEFAULT_ONBOARDING_CONFIG.doc_types;
+  return {
+    ...DEFAULT_ONBOARDING_CONFIG,
+    ...cfg,
+    doc_types: docTypes.map((d) => ({
+      key: d.key || "",
+      label: d.label || d.key || ""
+    })).filter((d) => d.key)
+  };
+}
+
 function normalizePromptStore(store) {
   return {
     templates: Array.isArray(store?.templates) ? store.templates : [],
@@ -2622,6 +2732,7 @@ async function initDb() {
         custom_question TEXT,
         custom_question_mode TEXT,
         decision TEXT,
+        onboarding_id TEXT,
         source TEXT
       );
     `);
@@ -2632,6 +2743,7 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS custom_question_mode TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS decision TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS onboarding_id TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_brand ON cvs (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_cvs_role ON cvs (role_key);`);
 
@@ -2673,12 +2785,14 @@ async function initDb() {
         cv_url TEXT,
         notes TEXT,
         decision TEXT,
+        onboarding_id TEXT,
         alt_brand_key TEXT,
         alt_role_key TEXT
       );
     `);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS decision TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS onboarding_id TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_status TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
@@ -2688,6 +2802,46 @@ async function initDb() {
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_score ON calls (score);`);
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS onboarding_profiles (
+        id TEXT PRIMARY KEY,
+        public_token TEXT,
+        cv_id TEXT,
+        call_sid TEXT,
+        name TEXT,
+        email TEXT,
+        phone TEXT,
+        brand TEXT,
+        role TEXT,
+        dress_code TEXT,
+        instructions TEXT,
+        role_notes TEXT,
+        policy_title TEXT,
+        policy_text TEXT,
+        doc_types JSONB,
+        status TEXT,
+        policy_ack BOOLEAN NOT NULL DEFAULT FALSE,
+        policy_ack_name TEXT,
+        policy_ack_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS public_token TEXT;`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_token ON onboarding_profiles (public_token);`);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS onboarding_docs (
+        id TEXT PRIMARY KEY,
+        profile_id TEXT NOT NULL,
+        cv_id TEXT,
+        doc_type TEXT,
+        doc_url TEXT,
+        uploaded_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_profile ON onboarding_docs (profile_id);`);
 
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS call_recordings (
@@ -2955,6 +3109,56 @@ async function saveProfilePhoto({ dataUrl, fileName, userKey, uploadsDir, upload
   return `${baseUrl}/${relPath}`;
 }
 
+const ONBOARDING_ALLOWED_MIME = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif"
+]);
+const ONBOARDING_MIME_EXT = {
+  "application/pdf": ".pdf",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif"
+};
+
+function extForOnboardingMime(mime, fallbackName) {
+  const known = ONBOARDING_MIME_EXT[mime];
+  if (known) return known;
+  const fallback = path.extname(fallbackName || "");
+  if (fallback) return fallback.toLowerCase();
+  return ".bin";
+}
+
+async function saveOnboardingDoc({ dataUrl, fileName, profileId, docType, uploadsDir, uploadToSpacesFn, publicUploadsBaseUrl }) {
+  if (!dataUrl) throw new Error("missing_file");
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) throw new Error("invalid_data_url");
+  if (!ONBOARDING_ALLOWED_MIME.has(parsed.mime)) {
+    throw new Error("unsupported_file_type");
+  }
+  if (parsed.buffer.length > ONBOARDING_DOC_MAX_BYTES) {
+    throw new Error("file_too_large");
+  }
+  const safeName = sanitizeFilename(path.basename(fileName || "document"));
+  const ext = extForOnboardingMime(parsed.mime, safeName);
+  const finalName = safeName.endsWith(ext) ? safeName : safeName + ext;
+  const relDir = path.posix.join("onboarding", sanitizeFilename(profileId || "profile"), sanitizeFilename(docType || "doc"));
+  const relPath = path.posix.join(relDir, finalName);
+  if (uploadToSpacesFn) {
+    await uploadToSpacesFn({ key: relPath, body: parsed.buffer, contentType: parsed.mime });
+  } else {
+    const fullDir = path.join(uploadsDir, relDir);
+    ensureDir(fullDir);
+    const fullPath = path.join(fullDir, finalName);
+    await fs.promises.writeFile(fullPath, parsed.buffer);
+  }
+  const baseUrl = publicUploadsBaseUrl || "/uploads";
+  return `${baseUrl}/${relPath}`;
+}
+
 async function uploadToSpaces({ key, body, contentType }) {
   if (!s3Client || !SPACES_BUCKET) return "";
   const params = {
@@ -2973,6 +3177,46 @@ async function uploadToSpaces({ key, body, contentType }) {
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
+
+app.use((req, res, next) => {
+  if (req.method !== "POST") return next();
+  if (!/^\/apply\/[^/]+\/submit$/.test(req.path || "")) return next();
+  const pick = (key) => {
+    const q = req.query?.[key];
+    const b = req.body?.[key];
+    const v = (q ?? b ?? "").toString().trim();
+    return v || "";
+  };
+  const referrer = (req.get("referer") || "").trim();
+  const src = pick("src") || pick("source");
+  const utm = {
+    utm_source: pick("utm_source") || src,
+    utm_medium: pick("utm_medium"),
+    utm_campaign: pick("utm_campaign"),
+    utm_content: pick("utm_content"),
+    utm_term: pick("utm_term"),
+    ref: pick("ref"),
+    source: src || "",
+    referrer
+  };
+  if (!utm.utm_source && referrer) {
+    try {
+      const refUrl = new URL(referrer);
+      const refParams = refUrl.searchParams;
+      utm.utm_source = (refParams.get("utm_source") || refParams.get("src") || refParams.get("source") || "").toString().trim();
+      if (!utm.utm_source) utm.utm_source = inferSourceFromReferrer(referrer);
+    } catch (err) {
+      utm.utm_source = inferSourceFromReferrer(referrer);
+    }
+  }
+  if (!utm.source && utm.utm_source) utm.source = utm.utm_source;
+  const hasAny = Object.values(utm).some((v) => v);
+  if (!hasAny) return next();
+  if (!req.body || typeof req.body !== "object") req.body = {};
+  if (!req.body.answers || typeof req.body.answers !== "object") req.body.answers = {};
+  req.body.answers.__utm = utm;
+  next();
+});
 
 const portalSpacesBaseUrl = getSpacesPublicBaseUrl();
 const portalUseSpaces = !!(portalSpacesBaseUrl && s3Client);
@@ -3345,6 +3589,118 @@ app.post("/admin/config", requireAdminUser, async (req, res) => {
   } catch (err) {
     console.error("[admin/config] failed", err);
     return res.status(400).json({ error: "invalid_config", detail: err.message });
+  }
+});
+
+app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res) => {
+  try {
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const normalizeSource = (value) => (value || "direct").toString().trim() || "direct";
+    const normalizeRole = (value) => (value || "—").toString().trim() || "—";
+    const normalizeBrand = (value) => (value || "—").toString().trim() || "—";
+    const applyBrandFilter = (brandValue) => {
+      if (!allowedBrands.length) return true;
+      return isBrandAllowed(allowedBrands, brandValue);
+    };
+    const bump = (map, key) => {
+      const val = map.get(key) || 0;
+      map.set(key, val + 1);
+    };
+
+    const analytics = {
+      totals: {
+        applications: 0,
+        calls: 0,
+        interviews: 0,
+        no_answer: 0,
+        trials: 0,
+        hired: 0,
+        hours_saved: 0
+      },
+      applications_by_brand: [],
+      applications_by_role: [],
+      sources: [],
+      roles: [],
+      brands: []
+    };
+
+    let portalApps = [];
+    let calls = [];
+    let cvs = [];
+
+    if (dbPool) {
+      const portalResp = await dbQuery(
+        "SELECT brand, role, answers FROM portal_applications ORDER BY created_at DESC LIMIT 5000"
+      );
+      portalApps = portalResp?.rows || [];
+      const callsResp = await dbQuery(
+        "SELECT brand, role, outcome, duration_sec, trial_at, trial_follow_up_status, decision, cv_id, phone FROM calls ORDER BY created_at DESC LIMIT 10000"
+      );
+      calls = callsResp?.rows || [];
+      const cvsResp = await dbQuery(
+        "SELECT brand, role, decision, trial_at FROM cvs ORDER BY created_at DESC LIMIT 10000"
+      );
+      cvs = cvsResp?.rows || [];
+    } else {
+      portalApps = assistantReadJsonFile(PORTAL_APPS_PATH) || [];
+      calls = Array.isArray(callHistory) ? callHistory.slice() : [];
+      cvs = Array.isArray(cvStore) ? cvStore.slice() : [];
+    }
+
+    const brandCounts = new Map();
+    const roleCounts = new Map();
+    const sourceCounts = new Map();
+    portalApps.forEach((app) => {
+      if (!applyBrandFilter(app.brand || "")) return;
+      analytics.totals.applications += 1;
+      bump(brandCounts, normalizeBrand(app.brand));
+      bump(roleCounts, normalizeRole(app.role));
+      const utm = app.answers && typeof app.answers === "object" ? app.answers.__utm : null;
+      const source = normalizeSource(utm?.utm_source || utm?.source || utm?.ref || "direct");
+      bump(sourceCounts, source);
+    });
+
+    const callsBrandCounts = new Map();
+    const callsRoleCounts = new Map();
+    let totalDuration = 0;
+    calls.forEach((call) => {
+      if (!applyBrandFilter(call.brand || "")) return;
+      analytics.totals.calls += 1;
+      bump(callsBrandCounts, normalizeBrand(call.brand));
+      bump(callsRoleCounts, normalizeRole(call.role));
+      const outcome = String(call.outcome || "").toUpperCase();
+      if (outcome === "NO_ANSWER") analytics.totals.no_answer += 1;
+      if (typeof call.duration_sec === "number") totalDuration += call.duration_sec;
+      if (call.score !== null && call.score !== undefined) analytics.totals.interviews += 1;
+    });
+    analytics.totals.hours_saved = Number((totalDuration / 3600).toFixed(2));
+
+    cvs.forEach((cv) => {
+      if (!applyBrandFilter(cv.brand || "")) return;
+      if (cv.trial_at) analytics.totals.trials += 1;
+      if (String(cv.decision || "") === "hired") analytics.totals.hired += 1;
+    });
+
+    analytics.applications_by_brand = Array.from(brandCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+    analytics.applications_by_role = Array.from(roleCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+    analytics.sources = Array.from(sourceCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+    analytics.brands = Array.from(callsBrandCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+    analytics.roles = Array.from(callsRoleCounts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count);
+
+    return res.json({ ok: true, analytics });
+  } catch (err) {
+    console.error("[admin/analytics] failed", err);
+    return res.status(400).json({ error: "analytics_failed", detail: err.message });
   }
 });
 
@@ -3901,7 +4257,7 @@ app.post("/admin/calls/:callId/trial-review", requirePermission("calls_notes"), 
       }
     } catch (err) {
       console.error("[admin/calls] trial review failed", err);
-      return res.status(400).json({ error: "trial_review_failed", detail: err.message });
+      return res.status(400).json({ error: "trial_review_failed", detail: err?.message || String(err) });
     }
   }
   return res.json({ ok: true, status, decision, trial_follow_up_at: nextFollowUpAt });
@@ -3972,7 +4328,7 @@ app.post("/admin/cv/:id/trial-review", requirePermission("cvs_write"), async (re
       }
     } catch (err) {
       console.error("[admin/cv] trial review failed", err);
-      return res.status(400).json({ error: "trial_review_failed", detail: err.message });
+      return res.status(400).json({ error: "trial_review_failed", detail: err?.message || String(err) });
     }
   }
   return res.json({ ok: true, status, decision, trial_follow_up_at: nextFollowUpAt });
@@ -4324,6 +4680,548 @@ app.post("/admin/cv/question", requirePermission("cvs_write"), async (req, res) 
   } catch (err) {
     console.error("[admin/cv] question update failed", err);
     return res.status(400).json({ error: "question_update_failed", detail: err.message });
+  }
+});
+
+function renderOnboardingPageHtml(token) {
+  return `<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Onboarding | Yes Restaurants</title>
+    <style>
+      :root {
+        --bg: #f6f2e9;
+        --card: #fff;
+        --ink: #1f1f1f;
+        --muted: #6f6a63;
+        --border: #e7ddcc;
+        --primary: #1b7a8c;
+        --primary-dark: #0f5563;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Inter", system-ui, -apple-system, sans-serif;
+        background: radial-gradient(circle at top, #fff, var(--bg) 70%);
+        color: var(--ink);
+        padding: 24px;
+      }
+      .shell { max-width: 920px; margin: 0 auto; display: grid; gap: 16px; }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 18px;
+        box-shadow: 0 12px 30px rgba(27, 122, 140, 0.08);
+      }
+      h1 { margin: 0; font-size: 22px; }
+      .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+      .grid { display: grid; gap: 12px; }
+      .grid.two { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+      .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+      .pill {
+        display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
+        background: rgba(27, 122, 140, 0.12); color: var(--primary-dark); font-weight: 700; font-size: 12px;
+      }
+      .doc-row {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 12px;
+        display: grid;
+        gap: 8px;
+      }
+      .doc-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .doc-status { font-size: 12px; color: var(--muted); }
+      .doc-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      .doc-actions input[type="file"] { font-size: 12px; }
+      button {
+        border: none;
+        background: var(--primary);
+        color: #fff;
+        padding: 8px 14px;
+        border-radius: 10px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary {
+        background: transparent;
+        color: var(--primary-dark);
+        border: 1px solid var(--border);
+      }
+      .policy { background: #f9f6ef; border-radius: 14px; padding: 12px; }
+      .policy p { margin: 6px 0; color: var(--muted); }
+      .footer { font-size: 12px; color: var(--muted); }
+      .status { font-size: 12px; color: var(--primary-dark); }
+      @media (max-width: 640px) {
+        body { padding: 16px; }
+        .card { padding: 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="card">
+        <h1>Onboarding de ingreso</h1>
+        <div class="sub" id="onboard-sub">Cargando información…</div>
+      </div>
+      <div class="card grid two" id="onboard-summary" style="display:none;">
+        <div>
+          <div class="label">Candidato</div>
+          <div id="onboard-name" style="font-weight:700;"></div>
+        </div>
+        <div>
+          <div class="label">Local / puesto</div>
+          <div id="onboard-role"></div>
+        </div>
+        <div>
+          <div class="label">Teléfono</div>
+          <div id="onboard-phone"></div>
+        </div>
+      </div>
+      <div class="card grid" id="onboard-instructions" style="display:none;">
+        <div>
+          <div class="label">Dress code</div>
+          <div id="onboard-dress"></div>
+        </div>
+        <div>
+          <div class="label">Instrucciones</div>
+          <div id="onboard-instructions-text"></div>
+        </div>
+        <div>
+          <div class="label">Notas del rol</div>
+          <div id="onboard-role-notes"></div>
+        </div>
+      </div>
+      <div class="card grid" id="onboard-docs-card" style="display:none;">
+        <div style="font-weight:700;">Documentos requeridos</div>
+        <div class="grid" id="onboard-docs"></div>
+      </div>
+      <div class="card grid" id="onboard-policy-card" style="display:none;">
+        <div style="font-weight:700;" id="onboard-policy-title"></div>
+        <div class="policy" id="onboard-policy-text"></div>
+        <div class="grid two" style="align-items:center;">
+          <div>
+            <div class="label">Nombre completo</div>
+            <input type="text" id="onboard-ack-name" placeholder="Tu nombre y apellido" style="width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--border);" />
+          </div>
+          <div class="doc-actions" style="justify-content:flex-start;">
+            <button id="onboard-ack-btn" type="button">Aceptar política</button>
+            <span class="status" id="onboard-ack-status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="card footer" id="onboard-footer">Si necesitás ayuda, respondé este mensaje o contactá a RRHH.</div>
+    </div>
+    <script>
+      const TOKEN = ${JSON.stringify(token || "")};
+      const state = { profile: null, docs: [] };
+      const subEl = document.getElementById('onboard-sub');
+      const summaryEl = document.getElementById('onboard-summary');
+      const instructionsEl = document.getElementById('onboard-instructions');
+      const docsCardEl = document.getElementById('onboard-docs-card');
+      const docsEl = document.getElementById('onboard-docs');
+      const policyCardEl = document.getElementById('onboard-policy-card');
+      const ackNameEl = document.getElementById('onboard-ack-name');
+      const ackBtnEl = document.getElementById('onboard-ack-btn');
+      const ackStatusEl = document.getElementById('onboard-ack-status');
+
+      function setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value || '—';
+      }
+
+      function renderProfile() {
+        const p = state.profile || {};
+        summaryEl.style.display = 'grid';
+        instructionsEl.style.display = 'grid';
+        docsCardEl.style.display = 'grid';
+        policyCardEl.style.display = 'grid';
+        subEl.textContent = 'Completá tus documentos obligatorios.';
+        setText('onboard-name', p.name || '');
+        setText('onboard-role', [p.brand, p.role].filter(Boolean).join(' • '));
+        setText('onboard-phone', p.phone || '');
+        setText('onboard-dress', p.dress_code || '');
+        setText('onboard-instructions-text', p.instructions || '');
+        setText('onboard-role-notes', p.role_notes || '');
+        setText('onboard-policy-title', p.policy_title || 'Política');
+        const policyTextEl = document.getElementById('onboard-policy-text');
+        if (policyTextEl) policyTextEl.textContent = p.policy_text || '';
+        if (p.policy_ack) {
+          ackStatusEl.textContent = 'Política aceptada';
+          if (ackNameEl) ackNameEl.value = p.policy_ack_name || '';
+          if (ackBtnEl) ackBtnEl.disabled = true;
+          if (ackNameEl) ackNameEl.disabled = true;
+        }
+        renderDocs();
+      }
+
+      function renderDocs() {
+        docsEl.innerHTML = '';
+        const p = state.profile || {};
+        const docTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
+        docTypes.forEach((doc) => {
+          const row = document.createElement('div');
+          row.className = 'doc-row';
+          const head = document.createElement('div');
+          head.className = 'doc-row-head';
+          const title = document.createElement('div');
+          title.style.fontWeight = '700';
+          title.textContent = doc.label || doc.key || 'Documento';
+          const status = document.createElement('div');
+          status.className = 'doc-status';
+          const uploaded = state.docs.find((d) => d.doc_type === doc.key);
+          status.textContent = uploaded ? 'Subido' : 'Pendiente';
+          head.appendChild(title);
+          head.appendChild(status);
+          row.appendChild(head);
+          if (uploaded) {
+            const link = document.createElement('a');
+            link.href = uploaded.doc_url;
+            link.target = '_blank';
+            link.rel = 'noopener';
+            link.textContent = 'Ver archivo';
+            link.className = 'pill';
+            row.appendChild(link);
+          }
+          const actions = document.createElement('div');
+          actions.className = 'doc-actions';
+          const input = document.createElement('input');
+          input.type = 'file';
+          input.accept = 'application/pdf,image/*';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = uploaded ? 'Reemplazar' : 'Subir';
+          btn.onclick = async () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            btn.disabled = true;
+            btn.textContent = 'Subiendo...';
+            const reader = new FileReader();
+            reader.onload = async () => {
+              try {
+                const dataUrl = reader.result;
+                await uploadDoc(doc.key, file.name, dataUrl);
+                btn.textContent = 'Subido';
+              } catch (err) {
+                alert('Error: ' + err.message);
+                btn.textContent = uploaded ? 'Reemplazar' : 'Subir';
+              } finally {
+                btn.disabled = false;
+              }
+            };
+            reader.readAsDataURL(file);
+          };
+          actions.appendChild(input);
+          actions.appendChild(btn);
+          row.appendChild(actions);
+          docsEl.appendChild(row);
+        });
+      }
+
+      async function uploadDoc(docType, fileName, dataUrl) {
+        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ doc_type: docType, file_name: fileName, data_url: dataUrl })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'upload_failed');
+        state.docs = data.docs || [];
+        renderDocs();
+      }
+
+      async function loadData() {
+        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/data');
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          subEl.textContent = 'No pudimos encontrar tu perfil.';
+          return;
+        }
+        state.profile = data.profile || {};
+        state.docs = data.docs || [];
+        renderProfile();
+      }
+
+      if (ackBtnEl) {
+        ackBtnEl.addEventListener('click', async () => {
+          ackBtnEl.disabled = true;
+          ackStatusEl.textContent = 'Guardando...';
+          try {
+            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/ack', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name: (ackNameEl.value || '').trim() })
+            });
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(data.detail || data.error || 'ack_failed');
+            ackStatusEl.textContent = 'Política aceptada.';
+            ackBtnEl.disabled = true;
+            ackNameEl.disabled = true;
+          } catch (err) {
+            ackStatusEl.textContent = 'Error: ' + err.message;
+            ackBtnEl.disabled = false;
+          }
+        });
+      }
+
+      loadData();
+    </script>
+  </body>
+</html>`;
+}
+
+app.get("/admin/onboarding/config", requirePermission("onboarding_manage"), async (req, res) => {
+  if (dbPool) {
+    await loadOnboardingConfigFromDb();
+  }
+  const config = getOnboardingConfig();
+  return res.json({ ok: true, config });
+});
+
+app.post("/admin/onboarding/config", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const raw = req.body?.config ?? req.body ?? {};
+    const normalized = {
+      dress_code: String(raw.dress_code || raw.dressCode || DEFAULT_ONBOARDING_CONFIG.dress_code || "").trim(),
+      instructions: String(raw.instructions || DEFAULT_ONBOARDING_CONFIG.instructions || "").trim(),
+      policy_title: String(raw.policy_title || raw.policyTitle || DEFAULT_ONBOARDING_CONFIG.policy_title || "").trim(),
+      policy_text: String(raw.policy_text || raw.policyText || DEFAULT_ONBOARDING_CONFIG.policy_text || "").trim(),
+      doc_types: Array.isArray(raw.doc_types) ? raw.doc_types : (Array.isArray(raw.docTypes) ? raw.docTypes : [])
+    };
+    if (!normalized.doc_types.length) normalized.doc_types = DEFAULT_ONBOARDING_CONFIG.doc_types.slice();
+    const saved = dbPool ? await saveOnboardingConfigToDb(normalized) : false;
+    if (!saved) {
+      onboardingConfig = normalized;
+    }
+    return res.json({ ok: true, config: getOnboardingConfig() });
+  } catch (err) {
+    console.error("[admin/onboarding] config save failed", err);
+    return res.status(400).json({ error: "onboarding_config_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const cvId = (body.cv_id || body.cvId || "").toString().trim();
+    const callSid = (body.call_sid || body.callId || body.callSid || "").toString().trim();
+    if (!cvId && !callSid) return res.status(400).json({ error: "missing_target" });
+    let profile = await findOnboardingProfile({ cvId, callSid });
+    const config = getOnboardingConfig();
+
+    const findCandidate = () => {
+      if (cvId) {
+        const cv = cvStoreById.get(cvId);
+        if (cv) return {
+          name: cv.applicant,
+          phone: cv.phone,
+          brand: cv.brand,
+          role: cv.role,
+          cv_id: cv.id
+        };
+      }
+      if (callSid) {
+        const tracked = callsByCallSid.get(callSid);
+        if (tracked) return {
+          name: tracked.applicant,
+          phone: tracked.phone || tracked.to,
+          brand: tracked.brand,
+          role: tracked.role,
+          call_sid: tracked.callSid || callSid,
+          cv_id: tracked.cv_id || ""
+        };
+        const fromHistory = callHistory.find((c) => c && (c.callId === callSid || c.callSid === callSid));
+        if (fromHistory) return {
+          name: fromHistory.applicant,
+          phone: fromHistory.phone || fromHistory.to,
+          brand: fromHistory.brand,
+          role: fromHistory.role,
+          call_sid: fromHistory.callId || fromHistory.callSid || callSid,
+          cv_id: fromHistory.cv_id || ""
+        };
+      }
+      return null;
+    };
+
+    if (!profile) {
+      const candidate = findCandidate() || {};
+      const brand = (body.brand || candidate.brand || DEFAULT_BRAND).toString().trim();
+      const role = (body.role || candidate.role || DEFAULT_ROLE).toString().trim();
+      const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
+      profile = await createOnboardingProfile({
+        cv_id: cvId || candidate.cv_id || "",
+        call_sid: callSid || candidate.call_sid || "",
+        name: body.name || candidate.name || "",
+        email: body.email || "",
+        phone: body.phone || candidate.phone || "",
+        brand,
+        role,
+        dress_code: config.dress_code,
+        instructions: config.instructions,
+        role_notes: roleNotes,
+        policy_title: config.policy_title,
+        policy_text: config.policy_text,
+        doc_types: config.doc_types,
+        status: "pending"
+      });
+    } else {
+      if (!profile.public_token) {
+        profile = await updateOnboardingProfile(profile.id, { public_token: randomToken() });
+      }
+    }
+
+    if (!profile) return res.status(404).json({ error: "profile_not_found" });
+    await attachOnboardingToRecords(profile);
+    const docs = await fetchOnboardingDocs(profile.id);
+    const url = `${PUBLIC_BASE_URL}/onboard/${profile.public_token}`;
+    return res.json({ ok: true, profile, docs, url });
+  } catch (err) {
+    console.error("[admin/onboarding] create failed", err);
+    return res.status(400).json({ error: "onboarding_create_failed", detail: err.message });
+  }
+});
+
+app.get("/admin/onboarding/:id", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const id = (req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const docs = await fetchOnboardingDocs(id);
+    const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
+    return res.json({ ok: true, profile, docs, url });
+  } catch (err) {
+    console.error("[admin/onboarding] fetch failed", err);
+    return res.status(400).json({ error: "onboarding_fetch_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/onboarding/:id/doc", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const profileId = (req.params?.id || "").trim();
+    if (!profileId) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(profileId);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const body = req.body || {};
+    const docType = String(body.doc_type || body.docType || "").trim();
+    const dataUrl = String(body.data_url || body.dataUrl || "").trim();
+    const fileName = String(body.file_name || body.fileName || "document").trim();
+    if (!docType || !dataUrl) return res.status(400).json({ error: "missing_doc" });
+    const docUrl = await saveOnboardingDoc({
+      dataUrl,
+      fileName,
+      profileId,
+      docType,
+      uploadsDir: adminUploadsDir,
+      uploadToSpacesFn: portalUploadToSpaces,
+      publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+    });
+    await insertOnboardingDoc({
+      profileId,
+      cvId: profile.cv_id || "",
+      docType,
+      docUrl,
+      uploadedBy: req.userEmail || req.userRole || "admin"
+    });
+    const docs = await fetchOnboardingDocs(profileId);
+    return res.json({ ok: true, docs });
+  } catch (err) {
+    console.error("[admin/onboarding] doc upload failed", err);
+    return res.status(400).json({ error: "onboarding_doc_failed", detail: err.message });
+  }
+});
+
+app.delete("/admin/onboarding/:id/doc/:docId", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const profileId = (req.params?.id || "").trim();
+    const docId = (req.params?.docId || "").trim();
+    if (!profileId || !docId) return res.status(400).json({ error: "missing_doc_id" });
+    await deleteOnboardingDoc(profileId, docId);
+    const docs = await fetchOnboardingDocs(profileId);
+    return res.json({ ok: true, docs });
+  } catch (err) {
+    console.error("[admin/onboarding] doc delete failed", err);
+    return res.status(400).json({ error: "onboarding_doc_delete_failed", detail: err.message });
+  }
+});
+
+app.get("/onboard/:token", async (req, res) => {
+  const token = (req.params?.token || "").trim();
+  if (!token) return res.status(404).send("Not found");
+  const profile = await fetchOnboardingProfileByToken(token);
+  if (!profile) return res.status(404).send("Not found");
+  return res.type("text/html").send(renderOnboardingPageHtml(token));
+});
+
+app.get("/onboard/:token/data", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const docs = await fetchOnboardingDocs(profile.id);
+    return res.json({ ok: true, profile, docs });
+  } catch (err) {
+    console.error("[onboard] data failed", err);
+    return res.status(400).json({ error: "onboard_failed", detail: err.message });
+  }
+});
+
+app.post("/onboard/:token/upload", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const body = req.body || {};
+    const docType = String(body.doc_type || body.docType || "").trim();
+    const dataUrl = String(body.data_url || body.dataUrl || "").trim();
+    const fileName = String(body.file_name || body.fileName || "document").trim();
+    if (!docType || !dataUrl) return res.status(400).json({ error: "missing_doc" });
+    const allowed = Array.isArray(profile.doc_types)
+      ? profile.doc_types.map((d) => d?.key).filter(Boolean)
+      : [];
+    if (allowed.length && !allowed.includes(docType)) {
+      return res.status(400).json({ error: "invalid_doc_type" });
+    }
+    const docUrl = await saveOnboardingDoc({
+      dataUrl,
+      fileName,
+      profileId: profile.id,
+      docType,
+      uploadsDir: adminUploadsDir,
+      uploadToSpacesFn: portalUploadToSpaces,
+      publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+    });
+    await insertOnboardingDoc({
+      profileId: profile.id,
+      cvId: profile.cv_id || "",
+      docType,
+      docUrl,
+      uploadedBy: "candidate"
+    });
+    const docs = await fetchOnboardingDocs(profile.id);
+    return res.json({ ok: true, docs });
+  } catch (err) {
+    console.error("[onboard] upload failed", err);
+    return res.status(400).json({ error: "onboard_upload_failed", detail: err.message });
+  }
+});
+
+app.post("/onboard/:token/ack", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const name = String(req.body?.name || "").trim();
+    const updated = await updateOnboardingPolicyAck(profile.id, { name });
+    return res.json({ ok: true, profile: updated });
+  } catch (err) {
+    console.error("[onboard] ack failed", err);
+    return res.status(400).json({ error: "onboard_ack_failed", detail: err.message });
   }
 });
 
@@ -5423,6 +6321,27 @@ app.get("/admin/ui", (req, res) => {
     }
     .portal-section-title { font-size: 14px; font-weight: 700; color: var(--primary-dark); }
     .portal-section-sub { font-size: 12px; color: var(--muted); }
+    .portal-sources { display: grid; gap: 10px; }
+    .portal-source-row {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px;
+      background: #fdfbf7;
+      display: grid;
+      gap: 8px;
+    }
+    .portal-source-fields {
+      display: grid;
+      grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .portal-source-link {
+      font-size: 12px;
+      color: var(--primary-dark);
+      word-break: break-all;
+    }
+    .portal-source-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .portal-subhead {
       font-size: 11px;
       text-transform: uppercase;
@@ -6048,6 +6967,35 @@ app.get("/admin/ui", (req, res) => {
       height: 18px;
       accent-color: var(--primary);
     }
+    .onboarding-panel {
+      border-color: rgba(27, 122, 140, 0.2);
+      background: linear-gradient(180deg, #ffffff 0%, #fbfaf7 100%);
+    }
+    .onboarding-docs {
+      display: grid;
+      gap: 10px;
+      margin: 10px 0 12px;
+    }
+    .onboarding-doc-row {
+      display: grid;
+      grid-template-columns: minmax(140px, 1fr) minmax(160px, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 10px;
+      border-radius: 12px;
+      border: 1px dashed var(--border);
+      background: #fff;
+    }
+    .onboarding-doc-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .onboarding-doc-actions .btn-compact {
+      padding: 6px 10px;
+      border-radius: 10px;
+    }
     .user-hero {
       display: flex;
       align-items: flex-start;
@@ -6387,6 +7335,47 @@ app.get("/admin/ui", (req, res) => {
       max-height: 55vh;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     }
+    .onboarding-modal-card { width: min(760px, 94vw); }
+    .onboarding-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .onboarding-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      padding: 12px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fbfaf7;
+    }
+    .onboarding-link-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .onboarding-link-row input { flex: 1; min-width: 220px; }
+    .onboarding-doc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .onboarding-doc-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+    }
+    .onboarding-doc-info { display: flex; flex-direction: column; gap: 2px; }
+    .onboarding-doc-name { font-weight: 700; }
+    .onboarding-doc-status { font-size: 11px; color: var(--muted); }
     .photo-modal-card { width: min(720px, 92vw); }
     .photo-modal-card img {
       width: auto;
@@ -6454,9 +7443,11 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 16px;
       padding: 10px;
       min-height: 92px;
+      position: relative;
       display: flex;
       flex-direction: column;
       gap: 8px;
+      align-items: flex-start;
       cursor: pointer;
       transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
     }
@@ -6477,9 +7468,13 @@ app.get("/admin/ui", (req, res) => {
       font-weight: 700;
       color: #fff;
       background: #1b7a8c;
-      padding: 2px 7px;
+      padding: 2px 6px;
       border-radius: 999px;
-      align-self: flex-start;
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      min-width: 18px;
+      text-align: center;
     }
     .calendar-list {
       margin-top: 14px;
@@ -6530,6 +7525,45 @@ app.get("/admin/ui", (req, res) => {
       white-space: nowrap;
       align-self: flex-start;
     }
+    .analytics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 12px;
+    }
+    .analytics-card {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+      background: #fff;
+      box-shadow: 0 10px 22px rgba(27, 122, 140, 0.08);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .analytics-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .analytics-value { font-size: 22px; font-weight: 800; color: var(--primary-dark); }
+    .analytics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+    .analytics-table th, .analytics-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+    .analytics-table th {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    .analytics-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+    }
     .trial-review-card { width: min(620px, 94vw); }
     .trial-review-list { display: grid; gap: 12px; margin-top: 12px; }
     .trial-review-item {
@@ -6558,6 +7592,11 @@ app.get("/admin/ui", (req, res) => {
       font-size: 12px;
       line-height: 1.2;
       min-width: 120px;
+      width: auto;
+      height: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       border: 1px solid rgba(27, 122, 140, 0.25);
       background: rgba(27, 122, 140, 0.08);
       color: var(--primary-dark);
@@ -6953,27 +7992,29 @@ app.get("/admin/ui", (req, res) => {
         gap: 6px;
       }
       .calendar-title {
-        grid-column: 1 / -1;
+        grid-column: 2;
+        grid-row: 1;
         font-size: 14px;
-        order: 2;
+        text-align: center;
       }
-      #calendar-prev { order: 1; }
-      #calendar-next { order: 3; justify-self: end; }
+      #calendar-prev { grid-column: 1; grid-row: 1; }
+      #calendar-next { grid-column: 3; grid-row: 1; justify-self: end; }
       #calendar-today {
-        grid-column: 1 / -1;
-        order: 4;
-        width: 100%;
-        justify-self: stretch;
+        grid-column: 2;
+        grid-row: 2;
+        width: max-content;
+        justify-self: center;
       }
       .calendar-header .btn-compact { padding: 4px 8px; font-size: 12px; }
       .calendar-grid { gap: 6px; }
-      .calendar-day { min-height: 62px; padding: 6px; border-radius: 12px; }
-      .calendar-day-number { font-size: 11px; }
+      .calendar-day { min-height: 48px; padding: 6px; border-radius: 10px; }
+      .calendar-day-number { font-size: 11px; line-height: 1; }
       .calendar-day-count {
-        display: inline-flex;
-        font-size: 9px;
-        padding: 2px 6px;
+        font-size: 8px;
+        padding: 2px 5px;
         border-radius: 999px;
+        top: 4px;
+        right: 4px;
       }
       .calendar-item { padding: 10px; border-radius: 12px; flex-direction: column; }
       .calendar-item-actions { width: 100%; }
@@ -6981,11 +8022,28 @@ app.get("/admin/ui", (req, res) => {
       .calendar-item-time { align-self: flex-end; }
       .trial-review-item { flex-direction: column; align-items: flex-start; }
       .trial-review-actions { width: 100%; justify-content: flex-start; grid-template-columns: 1fr; }
+      .trial-review-actions .decision-btn { width: 100%; }
       .brand-list { max-height: 200px; overflow-y: auto; }
       .icon-btn { width: 36px; height: 36px; }
       .btn-compact { padding: 6px 8px; }
       .candidate-cell { max-width: 180px; }
       .candidate-name { max-width: 140px; }
+      .onboarding-doc-row {
+        grid-template-columns: 1fr;
+        justify-items: stretch;
+      }
+      .onboarding-doc-actions {
+        justify-content: flex-start;
+        width: 100%;
+      }
+      .onboarding-doc-item {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .onboarding-link-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
     }
   </style>
 </head>
@@ -7048,6 +8106,10 @@ app.get("/admin/ui", (req, res) => {
         <button class="nav-item" id="nav-calendar" type="button" title="Calendario">
           <span class="nav-icon">🗓</span>
           <span class="nav-label">Calendario</span>
+        </button>
+        <button class="nav-item" id="nav-analytics" type="button" title="Analytics">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Analytics</span>
         </button>
         <button class="nav-item" id="nav-portal" type="button" title="Portal">
           <span class="nav-icon">P</span>
@@ -7267,11 +8329,52 @@ app.get("/admin/ui", (req, res) => {
               <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
               <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
             </div>
-            <div class="perm-row" data-perm="calls_delete">
-              <span class="perm-name">Eliminar entrevistas</span>
-              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
-              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+          <div class="perm-row" data-perm="calls_delete">
+            <span class="perm-name">Eliminar entrevistas</span>
+            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+          </div>
+          <div class="perm-row" data-perm="onboarding_manage">
+            <span class="perm-name">Onboarding / documentación</span>
+            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+          </div>
+          <div class="perm-row" data-perm="analytics_view">
+            <span class="perm-name">Ver analytics</span>
+            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+          </div>
+        </div>
+        </div>
+        <div class="panel onboarding-panel" id="onboarding-panel" style="--delay:.065s;">
+          <div class="panel-title">Onboarding de ingreso</div>
+          <div class="panel-sub">Configurá el portal seguro donde el empleado sube documentación y firma la política.</div>
+          <div class="grid">
+            <div>
+              <label>Dress code</label>
+              <textarea id="onboarding-dress" placeholder="Ej: remera negra, pantalón oscuro, calzado cerrado."></textarea>
             </div>
+            <div>
+              <label>Instrucciones</label>
+              <textarea id="onboarding-instructions" placeholder="Ej: llegar 10 minutos antes, contactar al manager."></textarea>
+            </div>
+            <div>
+              <label>Título política</label>
+              <input type="text" id="onboarding-policy-title" placeholder="Política de renuncia" />
+            </div>
+            <div>
+              <label>Texto política</label>
+              <textarea id="onboarding-policy-text" placeholder="Confirmo que leí y entiendo..."></textarea>
+            </div>
+          </div>
+          <div class="divider"></div>
+          <div class="panel-title">Documentos requeridos</div>
+          <div class="panel-sub">Se muestran en el portal del empleado y en el perfil interno.</div>
+          <div class="onboarding-docs" id="onboarding-docs-list"></div>
+          <button class="secondary btn-compact" id="onboarding-doc-add" type="button">+ Agregar documento</button>
+          <div class="inline" style="justify-content:flex-end; margin-top:10px;">
+            <button id="onboarding-save" type="button">Guardar onboarding</button>
+            <span class="small" id="onboarding-status"></span>
           </div>
         </div>
         <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
@@ -7696,14 +8799,68 @@ app.get("/admin/ui", (req, res) => {
           <div class="panel-title">Calendario de pruebas</div>
           <div class="panel-sub">Agenda en hora Miami (ET).</div>
           <div class="calendar-header">
-            <button class="secondary btn-compact" id="calendar-prev" type="button" aria-label="Mes anterior">‹</button>
+            <button class="secondary icon-btn" id="calendar-prev" type="button" aria-label="Mes anterior">‹</button>
             <div class="calendar-title" id="calendar-month">Mes</div>
-            <button class="secondary btn-compact" id="calendar-next" type="button" aria-label="Mes siguiente">›</button>
+            <button class="secondary icon-btn" id="calendar-next" type="button" aria-label="Mes siguiente">›</button>
             <button class="secondary btn-compact" id="calendar-today" type="button">Hoy</button>
           </div>
           <div class="calendar-grid" id="calendar-weekdays"></div>
           <div class="calendar-grid" id="calendar-grid"></div>
           <div class="calendar-list" id="calendar-list"></div>
+        </div>
+      </section>
+
+      <section id="analytics-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.06s;">
+          <div class="panel-title">Analytics</div>
+          <div class="panel-sub">Métricas generales de aplicaciones, entrevistas y pruebas.</div>
+          <div class="analytics-grid" id="analytics-cards"></div>
+          <div class="small" id="analytics-status" style="margin-top:10px;"></div>
+        </div>
+        <div class="panel" style="--delay:.07s;">
+          <div class="panel-title">Detalle por local / rol</div>
+          <div class="analytics-row">
+            <div>
+              <div class="panel-sub">Aplicaciones por local</div>
+              <table class="analytics-table">
+                <thead><tr><th>Local</th><th>Cantidad</th></tr></thead>
+                <tbody id="analytics-apps-brand"></tbody>
+              </table>
+            </div>
+            <div>
+              <div class="panel-sub">Aplicaciones por rol</div>
+              <table class="analytics-table">
+                <thead><tr><th>Rol</th><th>Cantidad</th></tr></thead>
+                <tbody id="analytics-apps-role"></tbody>
+              </table>
+            </div>
+            <div>
+              <div class="panel-sub">Fuentes (LinkedIn, QR, etc.)</div>
+              <table class="analytics-table">
+                <thead><tr><th>Fuente</th><th>Cantidad</th></tr></thead>
+                <tbody id="analytics-sources"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="--delay:.08s;">
+          <div class="panel-title">Entrevistas</div>
+          <div class="analytics-row">
+            <div>
+              <div class="panel-sub">Llamadas por local</div>
+              <table class="analytics-table">
+                <thead><tr><th>Local</th><th>Cantidad</th></tr></thead>
+                <tbody id="analytics-calls-brand"></tbody>
+              </table>
+            </div>
+            <div>
+              <div class="panel-sub">Llamadas por rol</div>
+              <table class="analytics-table">
+                <thead><tr><th>Rol</th><th>Cantidad</th></tr></thead>
+                <tbody id="analytics-calls-role"></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -7759,6 +8916,17 @@ app.get("/admin/ui", (req, res) => {
                   </div>
                 </div>
                 </div>
+              </div>
+
+              <div class="portal-section">
+                <div class="portal-section-head">
+                  <div>
+                    <div class="portal-section-title">Fuentes / tracking</div>
+                    <div class="portal-section-sub">Generá links con origen (LinkedIn, QR local, etc.).</div>
+                  </div>
+                  <button class="secondary btn-compact" id="portal-source-add" type="button">+ Fuente</button>
+                </div>
+                <div class="portal-sources" id="portal-sources"></div>
               </div>
 
               <div class="portal-section">
@@ -8432,6 +9600,47 @@ app.get("/admin/ui", (req, res) => {
       <div class="trial-review-list" id="trial-review-list"></div>
     </div>
   </div>
+  <div id="onboarding-modal" class="cv-modal">
+    <div class="cv-modal-card onboarding-modal-card">
+      <div class="onboarding-head">
+        <div>
+          <div class="panel-title">Onboarding de ingreso</div>
+          <div class="panel-sub">Documentación y portal seguro del empleado.</div>
+        </div>
+        <button class="secondary" id="onboarding-close" type="button">Cerrar</button>
+      </div>
+      <div class="onboarding-summary" id="onboarding-summary">
+        <div>
+          <div class="small">Candidato</div>
+          <div id="onboarding-name" style="font-weight:700;"></div>
+        </div>
+        <div>
+          <div class="small">Local / rol</div>
+          <div id="onboarding-role"></div>
+        </div>
+        <div>
+          <div class="small">Teléfono</div>
+          <div id="onboarding-phone"></div>
+        </div>
+      </div>
+      <div class="row">
+        <label>Portal para el empleado</label>
+        <div class="onboarding-link-row">
+          <input type="text" id="onboarding-link" readonly />
+          <button class="secondary btn-compact" id="onboarding-copy" type="button">Copiar</button>
+          <button class="secondary btn-compact" id="onboarding-open" type="button">Abrir</button>
+        </div>
+        <div class="small">Compartí este link para que el empleado cargue sus papeles.</div>
+      </div>
+      <div class="divider"></div>
+      <div class="panel-title">Documentos</div>
+      <div class="onboarding-doc-list" id="onboarding-doc-list"></div>
+      <input type="file" id="onboarding-doc-file" accept="image/*,application/pdf" style="display:none;" />
+      <div class="inline" style="justify-content:flex-end;">
+        <span class="small" id="onboarding-doc-status"></span>
+      </div>
+    </div>
+  </div>
   <div id="assistant-widget" class="assistant-widget" style="display:none;">
     <button class="assistant-fab" id="assistant-fab" type="button" aria-label="Abrir asistente">AI</button>
     <div class="assistant-panel" id="assistant-panel" aria-live="polite">
@@ -8469,7 +9678,7 @@ app.get("/admin/ui", (req, res) => {
   <div id="toast-container" class="toast-container"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
-    const defaultRolePermissions = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
+    const rolePermissionsDefaults = ${JSON.stringify(DEFAULT_ROLE_PERMISSIONS)};
     const appEl = document.getElementById('app');
     const loginScreenEl = document.getElementById('login-screen');
     const loginTokenEl = document.getElementById('login-token');
@@ -8492,6 +9701,7 @@ app.get("/admin/ui", (req, res) => {
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const navCalendarEl = document.getElementById('nav-calendar');
+    const navAnalyticsEl = document.getElementById('nav-analytics');
     const navPortalEl = document.getElementById('nav-portal');
     const navCallsBadgeEl = document.getElementById('nav-calls-badge');
     const navInterviewsBadgeEl = document.getElementById('nav-interviews-badge');
@@ -8503,6 +9713,7 @@ app.get("/admin/ui", (req, res) => {
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const calendarViewEl = document.getElementById('calendar-view');
+    const analyticsViewEl = document.getElementById('analytics-view');
     const portalViewEl = document.getElementById('portal-view');
     const brandViewEl = document.getElementById('brand-view');
     const loadBtnEl = document.getElementById('load');
@@ -8535,6 +9746,8 @@ app.get("/admin/ui", (req, res) => {
     const portalUrlEl = document.getElementById('portal-url');
     const portalCopyUrlEl = document.getElementById('portal-copy-url');
     const portalOpenUrlEl = document.getElementById('portal-open-url');
+    const portalSourcesEl = document.getElementById('portal-sources');
+    const portalSourceAddEl = document.getElementById('portal-source-add');
     const portalTitleEsEl = document.getElementById('portal-title-es');
     const portalTitleEnEl = document.getElementById('portal-title-en');
     const portalDescEsEl = document.getElementById('portal-desc-es');
@@ -8676,6 +9889,15 @@ app.get("/admin/ui", (req, res) => {
     const previewOutputEl = document.getElementById('preview-output');
     const previewStatusEl = document.getElementById('preview-status');
     const usersPanelEl = document.getElementById('users-panel');
+    const onboardingPanelEl = document.getElementById('onboarding-panel');
+    const onboardingDressEl = document.getElementById('onboarding-dress');
+    const onboardingInstructionsEl = document.getElementById('onboarding-instructions');
+    const onboardingPolicyTitleEl = document.getElementById('onboarding-policy-title');
+    const onboardingPolicyTextEl = document.getElementById('onboarding-policy-text');
+    const onboardingDocsListEl = document.getElementById('onboarding-docs-list');
+    const onboardingDocAddEl = document.getElementById('onboarding-doc-add');
+    const onboardingSaveEl = document.getElementById('onboarding-save');
+    const onboardingStatusEl = document.getElementById('onboarding-status');
     const permissionsGridEl = document.getElementById('permissions-grid');
     const userEmailEl = document.getElementById('user-email');
     const userPasswordEl = document.getElementById('user-password');
@@ -8739,6 +9961,18 @@ app.get("/admin/ui", (req, res) => {
     const trialReviewModalEl = document.getElementById('trial-review-modal');
     const trialReviewListEl = document.getElementById('trial-review-list');
     const trialReviewCloseEl = document.getElementById('trial-review-close');
+    const onboardingModalEl = document.getElementById('onboarding-modal');
+    const onboardingCloseEl = document.getElementById('onboarding-close');
+    const onboardingSummaryEl = document.getElementById('onboarding-summary');
+    const onboardingNameEl = document.getElementById('onboarding-name');
+    const onboardingRoleEl = document.getElementById('onboarding-role');
+    const onboardingPhoneEl = document.getElementById('onboarding-phone');
+    const onboardingLinkEl = document.getElementById('onboarding-link');
+    const onboardingCopyEl = document.getElementById('onboarding-copy');
+    const onboardingOpenEl = document.getElementById('onboarding-open');
+    const onboardingDocListEl = document.getElementById('onboarding-doc-list');
+    const onboardingDocFileEl = document.getElementById('onboarding-doc-file');
+    const onboardingDocStatusEl = document.getElementById('onboarding-doc-status');
     const toastContainerEl = document.getElementById('toast-container');
     const assistantWidgetEl = document.getElementById('assistant-widget');
     const assistantFabEl = document.getElementById('assistant-fab');
@@ -8785,10 +10019,17 @@ app.get("/admin/ui", (req, res) => {
     const calendarGridEl = document.getElementById('calendar-grid');
     const calendarWeekdaysEl = document.getElementById('calendar-weekdays');
     const calendarListEl = document.getElementById('calendar-list');
+    const analyticsCardsEl = document.getElementById('analytics-cards');
+    const analyticsStatusEl = document.getElementById('analytics-status');
+    const analyticsAppsBrandEl = document.getElementById('analytics-apps-brand');
+    const analyticsAppsRoleEl = document.getElementById('analytics-apps-role');
+    const analyticsSourcesEl = document.getElementById('analytics-sources');
+    const analyticsCallsBrandEl = document.getElementById('analytics-calls-brand');
+    const analyticsCallsRoleEl = document.getElementById('analytics-calls-role');
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
-    let authPermissions = { ...(defaultRolePermissions?.admin || {}) };
+    let authPermissions = { ...(rolePermissionsDefaults?.admin || {}) };
     let authBrands = [];
     let authEmail = '';
     let adminToken = '';
@@ -8859,6 +10100,11 @@ app.get("/admin/ui", (req, res) => {
     let pendingPortalView = '';
     let pendingView = '';
     let currentUserProfile = null;
+    let onboardingConfigState = null;
+    let onboardingProfile = null;
+    let onboardingDocs = [];
+    let pendingOnboardingDocType = '';
+    let analyticsCache = null;
     let pendingUserPhotoDataUrl = '';
     let pendingUserPhotoName = '';
     let pendingUserPhotoClear = false;
@@ -8938,7 +10184,7 @@ app.get("/admin/ui", (req, res) => {
       recording_decline_es: defaultRecordingDeclineEs,
       recording_decline_en: defaultRecordingDeclineEn,
       assistant_kb: defaultAssistantKb,
-      permissions: defaultRolePermissions
+      permissions: rolePermissionsDefaults
     };
     const OUTCOME_LABELS = {
       NO_ANSWER: "No contestó",
@@ -8952,6 +10198,7 @@ app.get("/admin/ui", (req, res) => {
     const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
     const VIEW_CALENDAR = '__calendar__';
+    const VIEW_ANALYTICS = '__analytics__';
     const VIEW_PORTAL = '__portal__';
 
     if (window.pdfjsLib) {
@@ -9534,7 +10781,7 @@ app.get("/admin/ui", (req, res) => {
 
     function mergeRolePermissions(role, overrides) {
       return {
-        ...(defaultRolePermissions?.[role] || {}),
+        ...(rolePermissionsDefaults?.[role] || {}),
         ...(overrides || {})
       };
     }
@@ -9586,10 +10833,12 @@ app.get("/admin/ui", (req, res) => {
       const canCall = canPermission('cvs_call');
       if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
       if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
+      if (navAnalyticsEl) navAnalyticsEl.style.display = canPermission('analytics_view') ? '' : 'none';
       if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
       if (addBrandEl) addBrandEl.style.display = isAdmin ? '' : 'none';
       if (loadBtnEl) loadBtnEl.style.display = isAdmin ? '' : 'none';
       if (saveBtnEl) saveBtnEl.style.display = isAdmin ? '' : 'none';
+      if (onboardingPanelEl) onboardingPanelEl.style.display = isAdmin ? 'block' : 'none';
       if (usersPanelEl) usersPanelEl.style.display = isAdmin ? 'block' : 'none';
       if (callPanelEl) callPanelEl.classList.toggle('readonly', !(canWrite || canCall));
       if (callBtnEl) callBtnEl.disabled = !canCall;
@@ -11074,7 +12323,12 @@ app.get("/admin/ui", (req, res) => {
         },
         resume: { label: { es: 'CV (PDF)', en: 'Resume (PDF)' }, required: true },
         photo: { label: { es: 'Foto (opcional)', en: 'Photo (optional)' }, required: false },
-        questions: []
+        questions: [],
+        sources: [
+          { key: 'direct', label: 'Sitio web', active: true },
+          { key: 'linkedin', label: 'LinkedIn', active: true },
+          { key: 'qr-local', label: 'QR local', active: true }
+        ]
       };
     }
 
@@ -11093,6 +12347,7 @@ app.get("/admin/ui", (req, res) => {
       const roleByLocationField = fields.roleByLocation || {};
       const resumeField = raw.resume || {};
       const photoField = raw.photo || {};
+      const sourcesField = Array.isArray(raw.sources) ? raw.sources : [];
 
       const merged = {
         ...base,
@@ -11121,11 +12376,23 @@ app.get("/admin/ui", (req, res) => {
         },
         resume: { ...base.resume, ...resumeField, label: { ...base.resume.label, ...(resumeField.label || {}) } },
         photo: { ...base.photo, ...photoField, label: { ...base.photo.label, ...(photoField.label || {}) } },
-        questions: Array.isArray(raw.questions) ? raw.questions : []
+        questions: Array.isArray(raw.questions) ? raw.questions : [],
+        sources: Array.isArray(sourcesField) && sourcesField.length ? sourcesField : base.sources
       };
       merged.fields.role.options = Array.isArray(merged.fields.role.options) ? merged.fields.role.options : [];
       merged.fields.locations.options = Array.isArray(merged.fields.locations.options) ? merged.fields.locations.options : [];
       merged.assets.gallery = Array.isArray(merged.assets.gallery) ? merged.assets.gallery : [];
+      merged.sources = Array.isArray(merged.sources) ? merged.sources : [];
+      merged.sources = merged.sources.map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const key = String(item.key || '').trim();
+        if (!key) return null;
+        return {
+          key,
+          label: String(item.label || key).trim(),
+          active: item.active !== false
+        };
+      }).filter(Boolean);
       return merged;
     }
 
@@ -11217,6 +12484,118 @@ app.get("/admin/ui", (req, res) => {
       }
       const base = window.location.origin.replace(/\\/$/, '');
       portalUrlEl.value = base + '/apply/' + slug;
+      if (portalSourcesEl) {
+        portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
+          const keyInput = row.querySelector('input[type="text"]');
+          const link = row.querySelector('.portal-source-link');
+          if (link) link.textContent = portalSourceLink(keyInput?.value || '');
+        });
+      }
+    }
+
+    function portalSourceLink(key) {
+      const slug = (portalSlugEl?.value || portalCurrent?.slug || '').trim();
+      if (!slug || !key) return '';
+      const base = window.location.origin.replace(/\\/$/, '');
+      const url = base + '/apply/' + encodeURIComponent(slug);
+      return url + '?src=' + encodeURIComponent(key);
+    }
+
+    function portalRenderSources() {
+      if (!portalSourcesEl) return;
+      portalSourcesEl.innerHTML = '';
+      const sources = portalCurrent && Array.isArray(portalCurrent.sources) ? portalCurrent.sources : [];
+      if (!sources.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'Agregá una fuente para generar links con tracking.';
+        portalSourcesEl.appendChild(empty);
+        return;
+      }
+      sources.forEach((src, idx) => {
+        const row = document.createElement('div');
+        row.className = 'portal-source-row';
+        row.dataset.index = String(idx);
+        const fields = document.createElement('div');
+        fields.className = 'portal-source-fields';
+        const keyInput = document.createElement('input');
+        keyInput.type = 'text';
+        keyInput.placeholder = 'id corto (ej. linkedin)';
+        keyInput.value = src.key || '';
+        const labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.placeholder = 'Label';
+        labelInput.value = src.label || '';
+        const activeWrap = document.createElement('label');
+        activeWrap.className = 'check-row';
+        const activeInput = document.createElement('input');
+        activeInput.type = 'checkbox';
+        activeInput.checked = src.active !== false;
+        const activeLabel = document.createElement('span');
+        activeLabel.className = 'small';
+        activeLabel.textContent = 'Activa';
+        activeWrap.appendChild(activeInput);
+        activeWrap.appendChild(activeLabel);
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'secondary btn-compact';
+        removeBtn.textContent = 'Eliminar';
+        removeBtn.onclick = () => {
+          row.remove();
+          if (portalCurrent) portalCurrent.sources = portalReadSources();
+        };
+        fields.appendChild(keyInput);
+        fields.appendChild(labelInput);
+        fields.appendChild(activeWrap);
+        fields.appendChild(removeBtn);
+        const linkRow = document.createElement('div');
+        linkRow.className = 'portal-source-actions';
+        const link = document.createElement('div');
+        link.className = 'portal-source-link';
+        link.textContent = portalSourceLink(src.key || '');
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'secondary btn-compact';
+        copyBtn.textContent = 'Copiar link';
+        copyBtn.onclick = () => {
+          const url = portalSourceLink(keyInput.value || '');
+          if (!url) return;
+          navigator.clipboard.writeText(url);
+        };
+        linkRow.appendChild(link);
+        linkRow.appendChild(copyBtn);
+        row.appendChild(fields);
+        row.appendChild(linkRow);
+        portalSourcesEl.appendChild(row);
+
+        const sync = () => {
+          if (!portalCurrent) return;
+          portalCurrent.sources = portalReadSources();
+          link.textContent = portalSourceLink(keyInput.value || '');
+        };
+        keyInput.addEventListener('input', sync);
+        labelInput.addEventListener('input', sync);
+        activeInput.addEventListener('change', sync);
+      });
+    }
+
+    function portalReadSources() {
+      if (!portalSourcesEl) return [];
+      const items = [];
+      portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
+        const inputs = row.querySelectorAll('input');
+        const keyInput = inputs[0];
+        const labelInput = inputs[1];
+        const activeInput = row.querySelector('input[type="checkbox"]');
+        const key = (keyInput?.value || '').trim();
+        if (!key) return;
+        items.push({
+          key,
+          label: (labelInput?.value || key).trim(),
+          active: activeInput ? activeInput.checked : true
+        });
+      });
+      return items;
     }
 
     function portalSelectPage(slug) {
@@ -11317,6 +12696,7 @@ app.get("/admin/ui", (req, res) => {
       portalSetChecked(portalPhotoReqEl, !!page.photo.required);
 
       portalRenderQuestions();
+      portalRenderSources();
       portalUpdateUrl();
       portalMatchFontPreset();
       portalSyncPreview();
@@ -11646,6 +13026,7 @@ app.get("/admin/ui", (req, res) => {
       };
 
       data.questions = portalReadQuestions();
+      data.sources = portalReadSources();
       return data;
     }
 
@@ -12797,6 +14178,7 @@ app.get("/admin/ui", (req, res) => {
       navCallsEl.classList.toggle('active', activeView === 'calls');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
       if (navCalendarEl) navCalendarEl.classList.toggle('active', activeView === 'calendar');
+      if (navAnalyticsEl) navAnalyticsEl.classList.toggle('active', activeView === 'analytics');
       if (navPortalEl) navPortalEl.classList.toggle('active', activeView === 'portal');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
         btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
@@ -12804,7 +14186,8 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function setActiveView(key) {
-      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS && key !== VIEW_CALENDAR) {
+      const canAnalytics = canPermission('analytics_view');
+      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS && key !== VIEW_CALENDAR && key !== VIEW_ANALYTICS) {
         key = VIEW_CALLS;
       }
       if (key === VIEW_CALLS) {
@@ -12815,6 +14198,9 @@ app.get("/admin/ui", (req, res) => {
         activeBrandKey = '';
       } else if (key === VIEW_CALENDAR) {
         activeView = 'calendar';
+        activeBrandKey = '';
+      } else if (key === VIEW_ANALYTICS) {
+        activeView = canAnalytics ? 'analytics' : 'calls';
         activeBrandKey = '';
       } else if (key === VIEW_PORTAL) {
         activeView = 'portal';
@@ -12830,6 +14216,7 @@ app.get("/admin/ui", (req, res) => {
       callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
       if (calendarViewEl) calendarViewEl.style.display = activeView === 'calendar' ? 'block' : 'none';
+      if (analyticsViewEl) analyticsViewEl.style.display = activeView === 'analytics' ? 'block' : 'none';
       if (portalViewEl) portalViewEl.style.display = activeView === 'portal' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
@@ -12848,6 +14235,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'calendar') {
         viewTitleEl.textContent = 'Calendario';
         viewLabelEl.textContent = 'Agenda';
+      } else if (activeView === 'analytics') {
+        viewTitleEl.textContent = 'Analytics';
+        viewLabelEl.textContent = 'Métricas';
       } else if (activeView === 'portal') {
         viewTitleEl.textContent = 'Portal';
         viewLabelEl.textContent = 'Aplicaciones';
@@ -12881,6 +14271,9 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'portal') {
         ensurePortalLoaded();
+      }
+      if (activeView === 'analytics') {
+        loadAnalytics();
       }
       if (window.matchMedia && window.matchMedia('(max-width: 980px)').matches) {
         setSidebarCollapsed(true);
@@ -13113,6 +14506,7 @@ app.get("/admin/ui", (req, res) => {
           authBrands = data.allowed_brands;
         }
         renderConfig(state.config);
+        loadOnboardingConfig();
         if (authRole === 'admin') {
           renderUserBrandList(getSelectedUserBrands());
           loadUsers();
@@ -14981,7 +16375,8 @@ app.get("/admin/ui", (req, res) => {
         if (list.length) {
           const count = document.createElement('div');
           count.className = 'calendar-day-count';
-          count.textContent = list.length + ' prueba' + (list.length > 1 ? 's' : '');
+          count.textContent = String(list.length);
+          count.title = list.length + ' prueba' + (list.length > 1 ? 's' : '');
           cell.appendChild(count);
         }
         cell.addEventListener('click', () => {
@@ -15193,7 +16588,7 @@ app.get("/admin/ui", (req, res) => {
         }
         const resp = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
           body: JSON.stringify(payload)
         });
         const data = await resp.json().catch(() => ({}));
@@ -15664,6 +17059,26 @@ app.get("/admin/ui", (req, res) => {
           };
           actionWrap.appendChild(waBtn);
         }
+        if (canPermission('onboarding_manage')) {
+          const onboardBtn = document.createElement('button');
+          onboardBtn.type = 'button';
+          onboardBtn.className = 'secondary btn-compact';
+          onboardBtn.textContent = 'Onboarding';
+          onboardBtn.onclick = (event) => {
+            event.stopPropagation();
+            const callId = call.callId || (Array.isArray(call.callIds) ? call.callIds[0] : '');
+            const cvId = call.cv_id || call.cvId || (Array.isArray(call.cvIds) ? call.cvIds[0] : '');
+            openOnboardingModal({
+              callId,
+              cvId,
+              brand: call.brandKey || call.brand || '',
+              role: call.role || call.roleKey || '',
+              name: call.applicant || '',
+              phone: call.phone || ''
+            });
+          };
+          actionWrap.appendChild(onboardBtn);
+        }
         if (canPermission('calls_delete') && call.callId) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
@@ -16010,6 +17425,23 @@ app.get("/admin/ui", (req, res) => {
           viewBtn.onclick = () => goToInterviewFromCv(item);
           actionWrap.appendChild(viewBtn);
         }
+        if (canPermission('onboarding_manage')) {
+          const onboardBtn = document.createElement('button');
+          onboardBtn.type = 'button';
+          onboardBtn.className = 'secondary btn-compact';
+          onboardBtn.textContent = 'Onboarding';
+          onboardBtn.onclick = () => {
+            const cvId = item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '');
+            openOnboardingModal({
+              cvId,
+              brand: item.brandKey || item.brand || '',
+              role: item.role || item.roleKey || '',
+              name: item.applicant || '',
+              phone: item.phone || ''
+            });
+          };
+          actionWrap.appendChild(onboardBtn);
+        }
         if (canPermission('cvs_delete')) {
           const delBtn = document.createElement('button');
           delBtn.type = 'button';
@@ -16126,6 +17558,347 @@ app.get("/admin/ui", (req, res) => {
       } catch (err) {
         setCallStatus('Error: ' + err.message);
       }
+    }
+
+    function setOnboardingStatus(msg, isError) {
+      if (!onboardingStatusEl) return;
+      onboardingStatusEl.textContent = msg || '';
+      onboardingStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
+
+    function renderOnboardingConfigDocList(list) {
+      if (!onboardingDocsListEl) return;
+      onboardingDocsListEl.innerHTML = '';
+      const docs = Array.isArray(list) ? list : [];
+      docs.forEach((doc, index) => {
+        const row = document.createElement('div');
+        row.className = 'onboarding-doc-row';
+        const keyInput = document.createElement('input');
+        keyInput.type = 'text';
+        keyInput.className = 'onboard-doc-key';
+        keyInput.placeholder = 'id';
+        keyInput.value = doc.key || '';
+        const labelInput = document.createElement('input');
+        labelInput.type = 'text';
+        labelInput.className = 'onboard-doc-label';
+        labelInput.placeholder = 'ID / Licencia';
+        labelInput.value = doc.label || '';
+        const actions = document.createElement('div');
+        actions.className = 'onboarding-doc-actions';
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'secondary btn-compact';
+        del.textContent = 'Quitar';
+        del.onclick = () => {
+          const next = docs.filter((_, idx) => idx !== index);
+          renderOnboardingConfigDocList(next);
+        };
+        actions.appendChild(del);
+        row.appendChild(keyInput);
+        row.appendChild(labelInput);
+        row.appendChild(actions);
+        onboardingDocsListEl.appendChild(row);
+      });
+      if (!docs.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'No hay documentos configurados.';
+        onboardingDocsListEl.appendChild(empty);
+      }
+    }
+
+    function applyOnboardingConfig(config) {
+      onboardingConfigState = config || {};
+      if (onboardingDressEl) onboardingDressEl.value = config?.dress_code || '';
+      if (onboardingInstructionsEl) onboardingInstructionsEl.value = config?.instructions || '';
+      if (onboardingPolicyTitleEl) onboardingPolicyTitleEl.value = config?.policy_title || '';
+      if (onboardingPolicyTextEl) onboardingPolicyTextEl.value = config?.policy_text || '';
+      const docs = Array.isArray(config?.doc_types) ? config.doc_types : [];
+      renderOnboardingConfigDocList(docs);
+    }
+
+    function collectOnboardingConfig() {
+      const docs = Array.from(onboardingDocsListEl?.querySelectorAll('.onboarding-doc-row') || []).map((row) => {
+        const key = (row.querySelector('.onboard-doc-key')?.value || '').trim();
+        const label = (row.querySelector('.onboard-doc-label')?.value || '').trim();
+        return { key, label: label || key };
+      }).filter((doc) => doc.key);
+      return {
+        dress_code: onboardingDressEl?.value || '',
+        instructions: onboardingInstructionsEl?.value || '',
+        policy_title: onboardingPolicyTitleEl?.value || '',
+        policy_text: onboardingPolicyTextEl?.value || '',
+        doc_types: docs
+      };
+    }
+
+    async function loadOnboardingConfig() {
+      if (!canPermission('onboarding_manage')) return;
+      try {
+        const resp = await fetch('/admin/onboarding/config', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'onboarding_config_failed');
+        applyOnboardingConfig(data.config || {});
+        setOnboardingStatus('');
+      } catch (err) {
+        setOnboardingStatus('Error: ' + err.message, true);
+      }
+    }
+
+    async function saveOnboardingConfig() {
+      if (!canPermission('onboarding_manage')) return;
+      setOnboardingStatus('Guardando...');
+      try {
+        const payload = collectOnboardingConfig();
+        const resp = await fetch('/admin/onboarding/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({ config: payload })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_config_failed');
+        applyOnboardingConfig(data.config || payload);
+        setOnboardingStatus('Guardado');
+      } catch (err) {
+        setOnboardingStatus('Error: ' + err.message, true);
+      }
+    }
+
+    function setOnboardingDocStatus(msg, isError) {
+      if (!onboardingDocStatusEl) return;
+      onboardingDocStatusEl.textContent = msg || '';
+      onboardingDocStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+    }
+
+    function renderOnboardingDocList() {
+      if (!onboardingDocListEl) return;
+      onboardingDocListEl.innerHTML = '';
+      const profile = onboardingProfile || {};
+      const docTypes = Array.isArray(profile.doc_types) && profile.doc_types.length
+        ? profile.doc_types
+        : (Array.isArray(onboardingConfigState?.doc_types) ? onboardingConfigState.doc_types : []);
+      const docs = Array.isArray(onboardingDocs) ? onboardingDocs : [];
+      docTypes.forEach((doc) => {
+        const row = document.createElement('div');
+        row.className = 'onboarding-doc-item';
+        const info = document.createElement('div');
+        info.className = 'onboarding-doc-info';
+        const name = document.createElement('div');
+        name.className = 'onboarding-doc-name';
+        name.textContent = doc.label || doc.key || 'Documento';
+        const status = document.createElement('div');
+        status.className = 'onboarding-doc-status';
+        const match = docs.filter((d) => d.doc_type === doc.key);
+        const latest = match.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+        status.textContent = latest ? ('Cargado · ' + formatDate(latest.created_at)) : 'Pendiente';
+        info.appendChild(name);
+        info.appendChild(status);
+        const actions = document.createElement('div');
+        actions.className = 'onboarding-doc-actions';
+        if (latest && latest.doc_url) {
+          const open = document.createElement('a');
+          open.href = latest.doc_url;
+          open.target = '_blank';
+          open.rel = 'noopener';
+          open.textContent = 'Ver';
+          open.className = 'secondary btn-compact';
+          open.style.textDecoration = 'none';
+          actions.appendChild(open);
+        }
+        if (canPermission('onboarding_manage')) {
+          const upload = document.createElement('button');
+          upload.type = 'button';
+          upload.className = 'secondary btn-compact';
+          upload.textContent = latest ? 'Reemplazar' : 'Subir';
+          upload.onclick = () => {
+            pendingOnboardingDocType = doc.key;
+            if (onboardingDocFileEl) onboardingDocFileEl.click();
+          };
+          actions.appendChild(upload);
+          if (latest && latest.id) {
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'secondary btn-compact';
+            del.textContent = 'Eliminar';
+            del.onclick = () => deleteOnboardingDoc(latest.id);
+            actions.appendChild(del);
+          }
+        }
+        row.appendChild(info);
+        row.appendChild(actions);
+        onboardingDocListEl.appendChild(row);
+      });
+      if (!docTypes.length) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'No hay documentos configurados.';
+        onboardingDocListEl.appendChild(empty);
+      }
+    }
+
+    async function openOnboardingModal(target) {
+      if (!onboardingModalEl) return;
+      if (!canPermission('onboarding_manage')) {
+        setStatus('Sin permisos para onboarding.');
+        return;
+      }
+      onboardingModalEl.style.display = 'flex';
+      setOnboardingDocStatus('Cargando...');
+      onboardingProfile = null;
+      onboardingDocs = [];
+      try {
+        const payload = {
+          cv_id: target?.cvId || target?.cv_id || '',
+          call_sid: target?.callId || target?.call_sid || '',
+          brand: target?.brand || '',
+          role: target?.role || '',
+          name: target?.name || target?.applicant || '',
+          phone: target?.phone || ''
+        };
+        const resp = await fetch('/admin/onboarding/create', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify(payload)
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_failed');
+        onboardingProfile = data.profile || null;
+        onboardingDocs = data.docs || [];
+        if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
+        if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
+        if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
+        if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
+        renderOnboardingDocList();
+        setOnboardingDocStatus('');
+      } catch (err) {
+        setOnboardingDocStatus('Error: ' + err.message, true);
+      }
+    }
+
+    function closeOnboardingModal() {
+      if (!onboardingModalEl) return;
+      onboardingModalEl.style.display = 'none';
+      onboardingProfile = null;
+      onboardingDocs = [];
+      pendingOnboardingDocType = '';
+      if (onboardingDocFileEl) onboardingDocFileEl.value = '';
+    }
+
+    async function uploadOnboardingDoc(docType, file) {
+      if (!onboardingProfile || !onboardingProfile.id || !docType || !file) return;
+      setOnboardingDocStatus('Subiendo...');
+      try {
+        const dataUrl = await portalFileToDataUrl(file);
+        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({
+            doc_type: docType,
+            data_url: dataUrl,
+            file_name: file.name || 'document'
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'upload_failed');
+        onboardingDocs = data.docs || onboardingDocs;
+        renderOnboardingDocList();
+        setOnboardingDocStatus('Documento cargado');
+      } catch (err) {
+        setOnboardingDocStatus('Error: ' + err.message, true);
+      }
+    }
+
+    async function deleteOnboardingDoc(docId) {
+      if (!onboardingProfile || !onboardingProfile.id || !docId) return;
+      if (!confirm('¿Eliminar este documento?')) return;
+      setOnboardingDocStatus('Eliminando...');
+      try {
+        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/doc/' + encodeURIComponent(docId), {
+          method: 'DELETE',
+          headers: portalAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'delete_failed');
+        onboardingDocs = data.docs || onboardingDocs.filter((d) => d.id !== docId);
+        renderOnboardingDocList();
+        setOnboardingDocStatus('Documento eliminado');
+      } catch (err) {
+        setOnboardingDocStatus('Error: ' + err.message, true);
+      }
+    }
+
+    async function loadAnalytics() {
+      if (!canPermission('analytics_view')) return;
+      if (!analyticsStatusEl) return;
+      analyticsStatusEl.textContent = 'Cargando...';
+      try {
+        const resp = await fetch('/admin/analytics', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'analytics_failed');
+        analyticsCache = data.analytics || {};
+        renderAnalytics(analyticsCache);
+        analyticsStatusEl.textContent = 'Actualizado';
+      } catch (err) {
+        analyticsStatusEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
+    function renderAnalyticsTable(el, rows) {
+      if (!el) return;
+      el.innerHTML = '';
+      const list = Array.isArray(rows) ? rows : [];
+      if (!list.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 2;
+        td.textContent = '—';
+        tr.appendChild(td);
+        el.appendChild(tr);
+        return;
+      }
+      list.forEach((row) => {
+        const tr = document.createElement('tr');
+        const name = document.createElement('td');
+        name.textContent = row.name || '—';
+        const count = document.createElement('td');
+        count.textContent = row.count || 0;
+        tr.appendChild(name);
+        tr.appendChild(count);
+        el.appendChild(tr);
+      });
+    }
+
+    function renderAnalytics(analytics) {
+      if (!analyticsCardsEl) return;
+      const totals = analytics?.totals || {};
+      const cards = [
+        { label: 'Aplicaciones', value: totals.applications || 0 },
+        { label: 'Llamadas', value: totals.calls || 0 },
+        { label: 'No contestó', value: totals.no_answer || 0 },
+        { label: 'Entrevistas', value: totals.interviews || 0 },
+        { label: 'Pruebas', value: totals.trials || 0 },
+        { label: 'Contratados', value: totals.hired || 0 },
+        { label: 'Horas ahorradas', value: totals.hours_saved || 0 }
+      ];
+      analyticsCardsEl.innerHTML = '';
+      cards.forEach((card) => {
+        const div = document.createElement('div');
+        div.className = 'analytics-card';
+        const label = document.createElement('div');
+        label.className = 'analytics-label';
+        label.textContent = card.label;
+        const value = document.createElement('div');
+        value.className = 'analytics-value';
+        value.textContent = card.value;
+        div.appendChild(label);
+        div.appendChild(value);
+        analyticsCardsEl.appendChild(div);
+      });
+      renderAnalyticsTable(analyticsAppsBrandEl, analytics.applications_by_brand || []);
+      renderAnalyticsTable(analyticsAppsRoleEl, analytics.applications_by_role || []);
+      renderAnalyticsTable(analyticsSourcesEl, analytics.sources || []);
+      renderAnalyticsTable(analyticsCallsBrandEl, analytics.brands || []);
+      renderAnalyticsTable(analyticsCallsRoleEl, analytics.roles || []);
     }
 
     async function restoreSession() {
@@ -16337,6 +18110,54 @@ app.get("/admin/ui", (req, res) => {
     if (userSaveEl) userSaveEl.onclick = saveUser;
     if (userClearEl) userClearEl.onclick = resetUserForm;
     if (logoutBtnEl) logoutBtnEl.onclick = logout;
+    if (onboardingDocAddEl) {
+      onboardingDocAddEl.onclick = () => {
+        const current = collectOnboardingConfig().doc_types || [];
+        current.push({ key: '', label: '' });
+        renderOnboardingConfigDocList(current);
+      };
+    }
+    if (onboardingSaveEl) onboardingSaveEl.onclick = saveOnboardingConfig;
+    if (onboardingCloseEl) onboardingCloseEl.onclick = closeOnboardingModal;
+    if (onboardingModalEl) {
+      onboardingModalEl.addEventListener('click', (event) => {
+        if (event.target === onboardingModalEl) closeOnboardingModal();
+      });
+    }
+    if (onboardingCopyEl) {
+      onboardingCopyEl.onclick = async () => {
+        const url = onboardingLinkEl?.value || '';
+        if (!url) return;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(url);
+          } else {
+            onboardingLinkEl.select();
+            document.execCommand('copy');
+            onboardingLinkEl.setSelectionRange(0, 0);
+          }
+          setOnboardingDocStatus('Link copiado');
+        } catch (err) {
+          setOnboardingDocStatus('No se pudo copiar', true);
+        }
+      };
+    }
+    if (onboardingOpenEl) {
+      onboardingOpenEl.onclick = () => {
+        const url = (onboardingLinkEl?.value || '').trim();
+        if (url) window.open(url, '_blank', 'noopener');
+      };
+    }
+    if (onboardingDocFileEl) {
+      onboardingDocFileEl.addEventListener('change', () => {
+        const file = onboardingDocFileEl.files && onboardingDocFileEl.files[0];
+        if (!file) return;
+        const docType = pendingOnboardingDocType || '';
+        pendingOnboardingDocType = '';
+        onboardingDocFileEl.value = '';
+        uploadOnboardingDoc(docType, file);
+      });
+    }
     loginTokenEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
@@ -16365,6 +18186,7 @@ app.get("/admin/ui", (req, res) => {
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     if (navCalendarEl) navCalendarEl.onclick = () => setActiveView(VIEW_CALENDAR);
+    if (navAnalyticsEl) navAnalyticsEl.onclick = () => setActiveView(VIEW_ANALYTICS);
     if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
     if (portalNewEl) {
       portalNewEl.onclick = () => {
@@ -16389,6 +18211,19 @@ app.get("/admin/ui", (req, res) => {
           options: []
         });
         portalRenderQuestions();
+      };
+    }
+    if (portalSourceAddEl) {
+      portalSourceAddEl.onclick = () => {
+        if (!portalCurrent) portalCurrent = portalDefaultPage();
+        portalCurrent.sources = portalReadSources();
+        const nextIndex = portalCurrent.sources.length + 1;
+        portalCurrent.sources.push({
+          key: 'fuente-' + nextIndex,
+          label: 'Fuente ' + nextIndex,
+          active: true
+        });
+        portalRenderSources();
       };
     }
     if (portalSlugEl) {
@@ -17095,6 +18930,8 @@ async function handleSmsInbound(req, res) {
   const isNo = hasToken(["no"]);
   const isYes = hasToken(["yes", "si"]);
 
+  console.log("[sms-inbound] received", { from, body: rawBody, normalized: normBody });
+
   if (!from) {
     return res.type("text/xml").send(smsInboundTwiml("We could not read your number."));
   }
@@ -17113,7 +18950,21 @@ async function handleSmsInbound(req, res) {
     if (lastCallback && now - lastCallback < 10 * 60 * 1000) {
       return res.type("text/xml").send(smsInboundTwiml("Thanks. We will call you back shortly."));
     }
-    const ctx = lastNoAnswerByNumber.get(from) || lastCallByNumber.get(from);
+    let ctx = lastNoAnswerByNumber.get(from) || lastCallByNumber.get(from);
+    if (!ctx?.payload && dbPool) {
+      const dbCall = await fetchLastNoAnswerByPhone(from);
+      if (dbCall) {
+        const dbPayload = buildNoAnswerPayload(dbCall);
+        if (dbPayload) {
+          ctx = { payload: dbPayload };
+          lastNoAnswerByNumber.set(from, {
+            payload: dbPayload,
+            expiresAt: Date.now() + NO_ANSWER_CONTEXT_TTL_MS,
+            lastNoAnswerAt: Date.now()
+          });
+        }
+      }
+    }
     if (!ctx?.payload) {
       return res.type("text/xml").send(smsInboundTwiml("Reply YES for a call back or NO/STOP to opt out."));
     }
@@ -17121,6 +18972,7 @@ async function handleSmsInbound(req, res) {
     if (!payload.from) payload.from = TWILIO_VOICE_FROM || "";
     lastCallbackByNumber.set(from, now);
     try {
+      console.log("[sms-inbound] callback", { to: from, brand: payload.brand, role: payload.role });
       await placeOutboundCall(payload);
     } catch (err) {
       console.error("[sms-inbound] recall failed", err);
@@ -18165,7 +20017,7 @@ function buildCvEntry(payload = {}) {
   const applicant = (payload.applicant || "").trim();
   const phone = normalizePhone(payload.phone || payload.to || "");
   const cvText = (payload.cv_text || payload.cv_summary || "").trim();
-  const source = (payload.source || payload.file_name || "").trim();
+  const source = resolvePayloadSource(payload) || (payload.file_name || "").trim();
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
@@ -18176,6 +20028,7 @@ function buildCvEntry(payload = {}) {
   const customQuestionModeRaw = (payload.custom_question_mode || payload.customQuestionMode || "").toString().trim();
   const customQuestionMode = customQuestionModeRaw === "ai" ? "ai" : "exact";
   const decision = (payload.decision || payload.status || "").toString().trim();
+  const onboardingId = (payload.onboarding_id || payload.onboardingId || "").toString().trim();
   return {
     id,
     created_at: createdAt,
@@ -18195,6 +20048,7 @@ function buildCvEntry(payload = {}) {
     custom_question: customQuestion,
     custom_question_mode: customQuestionMode,
     decision,
+    onboarding_id: onboardingId,
     source
   };
 }
@@ -18209,6 +20063,9 @@ function recordCvEntry(entry) {
     }
     if (!next.custom_question_mode && existing.custom_question_mode) {
       next.custom_question_mode = existing.custom_question_mode;
+    }
+    if (!next.onboarding_id && existing.onboarding_id) {
+      next.onboarding_id = existing.onboarding_id;
     }
     if ((next.trial_at === undefined || next.trial_at === "") && existing.trial_at) {
       next.trial_at = existing.trial_at;
@@ -18244,9 +20101,9 @@ async function upsertCvDb(entry) {
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
       cv_text, cv_url, cv_photo_url, trial_at, trial_follow_up_status, trial_follow_up_at,
-      custom_question, custom_question_mode, decision, source
+      custom_question, custom_question_mode, decision, onboarding_id, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -18264,6 +20121,7 @@ async function upsertCvDb(entry) {
       custom_question = EXCLUDED.custom_question,
       custom_question_mode = EXCLUDED.custom_question_mode,
       decision = EXCLUDED.decision,
+      onboarding_id = EXCLUDED.onboarding_id,
       source = EXCLUDED.source
   `;
   const values = [
@@ -18284,6 +20142,7 @@ async function upsertCvDb(entry) {
     entry.custom_question || "",
     entry.custom_question_mode || "exact",
     entry.decision || "",
+    entry.onboarding_id || "",
     entry.source || ""
   ];
   await dbQuery(sql, values);
@@ -18305,13 +20164,13 @@ async function upsertCallDb(entry) {
       score, recommendation, summary, warmth, fluency, english, english_detail,
       experience, area, availability, salary, trial, trial_at, trial_follow_up_status, trial_follow_up_at, stay_plan, stay_detail,
       mobility, outcome, outcome_detail, duration_sec, audio_url,
-      english_required, cv_id, cv_text, cv_url, notes, alt_brand_key, alt_role_key
+      english_required, cv_id, cv_text, cv_url, notes, decision, onboarding_id, alt_brand_key, alt_role_key
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
       $9,$10,$11,$12,$13,$14,$15,
       $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
       $26,$27,$28,$29,$30,
-      $31,$32,$33,$34,$35,$36,$37
+      $31,$32,$33,$34,$35,$36,$37,$38,$39
     )
     ON CONFLICT (call_sid) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -18347,6 +20206,8 @@ async function upsertCallDb(entry) {
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
       notes = COALESCE(EXCLUDED.notes, calls.notes),
+      decision = COALESCE(EXCLUDED.decision, calls.decision),
+      onboarding_id = COALESCE(EXCLUDED.onboarding_id, calls.onboarding_id),
       alt_brand_key = COALESCE(EXCLUDED.alt_brand_key, calls.alt_brand_key),
       alt_role_key = COALESCE(EXCLUDED.alt_role_key, calls.alt_role_key)
   `;
@@ -18386,6 +20247,8 @@ async function upsertCallDb(entry) {
     entry.cv_text || "",
     entry.cv_url || "",
     notesValue,
+    entry.decision || "",
+    entry.onboarding_id || "",
     altBrandValue,
     altRoleValue
   ];
@@ -18496,6 +20359,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
+      COALESCE(c.onboarding_id, cv.onboarding_id) AS onboarding_id,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
@@ -18553,6 +20417,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
       notes: row.notes || "",
+      onboarding_id: row.onboarding_id || "",
       alt_brand_key: row.alt_brand_key || "",
       alt_role_key: row.alt_role_key || ""
     });
@@ -18604,6 +20469,7 @@ async function fetchCallById(callId) {
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
+      COALESCE(c.onboarding_id, cv.onboarding_id) AS onboarding_id,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
       COALESCE(c.applicant, cv.applicant) AS applicant_resolved,
@@ -18659,8 +20525,50 @@ async function fetchCallById(callId) {
     cv_text: row.cv_text || "",
     cv_url: cvUrl || "",
     notes: row.notes || "",
+    onboarding_id: row.onboarding_id || "",
     alt_brand_key: row.alt_brand_key || "",
     alt_role_key: row.alt_role_key || ""
+  };
+}
+
+async function fetchLastNoAnswerByPhone(phone) {
+  if (!dbPool || !phone) return null;
+  const sql = `
+    SELECT
+      c.call_sid,
+      c.created_at,
+      c.brand,
+      c.brand_key,
+      c.role,
+      c.role_key,
+      c.applicant,
+      c.phone,
+      c.outcome,
+      c.cv_id,
+      COALESCE(c.cv_text, cv.cv_text) AS cv_text,
+      COALESCE(c.cv_url, cv.cv_url) AS cv_url,
+      c.english_required
+    FROM calls c
+    LEFT JOIN cvs cv ON c.cv_id = cv.id
+    WHERE c.phone = $1 AND c.outcome = 'NO_ANSWER'
+    ORDER BY c.created_at DESC
+    LIMIT 1
+  `;
+  const result = await dbQuery(sql, [phone]);
+  const row = result?.rows?.[0];
+  if (!row) return null;
+  return {
+    callSid: row.call_sid,
+    brand: row.brand || DEFAULT_BRAND,
+    role: row.role || DEFAULT_ROLE,
+    applicant: row.applicant || "",
+    to: row.phone || phone,
+    phone: row.phone || phone,
+    englishRequired: !!row.english_required,
+    cvId: row.cv_id || "",
+    cvText: row.cv_text || "",
+    cvUrl: row.cv_url || "",
+    address: resolveAddress(row.brand || DEFAULT_BRAND, null)
   };
 }
 
@@ -18728,7 +20636,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
     SELECT
       c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url,
       c.trial_at, c.trial_follow_up_status, c.trial_follow_up_at,
-      c.custom_question, c.custom_question_mode, c.decision, c.source,
+      c.custom_question, c.custom_question_mode, c.decision, c.onboarding_id, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
       COALESCE(s.last_call_at, sp.last_call_at) AS last_call_at,
       COALESCE(s.last_outcome, sp.last_outcome) AS last_outcome,
@@ -18767,6 +20675,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       custom_question: row.custom_question || "",
       custom_question_mode: row.custom_question_mode || "exact",
       decision: row.decision || "",
+      onboarding_id: row.onboarding_id || "",
       source: row.source || "",
       call_count: row.call_count !== null && row.call_count !== undefined ? Number(row.call_count) : 0,
       last_call_at: row.last_call_at ? new Date(row.last_call_at).toISOString() : "",
@@ -18777,6 +20686,261 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
     });
   }
   return mapped;
+}
+
+async function fetchOnboardingProfile(profileId) {
+  if (!dbPool || !profileId) return null;
+  const result = await dbQuery(
+    `SELECT id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
+            policy_title, policy_text, doc_types, status, policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
+     FROM onboarding_profiles WHERE id = $1 LIMIT 1`,
+    [profileId]
+  );
+  const row = result?.rows?.[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    public_token: row.public_token || "",
+    cv_id: row.cv_id || "",
+    call_sid: row.call_sid || "",
+    name: row.name || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    brand: row.brand || "",
+    role: row.role || "",
+    dress_code: row.dress_code || "",
+    instructions: row.instructions || "",
+    role_notes: row.role_notes || "",
+    policy_title: row.policy_title || "",
+    policy_text: row.policy_text || "",
+    doc_types: Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []),
+    status: row.status || "",
+    policy_ack: !!row.policy_ack,
+    policy_ack_name: row.policy_ack_name || "",
+    policy_ack_at: row.policy_ack_at ? new Date(row.policy_ack_at).toISOString() : "",
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : ""
+  };
+}
+
+async function fetchOnboardingProfileByToken(token) {
+  if (!dbPool || !token) return null;
+  const result = await dbQuery(
+    `SELECT id FROM onboarding_profiles WHERE public_token = $1 LIMIT 1`,
+    [token]
+  );
+  const row = result?.rows?.[0];
+  if (!row?.id) return null;
+  return fetchOnboardingProfile(row.id);
+}
+
+async function findOnboardingProfile({ cvId, callSid }) {
+  if (!dbPool) return null;
+  if (!cvId && !callSid) return null;
+  const clauses = [];
+  const values = [];
+  if (cvId) {
+    values.push(cvId);
+    clauses.push(`cv_id = $${values.length}`);
+  }
+  if (callSid) {
+    values.push(callSid);
+    clauses.push(`call_sid = $${values.length}`);
+  }
+  const sql = `SELECT id FROM onboarding_profiles WHERE ${clauses.join(" OR ")} ORDER BY created_at DESC LIMIT 1`;
+  const result = await dbQuery(sql, values);
+  const row = result?.rows?.[0];
+  if (!row?.id) return null;
+  return fetchOnboardingProfile(row.id);
+}
+
+async function createOnboardingProfile(payload = {}) {
+  if (!dbPool) return null;
+  const id = payload.id || randomToken();
+  const publicToken = payload.public_token || payload.publicToken || randomToken();
+  const nowIso = new Date().toISOString();
+  const entry = {
+    id,
+    public_token: publicToken,
+    cv_id: payload.cv_id || "",
+    call_sid: payload.call_sid || "",
+    name: payload.name || "",
+    email: payload.email || "",
+    phone: payload.phone || "",
+    brand: payload.brand || "",
+    role: payload.role || "",
+    dress_code: payload.dress_code || "",
+    instructions: payload.instructions || "",
+    role_notes: payload.role_notes || "",
+    policy_title: payload.policy_title || "",
+    policy_text: payload.policy_text || "",
+    doc_types: Array.isArray(payload.doc_types) ? payload.doc_types : [],
+    status: payload.status || "pending",
+    created_at: nowIso,
+    updated_at: nowIso
+  };
+  await dbQuery(
+    `INSERT INTO onboarding_profiles (
+        id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
+        policy_title, policy_text, doc_types, status, created_at, updated_at
+     ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+        $13,$14,$15,$16,$17,$18
+     )`,
+    [
+      entry.id,
+      entry.public_token,
+      entry.cv_id,
+      entry.call_sid,
+      entry.name,
+      entry.email,
+      entry.phone,
+      entry.brand,
+      entry.role,
+      entry.dress_code,
+      entry.instructions,
+      entry.role_notes,
+      entry.policy_title,
+      entry.policy_text,
+      JSON.stringify(entry.doc_types || []),
+      entry.status,
+      entry.created_at,
+      entry.updated_at
+    ]
+  );
+  return fetchOnboardingProfile(id);
+}
+
+async function updateOnboardingPolicyAck(profileId, { name }) {
+  if (!dbPool || !profileId) return null;
+  await dbQuery(
+    `UPDATE onboarding_profiles
+     SET policy_ack = TRUE, policy_ack_name = $2, policy_ack_at = NOW(), updated_at = NOW()
+     WHERE id = $1`,
+    [profileId, name || ""]
+  );
+  return fetchOnboardingProfile(profileId);
+}
+
+async function updateOnboardingProfile(profileId, patch = {}) {
+  if (!dbPool || !profileId) return null;
+  const allowed = {
+    public_token: "public_token",
+    name: "name",
+    email: "email",
+    phone: "phone",
+    brand: "brand",
+    role: "role",
+    dress_code: "dress_code",
+    instructions: "instructions",
+    role_notes: "role_notes",
+    policy_title: "policy_title",
+    policy_text: "policy_text",
+    doc_types: "doc_types",
+    status: "status",
+    cv_id: "cv_id",
+    call_sid: "call_sid"
+  };
+  const sets = [];
+  const values = [profileId];
+  Object.keys(allowed).forEach((key) => {
+    if (patch[key] === undefined) return;
+    const col = allowed[key];
+    let value = patch[key];
+    if (col === "doc_types") {
+      value = JSON.stringify(Array.isArray(value) ? value : []);
+    }
+    values.push(value);
+    sets.push(`${col} = $${values.length}`);
+  });
+  if (!sets.length) return fetchOnboardingProfile(profileId);
+  await dbQuery(
+    `UPDATE onboarding_profiles
+     SET ${sets.join(", ")}, updated_at = NOW()
+     WHERE id = $1`,
+    values
+  );
+  return fetchOnboardingProfile(profileId);
+}
+
+async function fetchOnboardingDocs(profileId) {
+  if (!dbPool || !profileId) return [];
+  const result = await dbQuery(
+    `SELECT id, profile_id, cv_id, doc_type, doc_url, uploaded_by, created_at
+     FROM onboarding_docs WHERE profile_id = $1 ORDER BY created_at DESC`,
+    [profileId]
+  );
+  const rows = result?.rows || [];
+  const mapped = [];
+  for (const row of rows) {
+    const docUrl = await resolveStoredUrl(row.doc_url || "", 24 * 60 * 60);
+    mapped.push({
+      id: row.id,
+      profile_id: row.profile_id,
+      cv_id: row.cv_id || "",
+      doc_type: row.doc_type || "",
+      doc_url: docUrl || "",
+      uploaded_by: row.uploaded_by || "",
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : ""
+    });
+  }
+  return mapped;
+}
+
+async function insertOnboardingDoc({ profileId, cvId, docType, docUrl, uploadedBy }) {
+  if (!dbPool || !profileId || !docType || !docUrl) return null;
+  const id = randomToken();
+  await dbQuery(
+    `INSERT INTO onboarding_docs (id, profile_id, cv_id, doc_type, doc_url, uploaded_by, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+    [id, profileId, cvId || "", docType, docUrl, uploadedBy || ""]
+  );
+  return id;
+}
+
+async function deleteOnboardingDoc(profileId, docId) {
+  if (!dbPool || !profileId || !docId) return false;
+  const resp = await dbQuery(
+    `DELETE FROM onboarding_docs WHERE id = $1 AND profile_id = $2`,
+    [docId, profileId]
+  );
+  return (resp?.rowCount || 0) > 0;
+}
+
+async function attachOnboardingToRecords(profile) {
+  if (!profile || !profile.id) return;
+  const onboardingId = profile.id;
+  if (profile.cv_id) {
+    const entry = cvStoreById.get(profile.cv_id);
+    if (entry) entry.onboarding_id = onboardingId;
+    for (const item of cvStore) {
+      if (item && item.id === profile.cv_id) item.onboarding_id = onboardingId;
+    }
+    scheduleCvStoreSave();
+    if (dbPool) {
+      try {
+        await dbQuery("UPDATE cvs SET onboarding_id = $1 WHERE id = $2", [onboardingId, profile.cv_id]);
+      } catch (err) {
+        console.error("[onboarding] failed to link cv", err.message);
+      }
+    }
+  }
+  if (profile.call_sid) {
+    const tracked = callsByCallSid.get(profile.call_sid);
+    if (tracked) tracked.onboarding_id = onboardingId;
+    for (const entry of callHistory) {
+      if (entry && (entry.callId === profile.call_sid || entry.callSid === profile.call_sid)) {
+        entry.onboarding_id = onboardingId;
+      }
+    }
+    if (dbPool) {
+      try {
+        await dbQuery("UPDATE calls SET onboarding_id = $1 WHERE call_sid = $2", [onboardingId, profile.call_sid]);
+      } catch (err) {
+        console.error("[onboarding] failed to link call", err.message);
+      }
+    }
+  }
 }
 
 function formatWhatsapp(scoring, call, opts = {}) {
