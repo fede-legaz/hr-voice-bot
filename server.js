@@ -3329,6 +3329,163 @@ async function getPdfTemplateFields(templateUrl) {
   return fields;
 }
 
+function findTemplateField(templateFields, patterns, options = {}) {
+  const list = Array.isArray(templateFields) ? templateFields : [];
+  const normPatterns = (patterns || []).map((p) => normalizeKey(p));
+  const excludePatterns = (options.exclude || []).map((p) => normalizeKey(p));
+  const entries = list.map((f) => ({
+    name: f.name,
+    norm: normalizeKey(f.name || "")
+  }));
+  const isExcluded = (norm) => excludePatterns.some((p) => p && norm.includes(p));
+  for (const pattern of normPatterns) {
+    const exact = entries.find((entry) => entry.norm === pattern && !isExcluded(entry.norm));
+    if (exact) return exact.name;
+  }
+  for (const pattern of normPatterns) {
+    const match = entries.find((entry) => entry.norm.includes(pattern) && !isExcluded(entry.norm));
+    if (match) return match.name;
+  }
+  return "";
+}
+
+function formatDateUs(value) {
+  if (!value) return "";
+  const str = String(value).trim();
+  if (!str) return "";
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(str)) return str;
+  const parsed = new Date(str);
+  if (Number.isNaN(parsed.getTime())) return str;
+  const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+  const dd = String(parsed.getDate()).padStart(2, "0");
+  const yyyy = parsed.getFullYear();
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function normalizeChoice(value) {
+  return normalizeKey(String(value || ""));
+}
+
+function mapI9Fields(fields, templateFields) {
+  const out = {};
+  const data = fields && typeof fields === "object" ? fields : {};
+  const mapping = [
+    ["last_name", ["last name (family name)", "last name"]],
+    ["first_name", ["first name (given name)", "first name"]],
+    ["middle_initial", ["middle initial"]],
+    ["other_last_names", ["other last names used"]],
+    ["address", ["address (street number and name)", "address street number and name"]],
+    ["apt", ["apt. number", "apt number"]],
+    ["city", ["city or town"]],
+    ["state", ["state"]],
+    ["zip", ["zip code"]],
+    ["dob", ["date of birth"]],
+    ["ssn", ["u.s. social security number", "social security number"]],
+    ["email", ["employee's email address", "employee email address"]],
+    ["phone", ["employee's telephone number", "employee's phone number", "employee phone number"]]
+  ];
+  mapping.forEach(([key, patterns]) => {
+    const value = data[key];
+    if (!value) return;
+    const fieldName = findTemplateField(templateFields, patterns);
+    if (fieldName) out[fieldName] = value;
+  });
+
+  const status = normalizeChoice(data.status);
+  const statusFields = {
+    citizen: ["a citizen of the united states"],
+    noncitizen: ["a noncitizen national of the united states"],
+    permanent: ["a lawful permanent resident"],
+    authorized: ["an alien authorized to work"]
+  };
+  Object.entries(statusFields).forEach(([key, patterns]) => {
+    const fieldName = findTemplateField(templateFields, patterns);
+    if (!fieldName) return;
+    out[fieldName] = status === key ? "true" : "false";
+  });
+
+  if (status === "permanent") {
+    const aNumField = findTemplateField(templateFields, ["uscis a-number", "a-number"]);
+    if (aNumField && data.lpr_a_number) out[aNumField] = data.lpr_a_number;
+  }
+
+  if (status === "authorized") {
+    const expField = findTemplateField(templateFields, ["exp. date", "expiration date", "exp date"]);
+    if (expField && data.auth_exp) out[expField] = formatDateUs(data.auth_exp);
+
+    const docType = normalizeChoice(data.auth_doc_type);
+    if (docType === "a number") {
+      const aNumField = findTemplateField(templateFields, ["uscis a-number", "a-number"]);
+      if (aNumField && data.auth_a_number) out[aNumField] = data.auth_a_number;
+    } else if (docType === "i94" || docType === "i 94" || docType.includes("i94")) {
+      const i94Field = findTemplateField(templateFields, ["form i-94 admission number", "i-94 admission number", "i-94"]);
+      if (i94Field && data.auth_i94) out[i94Field] = data.auth_i94;
+    } else if (docType === "passport") {
+      const passField = findTemplateField(templateFields, ["foreign passport number", "passport number"]);
+      const countryField = findTemplateField(templateFields, ["country of issuance", "passport country"]);
+      if (passField && data.auth_passport) out[passField] = data.auth_passport;
+      if (countryField && data.auth_country) out[countryField] = data.auth_country;
+    }
+  }
+
+  const dateField = findTemplateField(templateFields, ["today's date", "date (mm/dd/yyyy)", "date"]);
+  if (dateField) out[dateField] = formatDateUs(data.signature_date || new Date());
+  return out;
+}
+
+function mapW4Fields(fields, templateFields) {
+  const out = {};
+  const data = fields && typeof fields === "object" ? fields : {};
+  const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
+  const lastName = data.last_name || "";
+  const mapping = [
+    ["first_name", ["first name and middle initial", "first name"]],
+    ["last_name", ["last name"]],
+    ["address", ["address", "street address"]],
+    ["apt", ["apt", "apt."]],
+    ["city", ["city"]],
+    ["state", ["state"]],
+    ["zip", ["zip"]],
+    ["ssn", ["social security number", "ssn"]]
+  ];
+  mapping.forEach(([key, patterns]) => {
+    const value = key === "first_name" ? firstName : key === "last_name" ? lastName : data[key];
+    if (!value) return;
+    const fieldName = findTemplateField(templateFields, patterns, { exclude: ["employer", "office"] });
+    if (fieldName) out[fieldName] = value;
+  });
+  const status = normalizeChoice(data.filing_status);
+  const statusFields = {
+    single: ["single or married filing separately", "single"],
+    married: ["married filing jointly", "married"],
+    head: ["head of household"]
+  };
+  Object.entries(statusFields).forEach(([key, patterns]) => {
+    const fieldName = findTemplateField(templateFields, patterns);
+    if (!fieldName) return;
+    out[fieldName] = status === key ? "true" : "false";
+  });
+  const dateField = findTemplateField(templateFields, ["date", "today's date"]);
+  if (dateField) out[dateField] = formatDateUs(data.signature_date || new Date());
+  return out;
+}
+
+async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
+  const payload = fields && typeof fields === "object" ? fields : {};
+  const keys = Object.keys(payload);
+  if (!keys.length) return payload;
+  const templateFields = await getPdfTemplateFields(templateUrl);
+  if (!templateFields.length) return payload;
+  const templateNames = templateFields.map((f) => f.name);
+  const templateNorms = new Set(templateNames.map((name) => normalizeKey(name)));
+  const hasTemplateMatch = keys.some((key) => templateNames.includes(key) || templateNorms.has(normalizeKey(key)));
+  if (hasTemplateMatch) return payload;
+  const typeKey = normalizeKey(docType);
+  if (typeKey === "i9") return mapI9Fields(payload, templateFields);
+  if (typeKey === "w4") return mapW4Fields(payload, templateFields);
+  return payload;
+}
+
 async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDataUrl, keepFirstPage = false }) {
   if (!PDFDocument) throw new Error("pdf_lib_missing");
   const resolved = await resolveTemplateUrl(templateUrl);
@@ -3371,10 +3528,53 @@ async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDa
     const field = exactMap.get(key) || normMap.get(normalizeKey(key));
     setValue(field, value);
   });
+  let signaturePlaced = false;
   if (signatureName) {
-    const sigField = fieldList.find((field) => /signature|sign/i.test(field.getName() || ""));
+    const sigField = fieldList.find((field) => /employee.*signature|signature of employee/i.test(field.getName() || ""))
+      || fieldList.find((field) => /signature|sign/i.test(field.getName() || ""));
     if (sigField) {
       setValue(sigField, signatureName);
+      if (signatureDataUrl) {
+        try {
+          const widgets = typeof sigField.getWidgets === "function"
+            ? sigField.getWidgets()
+            : sigField.acroField?.getWidgets?.() || [];
+          const widget = widgets && widgets[0];
+          const rect = widget?.getRectangle?.();
+          const page = widget?.getPage?.() || pdfDoc.getPages()[0];
+          if (rect && page) {
+            let x = rect.x ?? rect.left ?? rect[0];
+            let y = rect.y ?? rect.bottom ?? rect[1];
+            let w = rect.width ?? (rect[2] - rect[0]);
+            let h = rect.height ?? (rect[3] - rect[1]);
+            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h)) {
+              const parsed = parseDataUrl(signatureDataUrl);
+              if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
+                const img = parsed.mime.includes("png")
+                  ? await pdfDoc.embedPng(parsed.buffer)
+                  : await pdfDoc.embedJpg(parsed.buffer);
+                const pad = 2;
+                x += pad;
+                y += pad;
+                w = Math.max(1, w - pad * 2);
+                h = Math.max(1, h - pad * 2);
+                const scale = Math.min(w / img.width, h / img.height, 1);
+                const imgW = img.width * scale;
+                const imgH = img.height * scale;
+                page.drawImage(img, {
+                  x,
+                  y: y + (h - imgH) / 2,
+                  width: imgW,
+                  height: imgH
+                });
+                signaturePlaced = true;
+              }
+            }
+          }
+        } catch (err) {
+          signaturePlaced = false;
+        }
+      }
     }
   }
   form.flatten();
@@ -3384,32 +3584,22 @@ async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDa
       pdfDoc.removePage(i);
     }
   }
-  if (signatureDataUrl) {
+  if (signatureDataUrl && !signaturePlaced) {
     const parsed = parseDataUrl(signatureDataUrl);
     if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
       const [firstPage] = pdfDoc.getPages();
       const size = firstPage ? firstPage.getSize() : { width: 612, height: 792 };
-      const page = pdfDoc.addPage([size.width, size.height]);
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-      page.drawText("Firma", { x: 40, y: size.height - 50, size: 18, font: fontBold });
-      if (signatureName) {
-        page.drawText(`Nombre: ${signatureName}`, { x: 40, y: size.height - 75, size: 11, font });
-      }
       const img = parsed.mime.includes("png")
         ? await pdfDoc.embedPng(parsed.buffer)
         : await pdfDoc.embedJpg(parsed.buffer);
-      const maxW = size.width - 80;
-      const maxH = size.height - 140;
+      const maxW = Math.min(220, size.width - 80);
+      const maxH = 70;
       const scale = Math.min(maxW / img.width, maxH / img.height, 1);
       const imgW = img.width * scale;
       const imgH = img.height * scale;
-      page.drawImage(img, {
-        x: 40,
-        y: size.height - 100 - imgH,
-        width: imgW,
-        height: imgH
-      });
+      const x = 60;
+      const y = 90;
+      firstPage.drawImage(img, { x, y, width: imgW, height: imgH });
     }
   }
   return Buffer.from(await pdfDoc.save());
@@ -5304,6 +5494,8 @@ function renderOnboardingPageHtml(token) {
         const ctx = canvas.getContext('2d');
         let drawing = false;
         let hasStroke = false;
+        let lastInputType = '';
+        let lastInputAt = 0;
 
         const resize = () => {
           const rect = canvas.getBoundingClientRect();
@@ -5327,6 +5519,13 @@ function renderOnboardingPageHtml(token) {
 
         const start = (event) => {
           if (event.cancelable) event.preventDefault();
+          const inputType = event.type.startsWith('touch')
+            ? 'touch'
+            : (event.pointerType || (event.type.startsWith('mouse') ? 'mouse' : 'pointer'));
+          const now = Date.now();
+          if (lastInputType && lastInputType !== inputType && now - lastInputAt < 120) return;
+          lastInputType = inputType;
+          lastInputAt = now;
           drawing = true;
           hasStroke = true;
           const pos = getPos(event);
@@ -5346,6 +5545,7 @@ function renderOnboardingPageHtml(token) {
         const end = (event) => {
           if (event.cancelable) event.preventDefault();
           drawing = false;
+          lastInputType = '';
           if (event.pointerId && canvas.releasePointerCapture) {
             try { canvas.releasePointerCapture(event.pointerId); } catch (err) {}
           }
@@ -5357,15 +5557,14 @@ function renderOnboardingPageHtml(token) {
           canvas.addEventListener('pointerup', end);
           canvas.addEventListener('pointercancel', end);
           canvas.addEventListener('pointerleave', end);
-        } else {
-          canvas.addEventListener('mousedown', start);
-          canvas.addEventListener('mousemove', move);
-          canvas.addEventListener('mouseup', end);
-          canvas.addEventListener('mouseleave', end);
-          canvas.addEventListener('touchstart', start, { passive: false });
-          canvas.addEventListener('touchmove', move, { passive: false });
-          canvas.addEventListener('touchend', end);
         }
+        canvas.addEventListener('mousedown', start);
+        canvas.addEventListener('mousemove', move);
+        canvas.addEventListener('mouseup', end);
+        canvas.addEventListener('mouseleave', end);
+        canvas.addEventListener('touchstart', start, { passive: false });
+        canvas.addEventListener('touchmove', move, { passive: false });
+        canvas.addEventListener('touchend', end);
         canvas.style.touchAction = 'none';
 
         if (clearBtn) {
@@ -5397,8 +5596,8 @@ function renderOnboardingPageHtml(token) {
         };
       }
 
-      function formField(label, key, type = 'text', options) {
-        return { label, key, type, options: options || [] };
+      function formField(label, key, type = 'text', options, extra) {
+        return { label, key, type, options: options || [], extra: extra || {} };
       }
 
       function getFormFields(docKey) {
@@ -5407,9 +5606,14 @@ function renderOnboardingPageHtml(token) {
           return [
             formField('Nombre completo', 'full_name'),
             formField('Dirección', 'address'),
-            formField('Fecha de nacimiento', 'dob', 'date'),
+            formField('Fecha de nacimiento (MM/DD/YYYY)', 'dob', 'text'),
             formField('SSN', 'ssn'),
-            formField('Estatus de elegibilidad', 'status', 'select', ['Citizen', 'Permanent Resident', 'Authorized to work']),
+            formField('Estatus de elegibilidad', 'status', 'select', [
+              'Citizen',
+              'Noncitizen national',
+              'Permanent resident',
+              'Authorized to work'
+            ]),
             formField('Firma (escribí tu nombre)', 'signature')
           ];
         }
@@ -5418,8 +5622,11 @@ function renderOnboardingPageHtml(token) {
             formField('Nombre completo', 'full_name'),
             formField('Dirección', 'address'),
             formField('SSN', 'ssn'),
-            formField('Estado civil', 'filing_status', 'select', ['Single', 'Married', 'Head of household']),
-            formField('Dependientes', 'dependents'),
+            formField('Estado civil', 'filing_status', 'select', [
+              'Single',
+              'Married filing jointly',
+              'Head of household'
+            ]),
             formField('Firma (escribí tu nombre)', 'signature')
           ];
         }
@@ -5428,6 +5635,77 @@ function renderOnboardingPageHtml(token) {
           formField('Detalle', 'detail', 'textarea'),
           formField('Firma (escribí tu nombre)', 'signature')
         ];
+      }
+
+      function normalizeValue(value) {
+        return String(value || '')
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+      }
+
+      function getPdfSchema(docKey) {
+        const key = (docKey || '').toLowerCase();
+        if (key === 'i9') {
+          return {
+            title: 'I-9 (Sección 1)',
+            fields: [
+              formField('Apellido', 'last_name'),
+              formField('Nombre', 'first_name'),
+              formField('Inicial segundo nombre', 'middle_initial'),
+              formField('Otros apellidos usados', 'other_last_names'),
+              formField('Dirección (número y calle)', 'address'),
+              formField('Apto (si aplica)', 'apt'),
+              formField('Ciudad', 'city'),
+              formField('Estado', 'state'),
+              formField('ZIP', 'zip'),
+              formField('Fecha de nacimiento (MM/DD/YYYY)', 'dob', 'text'),
+              formField('SSN', 'ssn'),
+              formField('Email', 'email'),
+              formField('Teléfono', 'phone'),
+              formField('Estatus de elegibilidad', 'status', 'select', [
+                { label: 'Citizen', value: 'citizen' },
+                { label: 'Noncitizen national', value: 'noncitizen' },
+                { label: 'Permanent resident', value: 'permanent' },
+                { label: 'Authorized to work', value: 'authorized' }
+              ]),
+              formField('USCIS A-Number', 'lpr_a_number', 'text', [], { showStatus: 'permanent' }),
+              formField('Fecha de expiración (MM/DD/YYYY)', 'auth_exp', 'text', [], { showStatus: 'authorized' }),
+              formField('Documento (si autorizado)', 'auth_doc_type', 'select', [
+                { label: 'USCIS A-Number', value: 'a_number' },
+                { label: 'Form I-94', value: 'i94' },
+                { label: 'Passport', value: 'passport' }
+              ], { showStatus: 'authorized' }),
+              formField('USCIS A-Number', 'auth_a_number', 'text', [], { showStatus: 'authorized', showAuth: 'a_number' }),
+              formField('I-94 Admission Number', 'auth_i94', 'text', [], { showStatus: 'authorized', showAuth: 'i94' }),
+              formField('Passport Number', 'auth_passport', 'text', [], { showStatus: 'authorized', showAuth: 'passport' }),
+              formField('Country of Issuance', 'auth_country', 'text', [], { showStatus: 'authorized', showAuth: 'passport' })
+            ]
+          };
+        }
+        if (key === 'w4') {
+          return {
+            title: 'W-4 (Página 1)',
+            fields: [
+              formField('Apellido', 'last_name'),
+              formField('Nombre', 'first_name'),
+              formField('Dirección (número y calle)', 'address'),
+              formField('Apto (si aplica)', 'apt'),
+              formField('Ciudad', 'city'),
+              formField('Estado', 'state'),
+              formField('ZIP', 'zip'),
+              formField('SSN', 'ssn'),
+              formField('Estado civil', 'filing_status', 'select', [
+                { label: 'Single or Married filing separately', value: 'single' },
+                { label: 'Married filing jointly', value: 'married' },
+                { label: 'Head of household', value: 'head' }
+              ])
+            ]
+          };
+        }
+        return null;
       }
 
       function prettifyPdfLabel(name) {
@@ -5524,37 +5802,107 @@ function renderOnboardingPageHtml(token) {
           if (formSignStatusEl) formSignStatusEl.textContent = '';
         }
         try {
-          const fields = await fetchPdfTemplateFields(docType);
+          const schema = getPdfSchema(docType);
           const profile = state.profile || {};
           formFieldsEl.innerHTML = '';
-          activePdfFieldNames = fields.map((f) => f.name);
-          fields.forEach((field) => {
-            const wrap = document.createElement('div');
-            wrap.className = 'form-field';
-            const label = document.createElement('label');
-            label.textContent = prettifyPdfLabel(field.name);
-            wrap.appendChild(label);
-            const input = document.createElement('input');
-            input.type = 'text';
-            input.dataset.key = field.name;
-            const existingValue = existing && existing.fields ? existing.fields[field.name] : '';
-            input.value = existingValue || guessPrefillValue(field.name, profile) || '';
-            wrap.appendChild(input);
-            formFieldsEl.appendChild(wrap);
-          });
-          const sigWrap = document.createElement('div');
-          sigWrap.className = 'form-field';
-          const sigLabel = document.createElement('label');
-          sigLabel.textContent = 'Nombre para firma';
-          sigWrap.appendChild(sigLabel);
-          const sigInput = document.createElement('input');
-          sigInput.type = 'text';
-          sigInput.dataset.key = '__signature_name';
-          sigInput.value = (existing && existing.signature_name) ? existing.signature_name : (profile.name || '');
-          sigWrap.appendChild(sigInput);
-          formFieldsEl.appendChild(sigWrap);
-          formStatusEl.textContent = '';
-          formModalEl.style.display = 'flex';
+          if (schema && Array.isArray(schema.fields)) {
+            if (formTitleEl) formTitleEl.textContent = schema.title || ('Completar PDF ' + (docType || '').toUpperCase());
+            schema.fields.forEach((field) => {
+              const wrap = document.createElement('div');
+              wrap.className = 'form-field';
+              if (field.extra?.showStatus) wrap.dataset.showStatus = field.extra.showStatus;
+              if (field.extra?.showAuth) wrap.dataset.showAuth = field.extra.showAuth;
+              const label = document.createElement('label');
+              label.textContent = field.label;
+              wrap.appendChild(label);
+              let input;
+              if (field.type === 'select') {
+                input = document.createElement('select');
+                (field.options || []).forEach((opt) => {
+                  const o = document.createElement('option');
+                  if (typeof opt === 'string') {
+                    o.value = opt;
+                    o.textContent = opt;
+                  } else {
+                    o.value = opt.value;
+                    o.textContent = opt.label || opt.value;
+                  }
+                  input.appendChild(o);
+                });
+              } else if (field.type === 'textarea') {
+                input = document.createElement('textarea');
+              } else {
+                input = document.createElement('input');
+                input.type = field.type || 'text';
+              }
+              input.dataset.key = field.key;
+              const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
+              input.value = existingValue || '';
+              wrap.appendChild(input);
+              formFieldsEl.appendChild(wrap);
+            });
+            const sigWrap = document.createElement('div');
+            sigWrap.className = 'form-field';
+            const sigLabel = document.createElement('label');
+            sigLabel.textContent = 'Nombre para firma';
+            sigWrap.appendChild(sigLabel);
+            const sigInput = document.createElement('input');
+            sigInput.type = 'text';
+            sigInput.dataset.key = '__signature_name';
+            sigInput.value = (existing && existing.signature_name) ? existing.signature_name : (profile.name || '');
+            sigWrap.appendChild(sigInput);
+            formFieldsEl.appendChild(sigWrap);
+            const statusInput = formFieldsEl.querySelector('[data-key="status"]');
+            const authInput = formFieldsEl.querySelector('[data-key="auth_doc_type"]');
+            const applyConditional = () => {
+              const statusVal = normalizeValue(statusInput?.value || '');
+              const authVal = normalizeValue(authInput?.value || '');
+              formFieldsEl.querySelectorAll('[data-show-status]').forEach((el) => {
+                const needed = normalizeValue(el.dataset.showStatus || '');
+                el.style.display = !needed || needed === statusVal ? '' : 'none';
+              });
+              formFieldsEl.querySelectorAll('[data-show-auth]').forEach((el) => {
+                const needed = normalizeValue(el.dataset.showAuth || '');
+                el.style.display = !needed || needed === authVal ? '' : 'none';
+              });
+            };
+            if (statusInput) statusInput.addEventListener('change', applyConditional);
+            if (authInput) authInput.addEventListener('change', applyConditional);
+            applyConditional();
+            formStatusEl.textContent = '';
+            formModalEl.style.display = 'flex';
+          } else {
+            const fields = await fetchPdfTemplateFields(docType);
+            formFieldsEl.innerHTML = '';
+            activePdfFieldNames = fields.map((f) => f.name);
+            fields.forEach((field) => {
+              const wrap = document.createElement('div');
+              wrap.className = 'form-field';
+              const label = document.createElement('label');
+              label.textContent = prettifyPdfLabel(field.name);
+              wrap.appendChild(label);
+              const input = document.createElement('input');
+              input.type = 'text';
+              input.dataset.key = field.name;
+              const existingValue = existing && existing.fields ? existing.fields[field.name] : '';
+              input.value = existingValue || guessPrefillValue(field.name, profile) || '';
+              wrap.appendChild(input);
+              formFieldsEl.appendChild(wrap);
+            });
+            const sigWrap = document.createElement('div');
+            sigWrap.className = 'form-field';
+            const sigLabel = document.createElement('label');
+            sigLabel.textContent = 'Nombre para firma';
+            sigWrap.appendChild(sigLabel);
+            const sigInput = document.createElement('input');
+            sigInput.type = 'text';
+            sigInput.dataset.key = '__signature_name';
+            sigInput.value = (existing && existing.signature_name) ? existing.signature_name : (profile.name || '');
+            sigWrap.appendChild(sigInput);
+            formFieldsEl.appendChild(sigWrap);
+            formStatusEl.textContent = '';
+            formModalEl.style.display = 'flex';
+          }
         } catch (err) {
           formStatusEl.textContent = 'Error: ' + err.message;
           formModalEl.style.display = 'flex';
@@ -5685,7 +6033,12 @@ function renderOnboardingPageHtml(token) {
           status.className = 'doc-status';
           const match = state.docs.filter((d) => d.doc_type === doc.key);
           const latest = match.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
-          if (doc.mode === 'policy') {
+          let mode = doc.mode || '';
+          const normalizedDocKey = String(doc.key || '').toLowerCase();
+          if ((!mode || mode === 'upload') && ['i9', 'w4'].includes(normalizedDocKey) && doc.template_url) {
+            mode = 'pdf';
+          }
+          if (mode === 'policy') {
             status.textContent = p.policy_ack ? 'Firmada' : 'Pendiente';
           } else if (latest) {
             status.textContent = latest.doc_data ? 'Completado' : 'Subido';
@@ -5715,19 +6068,19 @@ function renderOnboardingPageHtml(token) {
           }
           const actions = document.createElement('div');
           actions.className = 'doc-actions';
-          if (doc.mode === 'form') {
+          if (mode === 'form') {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = latest ? 'Editar' : 'Completar';
             btn.onclick = () => openFormModal(doc.key, latest?.doc_data || {});
             actions.appendChild(btn);
-          } else if (doc.mode === 'pdf') {
+          } else if (mode === 'pdf') {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = latest ? 'Editar PDF' : 'Completar PDF';
             btn.onclick = () => openPdfModal(doc.key, latest?.doc_data || {});
             actions.appendChild(btn);
-          } else if (doc.mode === 'policy') {
+          } else if (mode === 'policy') {
             const note = document.createElement('div');
             note.className = 'doc-status';
             note.textContent = 'Firmá la política más abajo.';
@@ -6341,13 +6694,14 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     if (!doc) return res.status(404).json({ error: "doc_not_found" });
     const templateUrl = doc.template_url || doc.templateUrl || "";
     if (!templateUrl) return res.status(400).json({ error: "missing_template_url" });
-    const fields = req.body?.fields || req.body?.doc_fields || {};
+    const rawFields = req.body?.fields || req.body?.doc_fields || {};
     const signatureName = String(req.body?.signature_name || req.body?.signatureName || "").trim();
     const signatureDataUrl = String(req.body?.signature_data_url || req.body?.signatureDataUrl || "").trim();
     const keepFirstPage = ["i9", "w4"].includes(normalizeKey(docType));
+    const mappedFields = await mapPdfFieldsIfNeeded({ docType, fields: rawFields, templateUrl });
     const pdfBuffer = await fillPdfTemplate({
       templateUrl,
-      fields,
+      fields: mappedFields,
       signatureName,
       signatureDataUrl,
       keepFirstPage
@@ -6368,7 +6722,7 @@ app.post("/onboard/:token/pdf", async (req, res) => {
       docType,
       docUrl,
       docData: {
-        fields: fields || {},
+        fields: rawFields || {},
         signature_name: signatureName,
         signed_at: new Date().toISOString()
       },
