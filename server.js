@@ -3272,7 +3272,7 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
       if (lines.length && !hasFile) {
         await addTextPage(entry.label || "Documento", lines);
       }
-      if (signatureDataUrl) {
+      if (!hasFile && signatureDataUrl) {
         const parsed = parseDataUrl(signatureDataUrl);
         if (parsed) {
           await addImagePage((entry.label || "Documento") + " - Firma", parsed.buffer, parsed.mime);
@@ -3297,6 +3297,121 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
     }
   }
 
+  return Buffer.from(await pdfDoc.save());
+}
+
+const PDF_TEMPLATE_CACHE = new Map();
+
+async function resolveTemplateUrl(templateUrl) {
+  if (!templateUrl) return "";
+  const raw = String(templateUrl || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return await resolveStoredUrl(raw, 24 * 60 * 60);
+}
+
+async function getPdfTemplateFields(templateUrl) {
+  if (!PDFDocument || !templateUrl) return [];
+  const cacheKey = String(templateUrl);
+  const cached = PDF_TEMPLATE_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.fields;
+  const resolved = await resolveTemplateUrl(templateUrl);
+  if (!resolved) return [];
+  const fetched = await fetchBinaryFromUrl(resolved);
+  if (!fetched) return [];
+  const pdfDoc = await PDFDocument.load(fetched.buffer);
+  const form = pdfDoc.getForm();
+  const fields = form.getFields().map((field) => ({
+    name: field.getName(),
+    type: field.constructor?.name || "Field"
+  }));
+  PDF_TEMPLATE_CACHE.set(cacheKey, { fields, expiresAt: Date.now() + 30 * 60 * 1000 });
+  return fields;
+}
+
+async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDataUrl, keepFirstPage = false }) {
+  if (!PDFDocument) throw new Error("pdf_lib_missing");
+  const resolved = await resolveTemplateUrl(templateUrl);
+  if (!resolved) throw new Error("missing_template_url");
+  const fetched = await fetchBinaryFromUrl(resolved);
+  if (!fetched) throw new Error("template_fetch_failed");
+  const pdfDoc = await PDFDocument.load(fetched.buffer);
+  const form = pdfDoc.getForm();
+  const fieldList = form.getFields();
+  const exactMap = new Map();
+  const normMap = new Map();
+  fieldList.forEach((field) => {
+    const name = field.getName();
+    exactMap.set(name, field);
+    normMap.set(normalizeKey(name), field);
+  });
+  const setValue = (field, value) => {
+    if (!field) return;
+    const str = value === undefined || value === null ? "" : String(value);
+    if (typeof field.setText === "function") {
+      field.setText(str);
+      return;
+    }
+    if (typeof field.check === "function" && typeof field.uncheck === "function") {
+      if (value && value !== "0" && value !== "false") field.check();
+      else field.uncheck();
+      return;
+    }
+    if (typeof field.select === "function") {
+      try {
+        field.select(str);
+      } catch (err) {
+        // ignore invalid option values
+      }
+    }
+  };
+  const payload = fields && typeof fields === "object" ? fields : {};
+  Object.entries(payload).forEach(([key, value]) => {
+    if (key.startsWith("__")) return;
+    const field = exactMap.get(key) || normMap.get(normalizeKey(key));
+    setValue(field, value);
+  });
+  if (signatureName) {
+    const sigField = fieldList.find((field) => /signature|sign/i.test(field.getName() || ""));
+    if (sigField) {
+      setValue(sigField, signatureName);
+    }
+  }
+  form.flatten();
+  if (keepFirstPage) {
+    const total = pdfDoc.getPageCount();
+    for (let i = total - 1; i >= 1; i -= 1) {
+      pdfDoc.removePage(i);
+    }
+  }
+  if (signatureDataUrl) {
+    const parsed = parseDataUrl(signatureDataUrl);
+    if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
+      const [firstPage] = pdfDoc.getPages();
+      const size = firstPage ? firstPage.getSize() : { width: 612, height: 792 };
+      const page = pdfDoc.addPage([size.width, size.height]);
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      page.drawText("Firma", { x: 40, y: size.height - 50, size: 18, font: fontBold });
+      if (signatureName) {
+        page.drawText(`Nombre: ${signatureName}`, { x: 40, y: size.height - 75, size: 11, font });
+      }
+      const img = parsed.mime.includes("png")
+        ? await pdfDoc.embedPng(parsed.buffer)
+        : await pdfDoc.embedJpg(parsed.buffer);
+      const maxW = size.width - 80;
+      const maxH = size.height - 140;
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const imgW = img.width * scale;
+      const imgH = img.height * scale;
+      page.drawImage(img, {
+        x: 40,
+        y: size.height - 100 - imgH,
+        width: imgW,
+        height: imgH
+      });
+    }
+  }
   return Buffer.from(await pdfDoc.save());
 }
 
@@ -5015,6 +5130,8 @@ function renderOnboardingPageHtml(token) {
       }
       .form-card {
         width: min(560px, 94vw);
+        max-height: 88vh;
+        overflow: auto;
         background: #fff;
         border: 1px solid var(--border);
         border-radius: 18px;
@@ -5169,6 +5286,9 @@ function renderOnboardingPageHtml(token) {
       const formSignClearEl = document.getElementById('onboard-form-sign-clear');
       const formSignStatusEl = document.getElementById('onboard-form-sign-status');
       let activeFormDocType = '';
+      let activeFormMode = 'form';
+      let activeFormTemplateUrl = '';
+      let activePdfFieldNames = [];
       let formSignaturePad = null;
       let policySignaturePad = null;
       let formSignatureExisting = '';
@@ -5310,8 +5430,35 @@ function renderOnboardingPageHtml(token) {
         ];
       }
 
+      function prettifyPdfLabel(name) {
+        return String(name || '')
+          .replace(/[_-]+/g, ' ')
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+          .replace(/\s+/g, ' ')
+          .trim() || 'Campo';
+      }
+
+      function guessPrefillValue(fieldName, profile) {
+        const key = String(fieldName || '').toLowerCase();
+        if (!profile) return '';
+        if (key.includes('name') && profile.name) return profile.name;
+        if (key.includes('phone') && profile.phone) return profile.phone;
+        if (key.includes('email') && profile.email) return profile.email;
+        return '';
+      }
+
+      async function fetchPdfTemplateFields(docType) {
+        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/template-fields?doc_type=' + encodeURIComponent(docType));
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'template_fields_failed');
+        return Array.isArray(data.fields) ? data.fields : [];
+      }
+
       function openFormModal(docType, existing) {
         if (!formModalEl || !formFieldsEl) return;
+        activeFormMode = 'form';
+        activeFormTemplateUrl = '';
+        activePdfFieldNames = [];
         activeFormDocType = docType || '';
         formFieldsEl.innerHTML = '';
         formStatusEl.textContent = '';
@@ -5359,10 +5506,68 @@ function renderOnboardingPageHtml(token) {
         formModalEl.style.display = 'flex';
       }
 
+      async function openPdfModal(docType, existing) {
+        if (!formModalEl || !formFieldsEl) return;
+        activeFormMode = 'pdf';
+        activeFormTemplateUrl = '';
+        activePdfFieldNames = [];
+        activeFormDocType = docType || '';
+        formFieldsEl.innerHTML = '';
+        formStatusEl.textContent = 'Cargando campos...';
+        formSignatureExisting = '';
+        if (formTitleEl) formTitleEl.textContent = 'Completar PDF ' + (docType || '').toUpperCase();
+        if (!formSignaturePad && formSignCanvas) {
+          formSignaturePad = initSignaturePad(formSignCanvas, formSignClearEl, formSignStatusEl);
+        }
+        if (formSignaturePad) {
+          formSignaturePad.clear();
+          if (formSignStatusEl) formSignStatusEl.textContent = '';
+        }
+        try {
+          const fields = await fetchPdfTemplateFields(docType);
+          const profile = state.profile || {};
+          formFieldsEl.innerHTML = '';
+          activePdfFieldNames = fields.map((f) => f.name);
+          fields.forEach((field) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'form-field';
+            const label = document.createElement('label');
+            label.textContent = prettifyPdfLabel(field.name);
+            wrap.appendChild(label);
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.dataset.key = field.name;
+            const existingValue = existing && existing.fields ? existing.fields[field.name] : '';
+            input.value = existingValue || guessPrefillValue(field.name, profile) || '';
+            wrap.appendChild(input);
+            formFieldsEl.appendChild(wrap);
+          });
+          const sigWrap = document.createElement('div');
+          sigWrap.className = 'form-field';
+          const sigLabel = document.createElement('label');
+          sigLabel.textContent = 'Nombre para firma';
+          sigWrap.appendChild(sigLabel);
+          const sigInput = document.createElement('input');
+          sigInput.type = 'text';
+          sigInput.dataset.key = '__signature_name';
+          sigInput.value = (existing && existing.signature_name) ? existing.signature_name : (profile.name || '');
+          sigWrap.appendChild(sigInput);
+          formFieldsEl.appendChild(sigWrap);
+          formStatusEl.textContent = '';
+          formModalEl.style.display = 'flex';
+        } catch (err) {
+          formStatusEl.textContent = 'Error: ' + err.message;
+          formModalEl.style.display = 'flex';
+        }
+      }
+
       function closeFormModal() {
         if (!formModalEl) return;
         formModalEl.style.display = 'none';
         activeFormDocType = '';
+        activeFormMode = 'form';
+        activeFormTemplateUrl = '';
+        activePdfFieldNames = [];
       }
 
       async function saveFormModal() {
@@ -5371,27 +5576,53 @@ function renderOnboardingPageHtml(token) {
         formFieldsEl.querySelectorAll('[data-key]').forEach((input) => {
           data[input.dataset.key] = input.value || '';
         });
-        if (!data.signature) {
-          formStatusEl.textContent = 'La firma es obligatoria.';
-          return;
-        }
         const signatureDataUrl = formSignaturePad ? formSignaturePad.getDataUrl() : '';
         const signaturePayload = signatureDataUrl || formSignatureExisting;
-        if (!signaturePayload) {
-          formStatusEl.textContent = 'Falta la firma dibujada.';
-          return;
-        }
-        data.signature_data_url = signaturePayload;
         formStatusEl.textContent = 'Guardando...';
         try {
-          const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/form', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ doc_type: activeFormDocType, doc_data: data })
-          });
-          const payload = await resp.json().catch(() => ({}));
-          if (!resp.ok) throw new Error(payload.detail || payload.error || 'form_failed');
-          state.docs = payload.docs || [];
+          if (activeFormMode === 'pdf') {
+            const signatureName = data.__signature_name || '';
+            if (!signatureName) {
+              formStatusEl.textContent = 'La firma es obligatoria.';
+              return;
+            }
+            if (!signaturePayload) {
+              formStatusEl.textContent = 'Falta la firma dibujada.';
+              return;
+            }
+            delete data.__signature_name;
+            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/pdf', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                doc_type: activeFormDocType,
+                fields: data,
+                signature_name: signatureName,
+                signature_data_url: signaturePayload
+              })
+            });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(payload.detail || payload.error || 'pdf_failed');
+            state.docs = payload.docs || [];
+          } else {
+            if (!data.signature) {
+              formStatusEl.textContent = 'La firma es obligatoria.';
+              return;
+            }
+            if (!signaturePayload) {
+              formStatusEl.textContent = 'Falta la firma dibujada.';
+              return;
+            }
+            data.signature_data_url = signaturePayload;
+            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/form', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ doc_type: activeFormDocType, doc_data: data })
+            });
+            const payload = await resp.json().catch(() => ({}));
+            if (!resp.ok) throw new Error(payload.detail || payload.error || 'form_failed');
+            state.docs = payload.docs || [];
+          }
           renderDocs();
           formStatusEl.textContent = 'Guardado';
           setTimeout(() => closeFormModal(), 500);
@@ -5489,6 +5720,12 @@ function renderOnboardingPageHtml(token) {
             btn.type = 'button';
             btn.textContent = latest ? 'Editar' : 'Completar';
             btn.onclick = () => openFormModal(doc.key, latest?.doc_data || {});
+            actions.appendChild(btn);
+          } else if (doc.mode === 'pdf') {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = latest ? 'Editar PDF' : 'Completar PDF';
+            btn.onclick = () => openPdfModal(doc.key, latest?.doc_data || {});
             actions.appendChild(btn);
           } else if (doc.mode === 'policy') {
             const note = document.createElement('div');
@@ -6049,6 +6286,81 @@ app.post("/onboard/:token/form", async (req, res) => {
   } catch (err) {
     console.error("[onboard] form failed", err);
     return res.status(400).json({ error: "onboard_form_failed", detail: err.message });
+  }
+});
+
+app.get("/onboard/:token/template-fields", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const docType = (req.query?.doc_type || req.query?.docType || "").toString().trim();
+    if (!docType) return res.status(400).json({ error: "missing_doc_type" });
+    const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
+    const doc = docTypes.find((d) => d && d.key === docType);
+    if (!doc) return res.status(404).json({ error: "doc_not_found" });
+    const templateUrl = doc.template_url || doc.templateUrl || "";
+    if (!templateUrl) return res.status(400).json({ error: "missing_template_url" });
+    const fields = await getPdfTemplateFields(templateUrl);
+    return res.json({ ok: true, fields, template_url: templateUrl });
+  } catch (err) {
+    console.error("[onboard] template fields failed", err);
+    return res.status(400).json({ error: "template_fields_failed", detail: err.message });
+  }
+});
+
+app.post("/onboard/:token/pdf", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const docType = (req.body?.doc_type || req.body?.docType || "").toString().trim();
+    if (!docType) return res.status(400).json({ error: "missing_doc_type" });
+    const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
+    const doc = docTypes.find((d) => d && d.key === docType);
+    if (!doc) return res.status(404).json({ error: "doc_not_found" });
+    const templateUrl = doc.template_url || doc.templateUrl || "";
+    if (!templateUrl) return res.status(400).json({ error: "missing_template_url" });
+    const fields = req.body?.fields || req.body?.doc_fields || {};
+    const signatureName = String(req.body?.signature_name || req.body?.signatureName || "").trim();
+    const signatureDataUrl = String(req.body?.signature_data_url || req.body?.signatureDataUrl || "").trim();
+    const keepFirstPage = ["i9", "w4"].includes(normalizeKey(docType));
+    const pdfBuffer = await fillPdfTemplate({
+      templateUrl,
+      fields,
+      signatureName,
+      signatureDataUrl,
+      keepFirstPage
+    });
+    const dataUrl = "data:application/pdf;base64," + pdfBuffer.toString("base64");
+    const docUrl = await saveOnboardingDoc({
+      dataUrl,
+      fileName: `${docType}-${Date.now()}.pdf`,
+      profileId: profile.id,
+      docType,
+      uploadsDir: adminUploadsDir,
+      uploadToSpacesFn: portalUploadToSpaces,
+      publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+    });
+    await insertOnboardingDoc({
+      profileId: profile.id,
+      cvId: profile.cv_id || "",
+      docType,
+      docUrl,
+      docData: {
+        fields: fields || {},
+        signature_name: signatureName,
+        signed_at: new Date().toISOString()
+      },
+      uploadedBy: "candidate"
+    });
+    const docs = await fetchOnboardingDocs(profile.id);
+    return res.json({ ok: true, docs });
+  } catch (err) {
+    console.error("[onboard] pdf fill failed", err);
+    return res.status(400).json({ error: "onboard_pdf_failed", detail: err.message });
   }
 });
 
@@ -18722,15 +19034,21 @@ app.get("/admin/ui", (req, res) => {
         labelInput.value = doc.label || '';
         const modeSelect = document.createElement('select');
         modeSelect.className = 'onboard-doc-mode';
-        ['upload', 'form', 'policy'].forEach((mode) => {
+        ['upload', 'form', 'pdf', 'policy'].forEach((mode) => {
           const opt = document.createElement('option');
           opt.value = mode;
-          opt.textContent = mode === 'upload' ? 'Subir archivo' : mode === 'form' ? 'Completar online' : 'Política/firmar';
+          opt.textContent = mode === 'upload'
+            ? 'Subir archivo'
+            : mode === 'form'
+              ? 'Completar online'
+              : mode === 'pdf'
+                ? 'Completar PDF'
+                : 'Política/firmar';
           if ((doc.mode || '') === mode) opt.selected = true;
           modeSelect.appendChild(opt);
         });
         if (!doc.mode && ['i9', 'w4'].includes((doc.key || '').toLowerCase())) {
-          modeSelect.value = 'form';
+          modeSelect.value = 'pdf';
         }
         const templateInput = document.createElement('input');
         templateInput.type = 'text';
