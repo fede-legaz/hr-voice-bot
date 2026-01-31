@@ -3171,7 +3171,6 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
   cover.drawText("Documentos:", { x: margin, y, size: 12, font: fontBold });
   y -= 16;
   const docSummary = [];
-  if (cvUrl) docSummary.push("CV: adjunto");
   docs.forEach((doc) => {
     const label = doc.doc_type || "Documento";
     const status = doc.doc_url ? "adjunto" : (doc.doc_data ? "formulario" : "pendiente");
@@ -3245,14 +3244,12 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
   }
 
   async function addPdfPages(title, bytes) {
-    await addTextPage(title || "Documento", []);
     const source = await PDFDocument.load(bytes);
     const pages = await pdfDoc.copyPages(source, source.getPageIndices());
     pages.forEach((p) => pdfDoc.addPage(p));
   }
 
   const entries = [];
-  if (cvUrl) entries.push({ label: "CV", url: cvUrl });
   docs.forEach((doc) => {
     entries.push({
       label: doc.doc_type || "Documento",
@@ -5522,21 +5519,6 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
   }
 });
 
-app.get("/admin/onboarding/:id", requirePermission("onboarding_manage"), async (req, res) => {
-  try {
-    const id = (req.params?.id || "").trim();
-    if (!id) return res.status(400).json({ error: "missing_profile_id" });
-    const profile = await fetchOnboardingProfile(id);
-    if (!profile) return res.status(404).json({ error: "not_found" });
-    const docs = await fetchOnboardingDocs(id);
-    const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
-    return res.json({ ok: true, profile, docs, url });
-  } catch (err) {
-    console.error("[admin/onboarding] fetch failed", err);
-    return res.status(400).json({ error: "onboarding_fetch_failed", detail: err.message });
-  }
-});
-
 app.get("/admin/onboarding/list", requirePermission("onboarding_manage"), async (req, res) => {
   try {
     if (!dbPool) return res.json({ ok: true, items: [] });
@@ -5573,35 +5555,31 @@ app.get("/admin/onboarding/list", requirePermission("onboarding_manage"), async 
         GROUP BY profile_id
       ) d ON d.profile_id = p.id
       ORDER BY p.created_at DESC
-      LIMIT 2000
       `
     );
-    const rows = result?.rows || [];
-    const filtered = rows.filter((row) => isBrandAllowed(allowedBrands, row.brand || ""));
-    const items = filtered.map((row) => ({
-      id: row.id,
-      public_token: row.public_token || "",
-      cv_id: row.cv_id || "",
-      call_sid: row.call_sid || "",
-      name: row.name || "",
-      email: row.email || "",
-      phone: row.phone || "",
-      brand: row.brand || "",
-      role: row.role || "",
-      pay_rate: row.pay_rate || "",
-      pay_unit: row.pay_unit || "",
-      start_date: row.start_date ? new Date(row.start_date).toISOString() : "",
-      status: row.status || "",
-      decision: row.decision || "",
-      docs_count: row.docs_count !== null ? Number(row.docs_count) : 0,
-      done_count: row.done_count !== null ? Number(row.done_count) : 0,
-      created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
-      updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : ""
-    }));
+    let items = result?.rows || [];
+    if (allowedBrands.length) {
+      items = items.filter((item) => allowedBrands.includes(brandKey(item.brand || "")));
+    }
     return res.json({ ok: true, items });
   } catch (err) {
     console.error("[admin/onboarding] list failed", err);
     return res.status(400).json({ error: "onboarding_list_failed", detail: err.message });
+  }
+});
+
+app.get("/admin/onboarding/:id", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const id = (req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const docs = await fetchOnboardingDocs(id);
+    const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
+    return res.json({ ok: true, profile, docs, url });
+  } catch (err) {
+    console.error("[admin/onboarding] fetch failed", err);
+    return res.status(400).json({ error: "onboarding_fetch_failed", detail: err.message });
   }
 });
 
@@ -5630,12 +5608,11 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
     const profile = await fetchOnboardingProfile(id);
     if (!profile) return res.status(404).send("not_found");
     const docs = await fetchOnboardingDocs(id);
-    const cvUrl = profile.cv_id ? await fetchCvUrlById(profile.cv_id) : "";
     const logoUrl = resolveBrandLogo(profile.brand);
     const wantsPdf = req.query?.download === "1" || req.query?.format === "pdf";
     if (wantsPdf) {
       if (!PDFDocument) return res.status(400).send("pdf_unavailable");
-      const pdfBuffer = await buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl });
+      const pdfBuffer = await buildOnboardingPacketPdf({ profile, docs, logoUrl });
       const safeName = (profile.name || "onboarding").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Content-Disposition", `attachment; filename="onboarding-${safeName || "packet"}.pdf"`);
@@ -5658,9 +5635,6 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
     };
     const payLabel = profile.pay_rate ? `${profile.pay_rate}${profile.pay_unit ? " / " + profile.pay_unit : ""}` : "";
     const startDate = profile.start_date ? new Date(profile.start_date).toLocaleDateString("en-US") : "";
-    const cvBlock = cvUrl
-      ? `<div class="doc-card"><div class="doc-title">CV</div>${renderFile(cvUrl)}</div>`
-      : "";
     const docRows = docs.map((doc) => {
       const title = doc.doc_type || "documento";
       const fileBlock = doc.doc_url ? renderFile(doc.doc_url) : "";
@@ -5697,7 +5671,7 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
       </div>
       <div class="card">
         <div class="label">Documentos</div>
-        ${cvBlock}${docRows || "<div>Sin documentos.</div>"}
+        ${docRows || "<div>Sin documentos.</div>"}
       </div>
       </body></html>`);
   } catch (err) {
