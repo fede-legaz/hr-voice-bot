@@ -3301,6 +3301,7 @@ async function buildOnboardingPacketPdf({ profile, docs, cvUrl, logoUrl }) {
 }
 
 const PDF_TEMPLATE_CACHE = new Map();
+const PDF_TEMPLATE_LAYOUT_CACHE = new Map();
 
 async function resolveTemplateUrl(templateUrl) {
   if (!templateUrl) return "";
@@ -3327,6 +3328,159 @@ async function getPdfTemplateFields(templateUrl) {
   }));
   PDF_TEMPLATE_CACHE.set(cacheKey, { fields, expiresAt: Date.now() + 30 * 60 * 1000 });
   return fields;
+}
+
+async function getPdfTemplateLayout(templateUrl) {
+  if (!PDFDocument || !templateUrl) return [];
+  const cacheKey = String(templateUrl);
+  const cached = PDF_TEMPLATE_LAYOUT_CACHE.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.layout;
+  const resolved = await resolveTemplateUrl(templateUrl);
+  if (!resolved) return [];
+  const fetched = await fetchBinaryFromUrl(resolved);
+  if (!fetched) return [];
+  const pdfDoc = await PDFDocument.load(fetched.buffer);
+  const form = pdfDoc.getForm();
+  const pages = pdfDoc.getPages();
+  const layout = [];
+  form.getFields().forEach((field) => {
+    const name = field.getName();
+    const type = field.constructor?.name || "Field";
+    const widgets = typeof field.getWidgets === "function"
+      ? field.getWidgets()
+      : field.acroField?.getWidgets?.() || [];
+    widgets.forEach((widget) => {
+      const rect = widget?.getRectangle?.();
+      const page = widget?.getPage?.();
+      const pageIndex = page ? pages.indexOf(page) : 0;
+      if (!rect) return;
+      const x = rect.x ?? rect.left ?? rect[0];
+      const y = rect.y ?? rect.bottom ?? rect[1];
+      const width = rect.width ?? (rect[2] - rect[0]);
+      const height = rect.height ?? (rect[3] - rect[1]);
+      if (![x, y, width, height].every((v) => Number.isFinite(v))) return;
+      layout.push({
+        name,
+        type,
+        pageIndex: pageIndex >= 0 ? pageIndex : 0,
+        x,
+        y,
+        width,
+        height
+      });
+    });
+  });
+  PDF_TEMPLATE_LAYOUT_CACHE.set(cacheKey, { layout, expiresAt: Date.now() + 30 * 60 * 1000 });
+  return layout;
+}
+
+function groupRows(items, threshold = 10) {
+  const rows = [];
+  const sorted = items.slice().sort((a, b) => {
+    if (b.y === a.y) return a.x - b.x;
+    return b.y - a.y;
+  });
+  sorted.forEach((item) => {
+    const row = rows.find((r) => Math.abs(r.y - item.y) <= threshold);
+    if (row) {
+      row.items.push(item);
+    } else {
+      rows.push({ y: item.y, items: [item] });
+    }
+  });
+  rows.forEach((row) => row.items.sort((a, b) => a.x - b.x));
+  rows.sort((a, b) => b.y - a.y);
+  return rows;
+}
+
+function mapI9FieldsByLayout(fields, layout) {
+  if (!Array.isArray(layout) || !layout.length) return {};
+  const data = fields && typeof fields === "object" ? fields : {};
+  const textFields = layout.filter((item) => item.pageIndex === 0 && /TextField/i.test(item.type));
+  const checkboxFields = layout.filter((item) => item.pageIndex === 0 && /CheckBox/i.test(item.type));
+  const rows = groupRows(textFields, 12);
+  const out = {};
+  const used = new Set();
+  const assignRow = (row, keys) => {
+    if (!row) return;
+    const items = row.items || [];
+    keys.forEach((key, index) => {
+      const value = data[key];
+      if (!value) return;
+      const item = items[index];
+      if (!item || used.has(item.name)) return;
+      out[item.name] = value;
+      used.add(item.name);
+    });
+  };
+  assignRow(rows[0], ["last_name", "first_name", "middle_initial", "other_last_names"]);
+  assignRow(rows[1], ["address", "apt", "city", "state", "zip"]);
+  assignRow(rows[2], ["dob", "ssn", "email", "phone"]);
+
+  const remainingText = textFields.filter((item) => !used.has(item.name));
+  const remainingRows = groupRows(remainingText, 12);
+  const status = normalizeChoice(data.status);
+  const statusOrder = ["citizen", "noncitizen", "permanent", "authorized"];
+  const sortedChecks = checkboxFields.sort((a, b) => b.y - a.y);
+  statusOrder.forEach((key, idx) => {
+    const item = sortedChecks[idx];
+    if (!item) return;
+    out[item.name] = status === key ? "true" : "false";
+  });
+
+  const flatRemaining = remainingRows.flatMap((row) => row.items);
+  if (status === "permanent") {
+    const field = flatRemaining.shift();
+    if (field && data.lpr_a_number) out[field.name] = data.lpr_a_number;
+  }
+  if (status === "authorized") {
+    const expField = flatRemaining.shift();
+    if (expField && data.auth_exp) out[expField.name] = formatDateUs(data.auth_exp);
+    const docType = normalizeChoice(data.auth_doc_type);
+    const nextField = flatRemaining.shift();
+    if (docType === "a number" && nextField && data.auth_a_number) out[nextField.name] = data.auth_a_number;
+    if ((docType === "i94" || docType.includes("i94")) && nextField && data.auth_i94) out[nextField.name] = data.auth_i94;
+    if (docType === "passport") {
+      if (nextField && data.auth_passport) out[nextField.name] = data.auth_passport;
+      const countryField = flatRemaining.shift();
+      if (countryField && data.auth_country) out[countryField.name] = data.auth_country;
+    }
+  }
+  return out;
+}
+
+function mapW4FieldsByLayout(fields, layout) {
+  if (!Array.isArray(layout) || !layout.length) return {};
+  const data = fields && typeof fields === "object" ? fields : {};
+  const textFields = layout.filter((item) => item.pageIndex === 0 && /TextField/i.test(item.type));
+  const checkboxFields = layout.filter((item) => item.pageIndex === 0 && /CheckBox/i.test(item.type));
+  const rows = groupRows(textFields, 12);
+  const out = {};
+  const used = new Set();
+  const assignRow = (row, keys) => {
+    if (!row) return;
+    const items = row.items || [];
+    keys.forEach((key, index) => {
+      const value = data[key];
+      if (!value) return;
+      const item = items[index];
+      if (!item || used.has(item.name)) return;
+      out[item.name] = value;
+      used.add(item.name);
+    });
+  };
+  assignRow(rows[0], ["first_name", "last_name"]);
+  assignRow(rows[1], ["address", "apt", "city", "state", "zip"]);
+  assignRow(rows[2], ["ssn"]);
+  const status = normalizeChoice(data.filing_status);
+  const statusOrder = ["single", "married", "head"];
+  const sortedChecks = checkboxFields.sort((a, b) => b.y - a.y);
+  statusOrder.forEach((key, idx) => {
+    const item = sortedChecks[idx];
+    if (!item) return;
+    out[item.name] = status === key ? "true" : "false";
+  });
+  return out;
 }
 
 function findTemplateField(templateFields, patterns, options = {}) {
@@ -3481,9 +3635,14 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   const hasTemplateMatch = keys.some((key) => templateNames.includes(key) || templateNorms.has(normalizeKey(key)));
   if (hasTemplateMatch) return payload;
   const typeKey = normalizeKey(docType);
-  if (typeKey === "i9") return mapI9Fields(payload, templateFields);
-  if (typeKey === "w4") return mapW4Fields(payload, templateFields);
-  return payload;
+  let mapped = payload;
+  if (typeKey === "i9") mapped = mapI9Fields(payload, templateFields);
+  if (typeKey === "w4") mapped = mapW4Fields(payload, templateFields);
+  if (Object.keys(mapped || {}).length >= 3) return mapped;
+  const layout = await getPdfTemplateLayout(templateUrl);
+  if (typeKey === "i9") return mapI9FieldsByLayout(payload, layout) || mapped;
+  if (typeKey === "w4") return mapW4FieldsByLayout(payload, layout) || mapped;
+  return mapped;
 }
 
 async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDataUrl, keepFirstPage = false }) {
@@ -5592,7 +5751,8 @@ function renderOnboardingPageHtml(token) {
               hasStroke = true;
             };
             img.src = dataUrl;
-          }
+          },
+          resize
         };
       }
 
@@ -5661,7 +5821,7 @@ function renderOnboardingPageHtml(token) {
               formField('Ciudad', 'city'),
               formField('Estado', 'state'),
               formField('ZIP', 'zip'),
-              formField('Fecha de nacimiento (MM/DD/YYYY)', 'dob', 'text'),
+              formField('Fecha de nacimiento', 'dob', 'date'),
               formField('SSN', 'ssn'),
               formField('Email', 'email'),
               formField('Teléfono', 'phone'),
@@ -5672,7 +5832,7 @@ function renderOnboardingPageHtml(token) {
                 { label: 'Authorized to work', value: 'authorized' }
               ]),
               formField('USCIS A-Number', 'lpr_a_number', 'text', [], { showStatus: 'permanent' }),
-              formField('Fecha de expiración (MM/DD/YYYY)', 'auth_exp', 'text', [], { showStatus: 'authorized' }),
+              formField('Fecha de expiración', 'auth_exp', 'date', [], { showStatus: 'authorized' }),
               formField('Documento (si autorizado)', 'auth_doc_type', 'select', [
                 { label: 'USCIS A-Number', value: 'a_number' },
                 { label: 'Form I-94', value: 'i94' },
@@ -5836,6 +5996,18 @@ function renderOnboardingPageHtml(token) {
                 input.type = field.type || 'text';
               }
               input.dataset.key = field.key;
+              if (field.type === 'date') {
+                input.placeholder = 'YYYY-MM-DD';
+              }
+              const lowerKey = String(field.key || '').toLowerCase();
+              if (lowerKey === 'ssn') {
+                input.inputMode = 'numeric';
+                input.maxLength = 9;
+                input.placeholder = 'XXXXXXXXX';
+                input.addEventListener('input', () => {
+                  input.value = input.value.replace(/\D+/g, '').slice(0, 9);
+                });
+              }
               const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
               input.value = existingValue || '';
               wrap.appendChild(input);
@@ -5871,6 +6043,9 @@ function renderOnboardingPageHtml(token) {
             applyConditional();
             formStatusEl.textContent = '';
             formModalEl.style.display = 'flex';
+            if (formSignaturePad && typeof formSignaturePad.resize === 'function') {
+              setTimeout(() => formSignaturePad.resize(), 0);
+            }
           } else {
             const fields = await fetchPdfTemplateFields(docType);
             formFieldsEl.innerHTML = '';
@@ -5902,6 +6077,9 @@ function renderOnboardingPageHtml(token) {
             formFieldsEl.appendChild(sigWrap);
             formStatusEl.textContent = '';
             formModalEl.style.display = 'flex';
+            if (formSignaturePad && typeof formSignaturePad.resize === 'function') {
+              setTimeout(() => formSignaturePad.resize(), 0);
+            }
           }
         } catch (err) {
           formStatusEl.textContent = 'Error: ' + err.message;
@@ -5937,6 +6115,14 @@ function renderOnboardingPageHtml(token) {
             if (!signaturePayload) {
               formStatusEl.textContent = 'Falta la firma dibujada.';
               return;
+            }
+            if (data.ssn) {
+              const digits = String(data.ssn || '').replace(/\D+/g, '');
+              if (digits.length !== 9) {
+                formStatusEl.textContent = 'El SSN debe tener 9 dígitos.';
+                return;
+              }
+              data.ssn = digits;
             }
             delete data.__signature_name;
             const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/pdf', {
@@ -5988,6 +6174,9 @@ function renderOnboardingPageHtml(token) {
         subEl.textContent = 'Completá tus documentos obligatorios.';
         if (!policySignaturePad && policySignCanvas) {
           policySignaturePad = initSignaturePad(policySignCanvas, policySignClearEl, policySignStatusEl);
+        }
+        if (policySignaturePad && typeof policySignaturePad.resize === 'function') {
+          setTimeout(() => policySignaturePad.resize(), 0);
         }
         const docTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
         const policyDoc = docTypes.find((doc) => doc && doc.mode === 'policy');
