@@ -5321,6 +5321,74 @@ app.get("/admin/onboarding/:id", requirePermission("onboarding_manage"), async (
   }
 });
 
+app.get("/admin/onboarding/list", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    if (!dbPool) return res.json({ ok: true, items: [] });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const result = await dbQuery(
+      `
+      SELECT
+        p.id,
+        p.public_token,
+        p.cv_id,
+        p.call_sid,
+        p.name,
+        p.email,
+        p.phone,
+        p.brand,
+        p.role,
+        p.pay_rate,
+        p.pay_unit,
+        p.start_date,
+        p.status,
+        p.created_at,
+        p.updated_at,
+        COALESCE(c.decision, ca.decision, '') AS decision,
+        COALESCE(d.docs_count, 0) AS docs_count,
+        COALESCE(d.done_count, 0) AS done_count
+      FROM onboarding_profiles p
+      LEFT JOIN cvs c ON c.id = p.cv_id
+      LEFT JOIN calls ca ON ca.call_sid = p.call_sid
+      LEFT JOIN (
+        SELECT profile_id,
+               COUNT(*)::int AS docs_count,
+               COUNT(*) FILTER (WHERE doc_url IS NOT NULL OR doc_data IS NOT NULL)::int AS done_count
+        FROM onboarding_docs
+        GROUP BY profile_id
+      ) d ON d.profile_id = p.id
+      ORDER BY p.created_at DESC
+      LIMIT 2000
+      `
+    );
+    const rows = result?.rows || [];
+    const filtered = rows.filter((row) => isBrandAllowed(allowedBrands, row.brand || ""));
+    const items = filtered.map((row) => ({
+      id: row.id,
+      public_token: row.public_token || "",
+      cv_id: row.cv_id || "",
+      call_sid: row.call_sid || "",
+      name: row.name || "",
+      email: row.email || "",
+      phone: row.phone || "",
+      brand: row.brand || "",
+      role: row.role || "",
+      pay_rate: row.pay_rate || "",
+      pay_unit: row.pay_unit || "",
+      start_date: row.start_date ? new Date(row.start_date).toISOString() : "",
+      status: row.status || "",
+      decision: row.decision || "",
+      docs_count: row.docs_count !== null ? Number(row.docs_count) : 0,
+      done_count: row.done_count !== null ? Number(row.done_count) : 0,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+      updated_at: row.updated_at ? new Date(row.updated_at).toISOString() : ""
+    }));
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[admin/onboarding] list failed", err);
+    return res.status(400).json({ error: "onboarding_list_failed", detail: err.message });
+  }
+});
+
 app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage"), async (req, res) => {
   try {
     const id = (req.params?.id || "").trim();
@@ -5346,14 +5414,32 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
     const profile = await fetchOnboardingProfile(id);
     if (!profile) return res.status(404).send("not_found");
     const docs = await fetchOnboardingDocs(id);
+    const cvUrl = profile.cv_id ? await fetchCvUrlById(profile.cv_id) : "";
     const safe = (v) => String(v || "");
+    const safeAttr = (v) => String(v || "").replace(/"/g, "&quot;");
+    const isImageUrl = (url) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(url || "");
+    const isPdfUrl = (url) => /\.pdf($|\?)/i.test(url || "");
+    const renderFile = (url) => {
+      if (!url) return "";
+      if (isImageUrl(url)) {
+        return `<img class="doc-image" src="${safeAttr(url)}" alt="Documento" />`;
+      }
+      if (isPdfUrl(url)) {
+        return `<iframe class="doc-pdf" src="${safeAttr(url)}"></iframe>
+                <div><a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir PDF</a></div>`;
+      }
+      return `<a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir archivo</a>`;
+    };
     const payLabel = profile.pay_rate ? `${profile.pay_rate}${profile.pay_unit ? " / " + profile.pay_unit : ""}` : "";
     const startDate = profile.start_date ? new Date(profile.start_date).toLocaleDateString("en-US") : "";
+    const cvBlock = cvUrl
+      ? `<div class="doc-card"><div class="doc-title">CV</div>${renderFile(cvUrl)}</div>`
+      : "";
     const docRows = docs.map((doc) => {
       const title = doc.doc_type || "documento";
-      const fileLink = doc.doc_url ? `<a href="${doc.doc_url}" target="_blank" rel="noopener">Abrir archivo</a>` : "";
+      const fileBlock = doc.doc_url ? renderFile(doc.doc_url) : "";
       const dataBlock = doc.doc_data ? `<pre>${safe(JSON.stringify(doc.doc_data, null, 2))}</pre>` : "";
-      return `<div class="doc-card"><div class="doc-title">${safe(title)}</div>${fileLink}${dataBlock}</div>`;
+      return `<div class="doc-card"><div class="doc-title">${safe(title)}</div>${fileBlock}${dataBlock}</div>`;
     }).join("");
     res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Paquete onboarding</title>
       <style>
@@ -5363,6 +5449,9 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
         pre{white-space:pre-wrap;background:#f9f6ef;border:1px solid #e7ddcc;border-radius:12px;padding:12px;}
         .doc-card{margin-top:10px;padding:12px;border:1px dashed #e7ddcc;border-radius:12px;}
         .doc-title{font-weight:700;margin-bottom:6px;}
+        .doc-image{max-width:100%;height:auto;border-radius:12px;border:1px solid #e7ddcc;display:block;}
+        .doc-pdf{width:100%;height:460px;border:1px solid #e7ddcc;border-radius:12px;background:#fff;}
+        .doc-link{display:inline-block;margin-top:6px;color:#1b7a8c;text-decoration:none;font-weight:600;}
         .actions{position:fixed;right:24px;top:24px;}
         @media print {.actions{display:none;} body{background:#fff;}}
       </style></head><body>
@@ -5382,7 +5471,7 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
       </div>
       <div class="card">
         <div class="label">Documentos</div>
-        ${docRows || "<div>Sin documentos.</div>"}
+        ${cvBlock}${docRows || "<div>Sin documentos.</div>"}
       </div>
       </body></html>`);
   } catch (err) {
@@ -8531,6 +8620,10 @@ app.get("/admin/ui", (req, res) => {
           <span class="nav-icon">🗓</span>
           <span class="nav-label">Calendario</span>
         </button>
+        <button class="nav-item" id="nav-onboarding" type="button" title="Onboarding">
+          <span class="nav-icon">🧾</span>
+          <span class="nav-label">Onboarding</span>
+        </button>
         <button class="nav-item" id="nav-analytics" type="button" title="Analytics">
           <span class="nav-icon">📊</span>
           <span class="nav-label">Analytics</span>
@@ -9231,6 +9324,54 @@ app.get("/admin/ui", (req, res) => {
           <div class="calendar-grid" id="calendar-weekdays"></div>
           <div class="calendar-grid" id="calendar-grid"></div>
           <div class="calendar-list" id="calendar-list"></div>
+        </div>
+      </section>
+
+      <section id="onboarding-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.065s;">
+          <div class="panel-title">Onboarding</div>
+          <div class="panel-sub">Personas en proceso de ingreso y documentación.</div>
+          <div class="panel-filters">
+            <div class="grid">
+              <div>
+                <label>Local</label>
+                <select id="onboarding-brand">
+                  <option value="">Todos</option>
+                </select>
+              </div>
+              <div>
+                <label>Buscar</label>
+                <input id="onboarding-search" type="text" placeholder="Nombre o teléfono" />
+              </div>
+              <div style="display:flex; align-items:flex-end;">
+                <button class="secondary" id="onboarding-refresh" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="inline" id="onboarding-tabs" style="margin-top:8px;">
+              <button class="tab-pill active" data-filter="all" type="button">Todos</button>
+              <button class="tab-pill" data-filter="pending" type="button">Pendientes</button>
+              <button class="tab-pill" data-filter="complete" type="button">Completos</button>
+              <button class="tab-pill" data-filter="hired" type="button">Contratados</button>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:12px;">
+            <table class="cv-table onboarding-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Local</th>
+                  <th>Posición</th>
+                  <th>Candidato</th>
+                  <th>Teléfono</th>
+                  <th>Docs</th>
+                  <th>Estado</th>
+                  <th>Acción</th>
+                </tr>
+              </thead>
+              <tbody id="onboarding-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="onboarding-count" style="margin-top:8px;"></div>
         </div>
       </section>
 
@@ -10187,6 +10328,7 @@ app.get("/admin/ui", (req, res) => {
     const navCallsEl = document.getElementById('nav-calls');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const navCalendarEl = document.getElementById('nav-calendar');
+    const navOnboardingEl = document.getElementById('nav-onboarding');
     const navAnalyticsEl = document.getElementById('nav-analytics');
     const navPortalEl = document.getElementById('nav-portal');
     const navCallsBadgeEl = document.getElementById('nav-calls-badge');
@@ -10199,6 +10341,7 @@ app.get("/admin/ui", (req, res) => {
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const calendarViewEl = document.getElementById('calendar-view');
+    const onboardingViewEl = document.getElementById('onboarding-view');
     const analyticsViewEl = document.getElementById('analytics-view');
     const portalViewEl = document.getElementById('portal-view');
     const brandViewEl = document.getElementById('brand-view');
@@ -10524,6 +10667,12 @@ app.get("/admin/ui", (req, res) => {
     const analyticsSourcesEl = document.getElementById('analytics-sources');
     const analyticsCallsBrandEl = document.getElementById('analytics-calls-brand');
     const analyticsCallsRoleEl = document.getElementById('analytics-calls-role');
+    const onboardingBrandEl = document.getElementById('onboarding-brand');
+    const onboardingSearchEl = document.getElementById('onboarding-search');
+    const onboardingRefreshEl = document.getElementById('onboarding-refresh');
+    const onboardingTabsEl = document.getElementById('onboarding-tabs');
+    const onboardingBodyEl = document.getElementById('onboarding-body');
+    const onboardingCountEl = document.getElementById('onboarding-count');
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
@@ -10603,6 +10752,8 @@ app.get("/admin/ui", (req, res) => {
     let onboardingDocs = [];
     let pendingOnboardingDocType = '';
     let analyticsCache = null;
+    let onboardingList = [];
+    let onboardingFilterMode = 'all';
     let pendingUserPhotoDataUrl = '';
     let pendingUserPhotoName = '';
     let pendingUserPhotoClear = false;
@@ -10696,6 +10847,7 @@ app.get("/admin/ui", (req, res) => {
     const VIEW_CALLS = '__calls__';
     const VIEW_INTERVIEWS = '__interviews__';
     const VIEW_CALENDAR = '__calendar__';
+    const VIEW_ONBOARDING = '__onboarding__';
     const VIEW_ANALYTICS = '__analytics__';
     const VIEW_PORTAL = '__portal__';
 
@@ -11332,6 +11484,7 @@ app.get("/admin/ui", (req, res) => {
       if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
       if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
       if (navAnalyticsEl) navAnalyticsEl.style.display = canPermission('analytics_view') ? '' : 'none';
+      if (navOnboardingEl) navOnboardingEl.style.display = canPermission('onboarding_manage') ? '' : 'none';
       if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
       if (addBrandEl) addBrandEl.style.display = isAdmin ? '' : 'none';
       if (loadBtnEl) loadBtnEl.style.display = isAdmin ? '' : 'none';
@@ -14676,6 +14829,7 @@ app.get("/admin/ui", (req, res) => {
       navCallsEl.classList.toggle('active', activeView === 'calls');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
       if (navCalendarEl) navCalendarEl.classList.toggle('active', activeView === 'calendar');
+      if (navOnboardingEl) navOnboardingEl.classList.toggle('active', activeView === 'onboarding');
       if (navAnalyticsEl) navAnalyticsEl.classList.toggle('active', activeView === 'analytics');
       if (navPortalEl) navPortalEl.classList.toggle('active', activeView === 'portal');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
@@ -14685,7 +14839,15 @@ app.get("/admin/ui", (req, res) => {
 
     function setActiveView(key) {
       const canAnalytics = canPermission('analytics_view');
-      if (authRole !== 'admin' && key !== VIEW_CALLS && key !== VIEW_INTERVIEWS && key !== VIEW_CALENDAR && key !== VIEW_ANALYTICS) {
+      const canOnboarding = canPermission('onboarding_manage');
+      if (
+        authRole !== 'admin' &&
+        key !== VIEW_CALLS &&
+        key !== VIEW_INTERVIEWS &&
+        key !== VIEW_CALENDAR &&
+        key !== VIEW_ANALYTICS &&
+        !(key === VIEW_ONBOARDING && canOnboarding)
+      ) {
         key = VIEW_CALLS;
       }
       if (key === VIEW_CALLS) {
@@ -14696,6 +14858,9 @@ app.get("/admin/ui", (req, res) => {
         activeBrandKey = '';
       } else if (key === VIEW_CALENDAR) {
         activeView = 'calendar';
+        activeBrandKey = '';
+      } else if (key === VIEW_ONBOARDING) {
+        activeView = canOnboarding ? 'onboarding' : 'calls';
         activeBrandKey = '';
       } else if (key === VIEW_ANALYTICS) {
         activeView = canAnalytics ? 'analytics' : 'calls';
@@ -14714,6 +14879,7 @@ app.get("/admin/ui", (req, res) => {
       callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
       if (calendarViewEl) calendarViewEl.style.display = activeView === 'calendar' ? 'block' : 'none';
+      if (onboardingViewEl) onboardingViewEl.style.display = activeView === 'onboarding' ? 'block' : 'none';
       if (analyticsViewEl) analyticsViewEl.style.display = activeView === 'analytics' ? 'block' : 'none';
       if (portalViewEl) portalViewEl.style.display = activeView === 'portal' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
@@ -14733,6 +14899,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'calendar') {
         viewTitleEl.textContent = 'Calendario';
         viewLabelEl.textContent = 'Agenda';
+      } else if (activeView === 'onboarding') {
+        viewTitleEl.textContent = 'Onboarding';
+        viewLabelEl.textContent = 'Ingreso';
       } else if (activeView === 'analytics') {
         viewTitleEl.textContent = 'Analytics';
         viewLabelEl.textContent = 'Métricas';
@@ -14757,6 +14926,9 @@ app.get("/admin/ui", (req, res) => {
         scheduleResultsLoad();
         scheduleCvLoad();
         refreshTrialViews();
+      }
+      if (activeView === 'onboarding') {
+        loadOnboardingList();
       }
       if (activeView === 'calls') {
         scheduleCvLoad();
@@ -18273,6 +18445,30 @@ app.get("/admin/ui", (req, res) => {
       onboardingProfile = null;
       onboardingDocs = [];
       try {
+        const existingId = target?.onboardingId || target?.onboarding_id || target?.profileId || target?.id || '';
+        if (existingId) {
+          const resp = await fetch('/admin/onboarding/' + encodeURIComponent(existingId), {
+            headers: portalAuthHeaders()
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_failed');
+          onboardingProfile = data.profile || null;
+          onboardingDocs = data.docs || [];
+          if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
+          if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
+          if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
+          if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
+          if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
+          if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
+          if (onboardingStartDateEl) {
+            const start = onboardingProfile?.start_date || '';
+            onboardingStartDateEl.value = start ? start.slice(0, 10) : '';
+          }
+          if (onboardingAdminNotesEl) onboardingAdminNotesEl.value = onboardingProfile?.admin_notes || '';
+          renderOnboardingDocList();
+          setOnboardingDocStatus('');
+          return;
+        }
         const payload = {
           cv_id: target?.cvId || target?.cv_id || '',
           call_sid: target?.callId || target?.call_sid || '',
@@ -18550,6 +18746,157 @@ app.get("/admin/ui", (req, res) => {
       renderAnalyticsTable(analyticsCallsRoleEl, analytics.roles || []);
     }
 
+    function refreshOnboardingBrandOptions() {
+      if (!onboardingBrandEl) return;
+      const brands = listBrandOptions();
+      onboardingBrandEl.innerHTML = '<option value="">Todos</option>';
+      brands.forEach((brand) => {
+        if (Array.isArray(authBrands) && authBrands.length && !authBrands.includes(brand.key)) return;
+        const opt = document.createElement('option');
+        opt.value = brand.key;
+        opt.textContent = brand.display;
+        onboardingBrandEl.appendChild(opt);
+      });
+    }
+
+    function onboardingStatusLabel(item) {
+      if (!item) return '—';
+      if (item.decision === 'hired') return 'Contratado';
+      if (item.docs_count && item.done_count >= item.docs_count) return 'Docs completos';
+      if (item.docs_count) return 'Docs pendientes';
+      return 'Sin documentos';
+    }
+
+    function renderOnboardingList() {
+      if (!onboardingBodyEl) return;
+      const brandFilter = onboardingBrandEl?.value || '';
+      const q = (onboardingSearchEl?.value || '').toLowerCase().trim();
+      const list = Array.isArray(onboardingList) ? onboardingList : [];
+      let filtered = list.slice();
+      if (brandFilter) {
+        filtered = filtered.filter((item) => brandKey(item.brand || '') === brandFilter);
+      }
+      if (q) {
+        filtered = filtered.filter((item) => {
+          const name = (item.name || '').toLowerCase();
+          const phone = (item.phone || '').toLowerCase();
+          return name.includes(q) || phone.includes(q);
+        });
+      }
+      if (onboardingFilterMode === 'pending') {
+        filtered = filtered.filter((item) => (item.docs_count || 0) === 0 || item.done_count < item.docs_count);
+      } else if (onboardingFilterMode === 'complete') {
+        filtered = filtered.filter((item) => item.docs_count > 0 && item.done_count >= item.docs_count);
+      } else if (onboardingFilterMode === 'hired') {
+        filtered = filtered.filter((item) => item.decision === 'hired');
+      }
+
+      onboardingBodyEl.innerHTML = '';
+      if (!filtered.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.textContent = 'Sin onboarding cargados.';
+        tr.appendChild(td);
+        onboardingBodyEl.appendChild(tr);
+      } else {
+        filtered.forEach((item) => {
+          const tr = document.createElement('tr');
+          const dateTd = document.createElement('td');
+          dateTd.dataset.label = 'Fecha';
+          dateTd.textContent = formatDate(item.created_at);
+          tr.appendChild(dateTd);
+
+          const brandTd = document.createElement('td');
+          brandTd.dataset.label = 'Local';
+          brandTd.textContent = item.brand || '—';
+          tr.appendChild(brandTd);
+
+          const roleTd = document.createElement('td');
+          roleTd.dataset.label = 'Posición';
+          roleTd.textContent = item.role || '—';
+          tr.appendChild(roleTd);
+
+          const nameTd = document.createElement('td');
+          nameTd.dataset.label = 'Candidato';
+          nameTd.textContent = item.name || '—';
+          tr.appendChild(nameTd);
+
+          const phoneTd = document.createElement('td');
+          phoneTd.dataset.label = 'Teléfono';
+          phoneTd.textContent = item.phone || '—';
+          tr.appendChild(phoneTd);
+
+          const docsTd = document.createElement('td');
+          docsTd.dataset.label = 'Docs';
+          if (item.docs_count) {
+            docsTd.textContent = String(item.done_count || 0) + '/' + String(item.docs_count || 0);
+          } else {
+            docsTd.textContent = '—';
+          }
+          tr.appendChild(docsTd);
+
+          const statusTd = document.createElement('td');
+          statusTd.dataset.label = 'Estado';
+          statusTd.textContent = onboardingStatusLabel(item);
+          tr.appendChild(statusTd);
+
+          const actionTd = document.createElement('td');
+          actionTd.dataset.label = 'Acción';
+          const actionWrap = document.createElement('div');
+          actionWrap.className = 'action-stack';
+          const openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.className = 'secondary btn-compact';
+          openBtn.textContent = 'Abrir';
+          openBtn.onclick = () => openOnboardingModal({ onboardingId: item.id });
+          actionWrap.appendChild(openBtn);
+          if (item.public_token) {
+            const linkBtn = document.createElement('button');
+            linkBtn.type = 'button';
+            linkBtn.className = 'secondary btn-compact';
+            linkBtn.textContent = 'Link';
+            linkBtn.onclick = async () => {
+              const url = String(PUBLIC_BASE_URL || '') + '/onboard/' + String(item.public_token || '');
+              try {
+                await navigator.clipboard.writeText(url);
+                showToast('Link copiado');
+              } catch (err) {
+                prompt('Copiar link', url);
+              }
+            };
+            actionWrap.appendChild(linkBtn);
+          }
+          if (actionWrap.children.length) {
+            actionTd.appendChild(actionWrap);
+          } else {
+            actionTd.textContent = '—';
+          }
+          tr.appendChild(actionTd);
+          onboardingBodyEl.appendChild(tr);
+        });
+      }
+      if (onboardingCountEl) {
+        onboardingCountEl.textContent = String(filtered.length) + ' de ' + String(list.length) + ' onboarding';
+      }
+    }
+
+    async function loadOnboardingList() {
+      if (!canPermission('onboarding_manage')) return;
+      if (!onboardingBodyEl) return;
+      if (onboardingCountEl) onboardingCountEl.textContent = 'Cargando...';
+      try {
+        const resp = await fetch('/admin/onboarding/list', { headers: portalAuthHeaders() });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_failed');
+        onboardingList = Array.isArray(data.items) ? data.items : [];
+        refreshOnboardingBrandOptions();
+        renderOnboardingList();
+      } catch (err) {
+        if (onboardingCountEl) onboardingCountEl.textContent = 'Error: ' + err.message;
+      }
+    }
+
     async function restoreSession() {
       let storedToken = '';
       let storedRole = '';
@@ -18809,6 +19156,19 @@ app.get("/admin/ui", (req, res) => {
     }
     if (onboardingSaveProfileEl) onboardingSaveProfileEl.onclick = saveOnboardingProfileFields;
     if (onboardingExportEl) onboardingExportEl.onclick = exportOnboardingPacket;
+    if (onboardingRefreshEl) onboardingRefreshEl.onclick = loadOnboardingList;
+    if (onboardingBrandEl) onboardingBrandEl.onchange = renderOnboardingList;
+    if (onboardingSearchEl) onboardingSearchEl.oninput = renderOnboardingList;
+    if (onboardingTabsEl) {
+      onboardingTabsEl.querySelectorAll('[data-filter]').forEach((btn) => {
+        btn.onclick = () => {
+          onboardingTabsEl.querySelectorAll('.tab-pill').forEach((pill) => pill.classList.remove('active'));
+          btn.classList.add('active');
+          onboardingFilterMode = btn.dataset.filter || 'all';
+          renderOnboardingList();
+        };
+      });
+    }
     loginTokenEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter') login();
     });
@@ -18837,6 +19197,7 @@ app.get("/admin/ui", (req, res) => {
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     if (navCalendarEl) navCalendarEl.onclick = () => setActiveView(VIEW_CALENDAR);
+    if (navOnboardingEl) navOnboardingEl.onclick = () => setActiveView(VIEW_ONBOARDING);
     if (navAnalyticsEl) navAnalyticsEl.onclick = () => setActiveView(VIEW_ANALYTICS);
     if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
     if (portalNewEl) {
