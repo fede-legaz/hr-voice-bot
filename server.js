@@ -3538,15 +3538,30 @@ function findW4SignatureFieldsByLayout(layout) {
   const maxY = Math.max(...ys);
   const cutoff = minY + (maxY - minY) * 0.35;
   const bottomFields = textFields.filter((item) => item.y <= cutoff);
-  const wide = bottomFields.filter((item) => item.width >= 140);
-  const candidate = wide
-    .filter((item) => item.height <= 30)
-    .sort((a, b) => b.y - a.y)[0]
-    || wide.sort((a, b) => b.y - a.y)[0];
+  const rows = groupRows(bottomFields, 12);
+  let chosenRow = null;
+  rows.forEach((row) => {
+    const items = row.items || [];
+    if (items.length < 2) return;
+    const sorted = items.slice().sort((a, b) => a.x - b.x);
+    const left = sorted[0];
+    const right = sorted[sorted.length - 1];
+    const hasNarrowRight = right && right.width >= 40 && right.width <= 160;
+    const score = (items.length === 2 ? 2 : items.length === 3 ? 1 : 0) + (hasNarrowRight ? 1 : 0);
+    if (!chosenRow) {
+      chosenRow = { row, score };
+      return;
+    }
+    if (score > chosenRow.score || (score === chosenRow.score && row.y > chosenRow.row.y)) {
+      chosenRow = { row, score };
+    }
+  });
+  let candidate;
   let dateField;
-  if (candidate) {
-    const near = bottomFields.filter((item) => Math.abs(item.y - candidate.y) <= 12 && item.x > candidate.x + candidate.width / 3);
-    dateField = near.sort((a, b) => a.x - b.x)[0];
+  if (chosenRow) {
+    const items = chosenRow.row.items.slice().sort((a, b) => a.x - b.x);
+    candidate = items[0];
+    dateField = items[items.length - 1];
   }
   return {
     signatureFieldName: candidate ? candidate.name : "",
@@ -3591,6 +3606,28 @@ function normalizeChoice(value) {
   return normalizeKey(String(value || ""));
 }
 
+function coerceNameParts(payload = {}) {
+  const out = {};
+  const first = String(payload.first_name || "").trim();
+  const last = String(payload.last_name || "").trim();
+  const apt = String(payload.apt || "").trim();
+  const full = String(payload.full_name || payload.name || "").trim();
+  const numeric = (val) => !!val && /^\d+$/.test(val);
+  if (full) {
+    const parts = full.split(/\s+/).filter(Boolean);
+    const guessedFirst = parts[0] || "";
+    const guessedLast = parts.slice(1).join(" ").trim();
+    if (!first || numeric(first) || (apt && first === apt)) {
+      if (guessedFirst) out.first_name = guessedFirst;
+    }
+    if (!last || numeric(last) || (apt && last === apt)) {
+      if (guessedLast) out.last_name = guessedLast;
+      else if (!last && guessedFirst) out.last_name = guessedFirst;
+    }
+  }
+  return out;
+}
+
 function mapI9Fields(fields, templateFields) {
   const out = {};
   const data = fields && typeof fields === "object" ? fields : {};
@@ -3611,6 +3648,34 @@ function mapI9Fields(fields, templateFields) {
     const str = String(value).trim();
     return str === "0" ? "" : str;
   };
+  const setAliases = (names, value) => {
+    if (value === undefined || value === null || value === "") return;
+    names.forEach((name) => {
+      if (!name) return;
+      if (templateFields.some((field) => field?.name === name)) {
+        out[name] = value;
+      }
+    });
+  };
+  const firstAliases = [
+    "First Name Given Name from Section 1",
+    "First Name (Given Name)",
+    "First Name Given Name from Section 1-2",
+    "First Name Given Name"
+  ];
+  const lastAliases = [
+    "Last Name Family Name from Section 1",
+    "Last Name (Family Name)",
+    "Last Name Family Name from Section 1-2"
+  ];
+  const middleAliases = [
+    "Middle initial if any from Section 1",
+    "Middle initial if any from Section 1-2",
+    "Employee Middle Initial (if any)"
+  ];
+  setAliases(firstAliases, safeText(data.first_name));
+  setAliases(lastAliases, safeText(data.last_name));
+  setAliases(middleAliases, String(data.middle_initial || "").trim().slice(0, 1));
   const mapping = [
     ["last_name", ["last name (family name)", "last name"]],
     ["first_name", ["first name (given name)", "first name"]],
@@ -3819,6 +3884,10 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   if (typeKey === "w4") mapped = mapW4Fields(payload, templateFields);
   const layout = await getPdfTemplateLayout(templateUrl);
   if (typeKey === "i9") {
+    const coerced = coerceNameParts(payload);
+    if (Object.keys(coerced).length) {
+      mapped = mapI9Fields(Object.assign({}, payload, coerced), templateFields);
+    }
     const hasExplicitI9 = templateNames.some((name) => {
       const norm = normalizeKey(name);
       return norm.includes("last name family name from section 1")
@@ -3830,7 +3899,7 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
     return Object.assign({}, layoutMapped, mapped);
   }
   if (typeKey === "w4") {
-    const layoutMapped = mapW4FieldsByLayout(payload, layout);
+    const hasXfa = templateNames.some((name) => String(name || "").startsWith("topmostSubform"));
     const signatureHint = findW4SignatureFieldsByLayout(layout);
     if (signatureHint.signatureFieldName && !mapped.__signature_field) {
       mapped.__signature_field = signatureHint.signatureFieldName;
@@ -3841,6 +3910,8 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
       }
       delete mapped.__signature_date;
     }
+    if (hasXfa) return mapped;
+    const layoutMapped = mapW4FieldsByLayout(payload, layout);
     return Object.assign({}, layoutMapped, mapped);
   }
   return mapped;
@@ -3967,16 +4038,24 @@ async function fillPdfTemplate({
           ? await pdfDoc.embedPng(parsed.buffer)
           : await pdfDoc.embedJpg(parsed.buffer);
         const pad = 2;
+        const isW4 = /fw4\\.pdf/i.test(String(templateUrl || ""));
+        const yOffset = isW4 ? -10 : 0;
         const x = signatureRect.x + pad;
-        const y = signatureRect.y + pad;
+        const y = signatureRect.y + pad + yOffset;
         const w = Math.max(1, signatureRect.width - pad * 2);
         const h = Math.max(1, signatureRect.height - pad * 2);
         const sigKey = normalizeKey(signatureFieldName || "");
-        const maxScale = sigKey.includes("signature of employee") ? 6 : 2.5;
-        const scale = Math.min(w / img.width, h / img.height, maxScale);
+        const scaleByH = (h / img.height) * 0.98;
+        const scaleByW = (w / img.width) * 0.98;
+        const maxScale = sigKey.includes("signature of employee") ? 12 : 2.5;
+        const scale = sigKey.includes("signature of employee")
+          ? Math.min(Math.max(scaleByH, scaleByW), maxScale)
+          : Math.min(w / img.width, h / img.height, maxScale);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
-        const verticalBias = sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5;
+        const verticalBias = sigKey.includes("signature of employee")
+          ? 0.65
+          : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5);
         page.drawImage(img, {
           x,
           y: y + (h - imgH) * verticalBias,
