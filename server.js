@@ -3942,9 +3942,11 @@ async function fillPdfTemplate({
         const scale = Math.min(w / img.width, h / img.height, 1);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
+        const sigKey = normalizeKey(signatureFieldName || "");
+        const verticalBias = sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5;
         page.drawImage(img, {
           x,
-          y: y + (h - imgH) / 2,
+          y: y + (h - imgH) * verticalBias,
           width: imgW,
           height: imgH
         });
