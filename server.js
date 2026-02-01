@@ -3420,6 +3420,7 @@ function mapI9FieldsByLayout(fields, layout) {
     return remaining.shift();
   };
   const nameRow = pickRow((row) => (row.items || []).length >= 4);
+  if (data.middle_initial) data.middle_initial = String(data.middle_initial).trim().slice(0, 1);
   assignRow(nameRow, ["last_name", "first_name", "middle_initial", "other_last_names"]);
   const addressRow = pickRow((row) => (row.items || []).length >= 4);
   assignRow(addressRow, ["address", "apt", "city", "state", "zip"]);
@@ -3584,8 +3585,11 @@ function mapI9Fields(fields, templateFields) {
     ["phone", ["employee's telephone number", "employee's phone number", "employee phone number"]]
   ];
   mapping.forEach(([key, patterns]) => {
-    const value = data[key];
+    let value = data[key];
     if (!value) return;
+    if (key === "middle_initial") {
+      value = String(value).trim().slice(0, 1);
+    }
     const fieldName = findTemplateField(templateFields, patterns);
     if (fieldName) out[fieldName] = value;
   });
@@ -3736,9 +3740,26 @@ async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDa
   });
   const setValue = (field, value) => {
     if (!field) return;
-    const str = value === undefined || value === null ? "" : String(value);
+    let str = value === undefined || value === null ? "" : String(value);
+    if (typeof field.getMaxLength === "function") {
+      const maxLen = field.getMaxLength();
+      if (typeof maxLen === "number" && maxLen > 0 && str.length > maxLen) {
+        str = str.slice(0, maxLen);
+      }
+    }
     if (typeof field.setText === "function") {
-      field.setText(str);
+      try {
+        field.setText(str);
+      } catch (err) {
+        if (typeof field.getMaxLength === "function") {
+          const maxLen = field.getMaxLength();
+          if (typeof maxLen === "number" && maxLen > 0 && str.length > maxLen) {
+            field.setText(str.slice(0, maxLen));
+            return;
+          }
+        }
+        throw err;
+      }
       return;
     }
     if (typeof field.check === "function" && typeof field.uncheck === "function") {
@@ -6091,6 +6112,13 @@ function renderOnboardingPageHtml(token) {
                 input.placeholder = 'XXXXXXXXX';
                 input.addEventListener('input', () => {
                   input.value = input.value.replace(/\D+/g, '').slice(0, 9);
+                });
+              }
+              if (lowerKey === 'middle_initial') {
+                input.maxLength = 1;
+                input.placeholder = 'M';
+                input.addEventListener('input', () => {
+                  input.value = input.value.replace(/[^a-zA-Z]/g, '').slice(0, 1);
                 });
               }
               const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
