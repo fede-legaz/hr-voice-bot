@@ -3672,21 +3672,10 @@ function mapI9Fields(fields, templateFields) {
     if (!fieldName) return;
     out[fieldName] = status === key ? "true" : "false";
   });
-  const statusFields = {
-    citizen: ["a citizen of the united states"],
-    noncitizen: ["a noncitizen national of the united states"],
-    permanent: ["a lawful permanent resident"],
-    authorized: ["an alien authorized to work"]
-  };
-  Object.entries(statusFields).forEach(([key, patterns]) => {
-    const fieldName = findTemplateField(templateFields, patterns);
-    if (!fieldName) return;
-    out[fieldName] = status === key ? "true" : "false";
-  });
 
   if (status === "permanent") {
-    const aNumField = exact(["USCIS ANumber", "USCIS A-Number"]) || findTemplateField(templateFields, ["uscis a-number", "a-number"]);
-    if (aNumField && data.lpr_a_number) out[aNumField] = data.lpr_a_number;
+    const lprField = exact(["3 A lawful permanent resident Enter USCIS or ANumber"]);
+    if (lprField && data.lpr_a_number) out[lprField] = data.lpr_a_number;
   }
 
   if (status === "authorized") {
@@ -3830,6 +3819,13 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   if (typeKey === "w4") mapped = mapW4Fields(payload, templateFields);
   const layout = await getPdfTemplateLayout(templateUrl);
   if (typeKey === "i9") {
+    const hasExplicitI9 = templateNames.some((name) => {
+      const norm = normalizeKey(name);
+      return norm.includes("last name family name from section 1")
+        || norm.includes("first name given name from section 1")
+        || norm.includes("employee middle initial");
+    });
+    if (hasExplicitI9) return mapped;
     const layoutMapped = mapI9FieldsByLayout(payload, layout);
     return Object.assign({}, layoutMapped, mapped);
   }
@@ -3975,10 +3971,11 @@ async function fillPdfTemplate({
         const y = signatureRect.y + pad;
         const w = Math.max(1, signatureRect.width - pad * 2);
         const h = Math.max(1, signatureRect.height - pad * 2);
-        const scale = Math.min(w / img.width, h / img.height, 2.5);
+        const sigKey = normalizeKey(signatureFieldName || "");
+        const maxScale = sigKey.includes("signature of employee") ? 6 : 2.5;
+        const scale = Math.min(w / img.width, h / img.height, maxScale);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
-        const sigKey = normalizeKey(signatureFieldName || "");
         const verticalBias = sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5;
         page.drawImage(img, {
           x,
