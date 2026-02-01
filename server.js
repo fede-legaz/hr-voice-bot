@@ -3569,6 +3569,23 @@ function normalizeChoice(value) {
 function mapI9Fields(fields, templateFields) {
   const out = {};
   const data = fields && typeof fields === "object" ? fields : {};
+  const exact = (names) => {
+    if (!Array.isArray(templateFields)) return "";
+    for (const name of names) {
+      if (templateFields.some((field) => field?.name === name)) return name;
+    }
+    return "";
+  };
+  const setIf = (fieldName, value) => {
+    if (!fieldName) return;
+    if (value === undefined || value === null || value === "") return;
+    out[fieldName] = value;
+  };
+  const safeText = (value) => {
+    if (value === undefined || value === null) return "";
+    const str = String(value).trim();
+    return str === "0" ? "" : str;
+  };
   const mapping = [
     ["last_name", ["last name (family name)", "last name"]],
     ["first_name", ["first name (given name)", "first name"]],
@@ -3584,17 +3601,52 @@ function mapI9Fields(fields, templateFields) {
     ["email", ["employee's email address", "employee email address"]],
     ["phone", ["employee's telephone number", "employee's phone number", "employee phone number"]]
   ];
-  mapping.forEach(([key, patterns]) => {
+  const directMap = [
+    ["last_name", exact(["Last Name (Family Name)", "Last Name Family Name from Section 1", "Last Name (Family Name) from Section 1"])],
+    ["first_name", exact(["First Name (Given Name)", "First Name Given Name from Section 1", "First Name (Given Name) from Section 1"])],
+    ["middle_initial", exact(["Employee Middle Initial (if any)", "Middle initial if any from Section 1", "Middle Initial 0"])],
+    ["other_last_names", exact(["Employee Other Last Names Used (if any)", "Other Last Names Used (if any)"])],
+    ["address", exact(["Address (Street Number and Name)", "Address Street Number and Name"])],
+    ["apt", exact(["Apt Number (if any)", "Apt. Number (if any)"])],
+    ["city", exact(["City or Town"])],
+    ["state", exact(["State"])],
+    ["zip", exact(["ZIP Code"])],
+    ["dob", exact(["Date of Birth mmddyyyy"])],
+    ["ssn", exact(["US Social Security Number"])],
+    ["email", exact(["Employees E-mail Address", "Employee's Email Address"])],
+    ["phone", exact(["Telephone Number", "Employee's Telephone Number"])]
+  ];
+  directMap.forEach(([key, fieldName]) => {
+    if (!fieldName) return;
     let value = data[key];
-    if (!value) return;
+    if (key === "middle_initial") value = String(value || "").trim().slice(0, 1);
+    if (key === "dob") value = formatDateUs(value);
+    value = safeText(value);
+    setIf(fieldName, value);
+  });
+  mapping.forEach(([key, patterns]) => {
+    if (directMap.some(([directKey, name]) => directKey === key && name)) return;
+    let value = data[key];
+    if (value === undefined || value === null || value === "") return;
     if (key === "middle_initial") {
       value = String(value).trim().slice(0, 1);
     }
+    if (key === "dob") value = formatDateUs(value);
     const fieldName = findTemplateField(templateFields, patterns);
     if (fieldName) out[fieldName] = value;
   });
 
   const status = normalizeChoice(data.status);
+  const cbMap = {
+    citizen: exact(["CB_1"]),
+    noncitizen: exact(["CB_2"]),
+    permanent: exact(["CB_3"]),
+    authorized: exact(["CB_4"])
+  };
+  Object.entries(cbMap).forEach(([key, fieldName]) => {
+    if (!fieldName) return;
+    out[fieldName] = status === key ? "true" : "false";
+  });
   const statusFields = {
     citizen: ["a citizen of the united states"],
     noncitizen: ["a noncitizen national of the united states"],
@@ -3608,37 +3660,79 @@ function mapI9Fields(fields, templateFields) {
   });
 
   if (status === "permanent") {
-    const aNumField = findTemplateField(templateFields, ["uscis a-number", "a-number"]);
+    const aNumField = exact(["USCIS ANumber", "USCIS A-Number"]) || findTemplateField(templateFields, ["uscis a-number", "a-number"]);
     if (aNumField && data.lpr_a_number) out[aNumField] = data.lpr_a_number;
   }
 
   if (status === "authorized") {
-    const expField = findTemplateField(templateFields, ["exp. date", "expiration date", "exp date"]);
+    const expField = exact(["Exp Date mmddyyyy", "Expiration Date if any"]) || findTemplateField(templateFields, ["exp. date", "expiration date", "exp date"]);
     if (expField && data.auth_exp) out[expField] = formatDateUs(data.auth_exp);
 
     const docType = normalizeChoice(data.auth_doc_type);
     if (docType === "a number") {
-      const aNumField = findTemplateField(templateFields, ["uscis a-number", "a-number"]);
+      const aNumField = exact(["USCIS ANumber", "USCIS A-Number"]) || findTemplateField(templateFields, ["uscis a-number", "a-number"]);
       if (aNumField && data.auth_a_number) out[aNumField] = data.auth_a_number;
     } else if (docType === "i94" || docType === "i 94" || docType.includes("i94")) {
-      const i94Field = findTemplateField(templateFields, ["form i-94 admission number", "i-94 admission number", "i-94"]);
+      const i94Field = exact(["Form I94 Admission Number", "Form I-94 Admission Number"]) || findTemplateField(templateFields, ["form i-94 admission number", "i-94 admission number", "i-94"]);
       if (i94Field && data.auth_i94) out[i94Field] = data.auth_i94;
     } else if (docType === "passport") {
-      const passField = findTemplateField(templateFields, ["foreign passport number", "passport number"]);
-      const countryField = findTemplateField(templateFields, ["country of issuance", "passport country"]);
+      const passField = exact(["Foreign Passport Number and Country of IssuanceRow1", "Foreign Passport Number and Country of Issuance"]) || findTemplateField(templateFields, ["foreign passport number", "passport number"]);
       if (passField && data.auth_passport) out[passField] = data.auth_passport;
+      const countryField = findTemplateField(templateFields, ["country of issuance", "passport country"]);
       if (countryField && data.auth_country) out[countryField] = data.auth_country;
     }
   }
 
-  const dateField = findTemplateField(templateFields, ["today's date", "date (mm/dd/yyyy)", "date"]);
+  const dateField = exact(["Today's Date mmddyyy", "Todays Date 0", "Todays Date 1", "Todays Date 2"]) || findTemplateField(templateFields, ["today's date", "date (mm/dd/yyyy)", "date"]);
   if (dateField) out[dateField] = formatDateUs(data.signature_date || new Date());
+  const sigField = exact(["Signature of Employee"]) || findTemplateField(templateFields, ["signature of employee"]);
+  if (sigField) out.__signature_field = sigField;
   return out;
 }
 
 function mapW4Fields(fields, templateFields) {
   const out = {};
   const data = fields && typeof fields === "object" ? fields : {};
+  const hasXfa = Array.isArray(templateFields) && templateFields.some((f) => String(f?.name || "").startsWith("topmostSubform"));
+  const safeText = (value) => {
+    if (value === undefined || value === null) return "";
+    const str = String(value).trim();
+    return str === "0" ? "" : str;
+  };
+  const numText = (value) => {
+    if (value === undefined || value === null || value === "") return "";
+    return String(value);
+  };
+  if (hasXfa) {
+    const set = (fieldName, value) => {
+      if (!fieldName) return;
+      if (value === undefined || value === null || value === "") return;
+      out[fieldName] = value;
+    };
+    const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
+    const lastName = safeText(data.last_name);
+    const address = [safeText(data.address), safeText(data.apt)].filter(Boolean).join(" ").trim();
+    const cityStateZip = [safeText(data.city), safeText(data.state)].filter(Boolean).join(", ") + (safeText(data.zip) ? " " + safeText(data.zip) : "");
+    const ssn = safeText(data.ssn).replace(/\D/g, "");
+    set("topmostSubform[0].Page1[0].Step1a[0].f1_01[0]", firstName);
+    set("topmostSubform[0].Page1[0].Step1a[0].f1_02[0]", lastName);
+    set("topmostSubform[0].Page1[0].Step1a[0].f1_03[0]", address);
+    set("topmostSubform[0].Page1[0].Step1a[0].f1_04[0]", cityStateZip.trim());
+    set("topmostSubform[0].Page1[0].f1_05[0]", ssn);
+    const status = normalizeChoice(data.filing_status);
+    out["topmostSubform[0].Page1[0].c1_1[0]"] = status === "single" ? "true" : "false";
+    out["topmostSubform[0].Page1[0].c1_1[1]"] = status === "married" ? "true" : "false";
+    out["topmostSubform[0].Page1[0].c1_1[2]"] = status === "head" ? "true" : "false";
+    set("topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]", numText(data.dependents_children));
+    set("topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]", numText(data.dependents_other));
+    set("topmostSubform[0].Page1[0].f1_08[0]", numText(data.dependents_total));
+    set("topmostSubform[0].Page1[0].f1_09[0]", numText(data.other_income));
+    set("topmostSubform[0].Page1[0].f1_10[0]", numText(data.deductions));
+    set("topmostSubform[0].Page1[0].f1_11[0]", numText(data.extra_withholding));
+    set("topmostSubform[0].Page1[0].f1_13[0]", formatDateUs(data.signature_date || new Date()));
+    out.__signature_field = "topmostSubform[0].Page1[0].f1_12[0]";
+    return out;
+  }
   const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
   const lastName = data.last_name || "";
   const mapping = [
@@ -3722,7 +3816,14 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   return mapped;
 }
 
-async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDataUrl, keepFirstPage = false }) {
+async function fillPdfTemplate({
+  templateUrl,
+  fields,
+  signatureName,
+  signatureDataUrl,
+  signatureFieldName = "",
+  keepFirstPage = false
+}) {
   if (!PDFDocument) throw new Error("pdf_lib_missing");
   const resolved = await resolveTemplateUrl(templateUrl);
   if (!resolved) throw new Error("missing_template_url");
@@ -3783,7 +3884,11 @@ async function fillPdfTemplate({ templateUrl, fields, signatureName, signatureDa
   });
   let signaturePlaced = false;
   if (signatureName) {
-    const sigField = fieldList.find((field) => /employee.*signature|signature of employee/i.test(field.getName() || ""))
+    const preferredSig = signatureFieldName
+      ? exactMap.get(signatureFieldName) || normMap.get(normalizeKey(signatureFieldName))
+      : null;
+    const sigField = preferredSig
+      || fieldList.find((field) => /employee.*signature|signature of employee/i.test(field.getName() || ""))
       || fieldList.find((field) => /signature|sign/i.test(field.getName() || ""));
     if (sigField) {
       setValue(sigField, signatureName);
@@ -7020,11 +7125,14 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     const signatureDataUrl = String(req.body?.signature_data_url || req.body?.signatureDataUrl || "").trim();
     const keepFirstPage = ["i9", "w4"].includes(normalizeKey(docType));
     const mappedFields = await mapPdfFieldsIfNeeded({ docType, fields: rawFields, templateUrl });
+    const signatureFieldName = mappedFields?.__signature_field || "";
+    if (mappedFields && mappedFields.__signature_field) delete mappedFields.__signature_field;
     const pdfBuffer = await fillPdfTemplate({
       templateUrl,
       fields: mappedFields,
       signatureName,
       signatureDataUrl,
+      signatureFieldName,
       keepFirstPage
     });
     const dataUrl = "data:application/pdf;base64," + pdfBuffer.toString("base64");
