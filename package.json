@@ -11,6 +11,7 @@
     "@aws-sdk/s3-request-presigner": "^3.730.0",
     "express": "^4.19.2",
     "pdf-lib": "^1.17.1",
+    "pngjs": "^7.0.0",
     "pg": "^8.13.1",
     "web-push": "^3.6.7",
     "ws": "^8.18.0"

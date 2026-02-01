@@ -14,8 +14,10 @@ const { createPortalRouter } = require("./portal");
 let PDFDocument;
 let StandardFonts;
 let rgb;
+let PNG;
 try {
   ({ PDFDocument, StandardFonts, rgb } = require("pdf-lib"));
+  ({ PNG } = require("pngjs"));
 } catch (err) {
   console.warn("[pdf] pdf-lib not available, onboarding PDF export disabled");
 }
@@ -3602,6 +3604,42 @@ function formatDateUs(value) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
+function trimTransparentPng(buffer, alphaThreshold = 12, pad = 6) {
+  if (!PNG) return buffer;
+  try {
+    const png = PNG.sync.read(buffer);
+    const { width, height, data } = png;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const idx = (y * width + x) << 2;
+        const alpha = data[idx + 3];
+        if (alpha > alphaThreshold) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX < 0 || maxY < 0) return buffer;
+    minX = Math.max(0, minX - pad);
+    minY = Math.max(0, minY - pad);
+    maxX = Math.min(width - 1, maxX + pad);
+    maxY = Math.min(height - 1, maxY + pad);
+    const outW = maxX - minX + 1;
+    const outH = maxY - minY + 1;
+    const out = new PNG({ width: outW, height: outH });
+    PNG.bitblt(png, out, minX, minY, outW, outH, 0, 0);
+    return PNG.sync.write(out);
+  } catch (err) {
+    return buffer;
+  }
+}
+
 function normalizeChoice(value) {
   return normalizeKey(String(value || ""));
 }
@@ -3808,12 +3846,8 @@ function mapW4Fields(fields, templateFields) {
     set("topmostSubform[0].Page1[0].f1_09[0]", numText(data.other_income));
     set("topmostSubform[0].Page1[0].f1_10[0]", numText(data.deductions));
     set("topmostSubform[0].Page1[0].f1_11[0]", numText(data.extra_withholding));
-    const signatureFieldName = "topmostSubform[0].Page1[0].f1_12[0]";
-    const signatureDateFieldName = "topmostSubform[0].Page1[0].f1_13[0]";
     const signatureDateValue = formatDateUs(data.signature_date || new Date());
-    set(signatureDateFieldName, signatureDateValue);
-    out.__signature_field = signatureFieldName;
-    out.__signature_date_field = signatureDateFieldName;
+    out.__signature_date = signatureDateValue;
     return out;
   }
   const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
@@ -4063,25 +4097,30 @@ async function fillPdfTemplate({
       let page = pages[signatureRect?.pageIndex] || pages[0];
       if (isW4Template) {
         page = pages[0];
-        const pageWidth = page?.getWidth?.() || 612;
-        const pageHeight = page?.getHeight?.() || 792;
-        const sigX = pageWidth * 0.18;
-        const sigY = pageHeight * 0.19;
-        const sigW = pageWidth * 0.45;
-        const sigH = 22;
-        const dateX = pageWidth * 0.72;
-        const dateY = sigY;
-        const dateW = pageWidth * 0.2;
-        const dateH = sigH;
-        targetRect = { pageIndex: 0, x: sigX, y: sigY, width: sigW, height: sigH };
-        targetDateRect = { pageIndex: 0, x: dateX, y: dateY, width: dateW, height: dateH };
+        const pageH = page?.getHeight?.() || 792;
+        const step5LineY = pageH - 702.0;
+        const step5Height = 24.0;
+        targetRect = {
+          pageIndex: 0,
+          x: 100.55,
+          y: step5LineY,
+          width: 446.65 - 100.55,
+          height: step5Height
+        };
+        targetDateRect = {
+          pageIndex: 0,
+          x: 460.55,
+          y: step5LineY,
+          width: 576.25 - 460.55,
+          height: step5Height
+        };
       }
       if (page) {
-        const img = parsed.mime.includes("png")
-          ? await pdfDoc.embedPng(parsed.buffer)
-          : await pdfDoc.embedJpg(parsed.buffer);
+        const isPng = parsed.mime.includes("png");
+        const sigBuffer = isPng ? trimTransparentPng(parsed.buffer) : parsed.buffer;
+        const img = isPng ? await pdfDoc.embedPng(sigBuffer) : await pdfDoc.embedJpg(sigBuffer);
         const pad = 2;
-        const yOffset = isW4Template ? -10 : 0;
+        const yOffset = 0;
         const x = targetRect.x + pad;
         const y = targetRect.y + pad + yOffset;
         const w = Math.max(1, targetRect.width - pad * 2);
@@ -4096,10 +4135,10 @@ async function fillPdfTemplate({
           : Math.min(w / img.width, h / img.height, maxScale);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
-        const verticalBias = isI9EmployeeSig
-          ? 0.5
-          : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5);
-        let drawX = x;
+        const verticalBias = isW4Template
+          ? 0.0
+          : (isI9EmployeeSig ? 0.5 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
+        let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
         drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
         drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
@@ -4143,12 +4182,8 @@ async function fillPdfTemplate({
           const fontSize = 10;
           const datePad = 2;
           const dateX = targetDateRect.x + datePad;
-          const dateY = targetDateRect.y + datePad;
-          const dateW = Math.max(1, targetDateRect.width - datePad * 2);
-          const dateH = Math.max(1, targetDateRect.height - datePad * 2);
-          const textHeight = fontSize;
-          const textY = clamp(dateY + (dateH - textHeight) * 0.5, targetDateRect.y + datePad, targetDateRect.y + targetDateRect.height - datePad - textHeight);
-          page.drawText(dateText, { x: dateX, y: textY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
+          const dateY = targetDateRect.y + 6;
+          page.drawText(dateText, { x: dateX, y: dateY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
         }
         signaturePlaced = true;
       }
