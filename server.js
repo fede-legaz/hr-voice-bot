@@ -3892,7 +3892,9 @@ async function fillPdfTemplate({
       || fieldList.find((field) => /employee.*signature|signature of employee/i.test(field.getName() || ""))
       || fieldList.find((field) => /signature|sign/i.test(field.getName() || ""));
     if (sigField) {
-      setValue(sigField, signatureName);
+      if (!signatureDataUrl) {
+        setValue(sigField, signatureName);
+      }
       if (signatureDataUrl) {
         try {
           const widgets = typeof sigField.getWidgets === "function"
