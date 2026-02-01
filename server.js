@@ -3529,6 +3529,31 @@ function mapW4FieldsByLayout(fields, layout) {
   return out;
 }
 
+function findW4SignatureFieldsByLayout(layout) {
+  if (!Array.isArray(layout) || !layout.length) return {};
+  const textFields = layout.filter((item) => item.pageIndex === 0 && /TextField/i.test(item.type));
+  if (!textFields.length) return {};
+  const ys = textFields.map((item) => item.y);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const cutoff = minY + (maxY - minY) * 0.35;
+  const bottomFields = textFields.filter((item) => item.y <= cutoff);
+  const wide = bottomFields.filter((item) => item.width >= 140);
+  const candidate = wide
+    .filter((item) => item.height <= 30)
+    .sort((a, b) => b.y - a.y)[0]
+    || wide.sort((a, b) => b.y - a.y)[0];
+  let dateField;
+  if (candidate) {
+    const near = bottomFields.filter((item) => Math.abs(item.y - candidate.y) <= 12 && item.x > candidate.x + candidate.width / 3);
+    dateField = near.sort((a, b) => a.x - b.x)[0];
+  }
+  return {
+    signatureFieldName: candidate ? candidate.name : "",
+    signatureDateFieldName: dateField ? dateField.name : ""
+  };
+}
+
 function findTemplateField(templateFields, patterns, options = {}) {
   const list = Array.isArray(templateFields) ? templateFields : [];
   const normPatterns = (patterns || []).map((p) => normalizeKey(p));
@@ -3729,8 +3754,7 @@ function mapW4Fields(fields, templateFields) {
     set("topmostSubform[0].Page1[0].f1_09[0]", numText(data.other_income));
     set("topmostSubform[0].Page1[0].f1_10[0]", numText(data.deductions));
     set("topmostSubform[0].Page1[0].f1_11[0]", numText(data.extra_withholding));
-    set("topmostSubform[0].Page1[0].f1_13[0]", formatDateUs(data.signature_date || new Date()));
-    out.__signature_field = "topmostSubform[0].Page1[0].f1_12[0]";
+    out.__signature_date = formatDateUs(data.signature_date || new Date());
     return out;
   }
   const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
@@ -3811,6 +3835,16 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   }
   if (typeKey === "w4") {
     const layoutMapped = mapW4FieldsByLayout(payload, layout);
+    const signatureHint = findW4SignatureFieldsByLayout(layout);
+    if (signatureHint.signatureFieldName && !mapped.__signature_field) {
+      mapped.__signature_field = signatureHint.signatureFieldName;
+    }
+    if (mapped.__signature_date) {
+      if (signatureHint.signatureDateFieldName) {
+        mapped[signatureHint.signatureDateFieldName] = mapped.__signature_date;
+      }
+      delete mapped.__signature_date;
+    }
     return Object.assign({}, layoutMapped, mapped);
   }
   return mapped;
@@ -3941,7 +3975,7 @@ async function fillPdfTemplate({
         const y = signatureRect.y + pad;
         const w = Math.max(1, signatureRect.width - pad * 2);
         const h = Math.max(1, signatureRect.height - pad * 2);
-        const scale = Math.min(w / img.width, h / img.height, 1);
+        const scale = Math.min(w / img.width, h / img.height, 2.5);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
         const sigKey = normalizeKey(signatureFieldName || "");
@@ -6363,6 +6397,20 @@ function renderOnboardingPageHtml(token) {
             if (!signaturePayload) {
               formStatusEl.textContent = 'Falta la firma dibujada.';
               return;
+            }
+            if (String(activeFormDocType || '').toLowerCase() === 'i9') {
+              const profileName = (state.profile && state.profile.name) ? String(state.profile.name).trim() : '';
+              const first = String(data.first_name || '').trim();
+              const last = String(data.last_name || '').trim();
+              const apt = String(data.apt || '').trim();
+              const isNumeric = (val) => !!val && /^\d+$/.test(val);
+              if (profileName) {
+                const parts = profileName.split(/\s+/).filter(Boolean);
+                const pFirst = parts[0] || '';
+                const pLast = parts.slice(1).join(' ').trim();
+                if (!first || isNumeric(first) || (apt && first === apt)) data.first_name = pFirst || first;
+                if (!last || isNumeric(last)) data.last_name = pLast || last;
+              }
             }
             if (data.ssn) {
               const digits = String(data.ssn || '').replace(/\D+/g, '');
