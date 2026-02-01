@@ -369,6 +369,98 @@ function normalizeKey(value) {
     .trim();
 }
 
+function formatDateUsSafe(value) {
+  let d = null;
+  if (value instanceof Date) {
+    d = value;
+  } else if (typeof value === "number") {
+    d = new Date(value);
+  } else if (typeof value === "string") {
+    const s = value.trim();
+    const native = new Date(s);
+    if (!Number.isNaN(native.getTime())) {
+      d = native;
+    } else {
+      const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (m) {
+        const mm = Number(m[1]);
+        const dd = Number(m[2]);
+        const yyyy = Number(m[3]);
+        const dt = new Date(yyyy, Math.max(0, mm - 1), dd);
+        if (!Number.isNaN(dt.getTime())) d = dt;
+      }
+    }
+  }
+  if (!d || Number.isNaN(d.getTime())) d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const yyyy = String(d.getFullYear());
+  return `${mm}/${dd}/${yyyy}`;
+}
+
+function isPngBuffer(buf) {
+  return Buffer.isBuffer(buf)
+    && buf.length >= 8
+    && buf[0] === 0x89
+    && buf[1] === 0x50
+    && buf[2] === 0x4e
+    && buf[3] === 0x47
+    && buf[4] === 0x0d
+    && buf[5] === 0x0a
+    && buf[6] === 0x1a
+    && buf[7] === 0x0a;
+}
+
+function trimSignaturePngBuffer(buf, opts) {
+  if (!PNG || !isPngBuffer(buf)) return buf;
+  const pad = Math.max(0, Number(opts?.pad ?? 6) || 6);
+  const alphaCutoff = Math.max(0, Math.min(255, Number(opts?.alphaCutoff ?? 12) || 12));
+  const whiteCutoff = Math.max(0, Math.min(255, Number(opts?.whiteCutoff ?? 245) || 245));
+  try {
+    const png = PNG.sync.read(buf);
+    const { width, height, data } = png;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+
+    const isInk = (r, g, b, a) => {
+      if (a <= alphaCutoff) return false;
+      if (a >= 250 && r >= whiteCutoff && g >= whiteCutoff && b >= whiteCutoff) return false;
+      return true;
+    };
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+        if (isInk(r, g, b, a)) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (maxX < 0 || maxY < 0) return buf;
+
+    minX = Math.max(0, minX - pad);
+    minY = Math.max(0, minY - pad);
+    maxX = Math.min(width - 1, maxX + pad);
+    maxY = Math.min(height - 1, maxY + pad);
+
+    const outW = Math.max(1, maxX - minX + 1);
+    const outH = Math.max(1, maxY - minY + 1);
+
+    const out = new PNG({ width: outW, height: outH });
+    PNG.bitblt(png, out, minX, minY, outW, outH, 0, 0);
+    return PNG.sync.write(out);
+  } catch (e) {
+    return buf;
+  }
+}
+
 function resolveAddress(brand, providedAddress) {
   const bKey = brandKey(brand);
   const brandEntry = roleConfig?.[bKey];
@@ -4125,8 +4217,9 @@ async function fillPdfTemplate({
       let page = isW4Template ? w4Page : (pages[signatureRect?.pageIndex] || pages[0]);
       if (page) {
         const isPng = parsed.mime.includes("png");
-        const sigBuffer = isPng ? trimTransparentPng(parsed.buffer) : parsed.buffer;
-        const img = isPng ? await pdfDoc.embedPng(sigBuffer) : await pdfDoc.embedJpg(sigBuffer);
+        let sigBytes = parsed.buffer;
+        sigBytes = trimSignaturePngBuffer(sigBytes);
+        const img = isPng ? await pdfDoc.embedPng(sigBytes) : await pdfDoc.embedJpg(sigBytes);
         const pad = 2;
         const yOffset = 0;
         const x = targetRect.x + pad;
@@ -4147,12 +4240,10 @@ async function fillPdfTemplate({
         const imgW = img.width * scale;
         const imgH = img.height * scale;
         const verticalBias = isW4Template
-          ? 0.45
+          ? 0.65
           : (isI9EmployeeSig ? 0.5 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
-        const w4SigNudgeY = isW4Template ? 6 : 0;
-        let drawX = isI9EmployeeSig ? x : x + (w - imgW) * 0.5;
+        let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
-        drawY += w4SigNudgeY;
         drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
         drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
         if (debugRects && page?.drawRectangle) {
@@ -4194,13 +4285,17 @@ async function fillPdfTemplate({
       || payload?.[signatureDateFieldName]
       || payload?.signature_date
       || new Date();
-    const dateText = formatDateUs(dateValue);
+    const dateText = formatDateUsSafe(dateValue);
     const dateFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontSize = 10;
     const datePad = 2;
     const dateX = w4DateRect.x + datePad;
-    const dateY = w4DateRect.y + 8;
-    w4Page.drawText(dateText, { x: dateX, y: dateY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
+    const dateY = w4DateRect.y + 10;
+    const pagesNow = pdfDoc.getPages();
+    const datePage = pagesNow[w4DateRect.pageIndex || 0] || pagesNow[0];
+    if (datePage) {
+      datePage.drawText(dateText, { x: dateX, y: dateY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
+    }
     dateDrawn = true;
   }
   if (keepFirstPage) {
