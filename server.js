@@ -3455,6 +3455,10 @@ function mapI9FieldsByLayout(fields, layout) {
       if (countryField && data.auth_country) out[countryField.name] = data.auth_country;
     }
   }
+  if (data.signature_date && flatRemaining.length) {
+    const dateField = flatRemaining.shift();
+    if (dateField) out[dateField.name] = formatDateUs(data.signature_date);
+  }
   return out;
 }
 
@@ -3649,6 +3653,11 @@ function mapW4Fields(fields, templateFields) {
     const fieldName = findTemplateField(templateFields, patterns, { exclude: ["employer", "office"] });
     if (fieldName) out[fieldName] = value;
   });
+  const combinedCityField = findTemplateField(templateFields, ["city or town, state, and zip code", "city town state zip"]);
+  if (combinedCityField && (data.city || data.state || data.zip)) {
+    const combined = [data.city, data.state].filter(Boolean).join(", ") + (data.zip ? " " + data.zip : "");
+    out[combinedCityField] = combined.trim();
+  }
   const status = normalizeChoice(data.filing_status);
   const statusFields = {
     single: ["single or married filing separately", "single"],
@@ -3687,16 +3696,25 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   if (!templateFields.length) return payload;
   const templateNames = templateFields.map((f) => f.name);
   const templateNorms = new Set(templateNames.map((name) => normalizeKey(name)));
-  const hasTemplateMatch = keys.some((key) => templateNames.includes(key) || templateNorms.has(normalizeKey(key)));
-  if (hasTemplateMatch) return payload;
+  const matchCount = keys.reduce((count, key) => {
+    const norm = normalizeKey(key);
+    return count + (templateNames.includes(key) || templateNorms.has(norm) ? 1 : 0);
+  }, 0);
+  const matchThreshold = Math.max(3, Math.ceil(keys.length * 0.3));
+  if (matchCount >= matchThreshold) return payload;
   const typeKey = normalizeKey(docType);
   let mapped = payload;
   if (typeKey === "i9") mapped = mapI9Fields(payload, templateFields);
   if (typeKey === "w4") mapped = mapW4Fields(payload, templateFields);
-  if (Object.keys(mapped || {}).length >= 3) return mapped;
   const layout = await getPdfTemplateLayout(templateUrl);
-  if (typeKey === "i9") return mapI9FieldsByLayout(payload, layout) || mapped;
-  if (typeKey === "w4") return mapW4FieldsByLayout(payload, layout) || mapped;
+  if (typeKey === "i9") {
+    const layoutMapped = mapI9FieldsByLayout(payload, layout);
+    return Object.assign({}, layoutMapped, mapped);
+  }
+  if (typeKey === "w4") {
+    const layoutMapped = mapW4FieldsByLayout(payload, layout);
+    return Object.assign({}, layoutMapped, mapped);
+  }
   return mapped;
 }
 
