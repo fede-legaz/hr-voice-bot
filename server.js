@@ -3808,7 +3808,12 @@ function mapW4Fields(fields, templateFields) {
     set("topmostSubform[0].Page1[0].f1_09[0]", numText(data.other_income));
     set("topmostSubform[0].Page1[0].f1_10[0]", numText(data.deductions));
     set("topmostSubform[0].Page1[0].f1_11[0]", numText(data.extra_withholding));
-    out.__signature_date = formatDateUs(data.signature_date || new Date());
+    const signatureFieldName = "topmostSubform[0].Page1[0].f1_12[0]";
+    const signatureDateFieldName = "topmostSubform[0].Page1[0].f1_13[0]";
+    const signatureDateValue = formatDateUs(data.signature_date || new Date());
+    set(signatureDateFieldName, signatureDateValue);
+    out.__signature_field = signatureFieldName;
+    out.__signature_date_field = signatureDateFieldName;
     return out;
   }
   const firstName = [data.first_name, data.middle_initial].filter(Boolean).join(" ").trim();
@@ -3900,17 +3905,15 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   }
   if (typeKey === "w4") {
     const hasXfa = templateNames.some((name) => String(name || "").startsWith("topmostSubform"));
+    if (hasXfa) return mapped;
     const signatureHint = findW4SignatureFieldsByLayout(layout);
     if (signatureHint.signatureFieldName && !mapped.__signature_field) {
       mapped.__signature_field = signatureHint.signatureFieldName;
     }
-    if (mapped.__signature_date) {
-      if (signatureHint.signatureDateFieldName) {
-        mapped[signatureHint.signatureDateFieldName] = mapped.__signature_date;
-      }
+    if (mapped.__signature_date_field && mapped.__signature_date) {
+      mapped[mapped.__signature_date_field] = mapped.__signature_date;
       delete mapped.__signature_date;
     }
-    if (hasXfa) return mapped;
     const layoutMapped = mapW4FieldsByLayout(payload, layout);
     return Object.assign({}, layoutMapped, mapped);
   }
@@ -3923,6 +3926,7 @@ async function fillPdfTemplate({
   signatureName,
   signatureDataUrl,
   signatureFieldName = "",
+  signatureDateFieldName = "",
   keepFirstPage = false
 }) {
   if (!PDFDocument) throw new Error("pdf_lib_missing");
@@ -3985,6 +3989,49 @@ async function fillPdfTemplate({
   });
   let signaturePlaced = false;
   let signatureRect = null;
+  let signatureDateRect = null;
+  const debugRects = String(process.env.DEBUG_PDF_RECTS || "") === "1";
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const logRectDebug = (label, rect, extra = {}) => {
+    if (!debugRects || !rect) return;
+    console.log("[pdf-debug]", label, {
+      templateUrl,
+      pageIndex: rect.pageIndex,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      ...extra
+    });
+  };
+  const getFieldRect = (field) => {
+    if (!field) return null;
+    try {
+      const widgets = typeof field.getWidgets === "function"
+        ? field.getWidgets()
+        : field.acroField?.getWidgets?.() || [];
+      const widget = widgets && widgets[0];
+      const rect = widget?.getRectangle?.();
+      const page = widget?.getPage?.() || pdfDoc.getPages()[0];
+      if (!rect || !page) return null;
+      let x = rect.x ?? rect.left ?? rect[0];
+      let y = rect.y ?? rect.bottom ?? rect[1];
+      let w = rect.width ?? (rect[2] - rect[0]);
+      let h = rect.height ?? (rect[3] - rect[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+      const pages = pdfDoc.getPages();
+      const pageIndex = pages.indexOf(page);
+      return {
+        pageIndex: pageIndex >= 0 ? pageIndex : 0,
+        x,
+        y,
+        width: w,
+        height: h
+      };
+    } catch (err) {
+      return null;
+    }
+  };
   if (signatureName) {
     const preferredSig = signatureFieldName
       ? exactMap.get(signatureFieldName) || normMap.get(normalizeKey(signatureFieldName))
@@ -3997,71 +4044,112 @@ async function fillPdfTemplate({
         setValue(sigField, signatureName);
       }
       if (signatureDataUrl) {
-        try {
-          const widgets = typeof sigField.getWidgets === "function"
-            ? sigField.getWidgets()
-            : sigField.acroField?.getWidgets?.() || [];
-          const widget = widgets && widgets[0];
-          const rect = widget?.getRectangle?.();
-          const page = widget?.getPage?.() || pdfDoc.getPages()[0];
-          if (rect && page) {
-            let x = rect.x ?? rect.left ?? rect[0];
-            let y = rect.y ?? rect.bottom ?? rect[1];
-            let w = rect.width ?? (rect[2] - rect[0]);
-            let h = rect.height ?? (rect[3] - rect[1]);
-            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h)) {
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.indexOf(page);
-              signatureRect = {
-                pageIndex: pageIndex >= 0 ? pageIndex : 0,
-                x,
-                y,
-                width: w,
-                height: h
-              };
-            }
-          }
-        } catch (err) {
-          signaturePlaced = false;
-        }
+        signatureRect = getFieldRect(sigField);
       }
     }
   }
+  if (signatureDateFieldName) {
+    const dateField = exactMap.get(signatureDateFieldName) || normMap.get(normalizeKey(signatureDateFieldName));
+    signatureDateRect = getFieldRect(dateField);
+  }
   form.flatten();
-  if (signatureDataUrl && signatureRect && !signaturePlaced) {
+  const isW4Template = /fw4\\.pdf/i.test(String(templateUrl || ""));
+  if (signatureDataUrl && (signatureRect || isW4Template) && !signaturePlaced) {
     const parsed = parseDataUrl(signatureDataUrl);
     if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
       const pages = pdfDoc.getPages();
-      const page = pages[signatureRect.pageIndex] || pages[0];
+      let targetRect = signatureRect;
+      let targetDateRect = signatureDateRect;
+      let page = pages[signatureRect?.pageIndex] || pages[0];
+      if (isW4Template) {
+        page = pages[0];
+        const pageWidth = page?.getWidth?.() || 612;
+        const pageHeight = page?.getHeight?.() || 792;
+        const sigX = pageWidth * 0.18;
+        const sigY = pageHeight * 0.19;
+        const sigW = pageWidth * 0.45;
+        const sigH = 22;
+        const dateX = pageWidth * 0.72;
+        const dateY = sigY;
+        const dateW = pageWidth * 0.2;
+        const dateH = sigH;
+        targetRect = { pageIndex: 0, x: sigX, y: sigY, width: sigW, height: sigH };
+        targetDateRect = { pageIndex: 0, x: dateX, y: dateY, width: dateW, height: dateH };
+      }
       if (page) {
         const img = parsed.mime.includes("png")
           ? await pdfDoc.embedPng(parsed.buffer)
           : await pdfDoc.embedJpg(parsed.buffer);
         const pad = 2;
-        const isW4 = /fw4\\.pdf/i.test(String(templateUrl || ""));
-        const yOffset = isW4 ? -10 : 0;
-        const x = signatureRect.x + pad;
-        const y = signatureRect.y + pad + yOffset;
-        const w = Math.max(1, signatureRect.width - pad * 2);
-        const h = Math.max(1, signatureRect.height - pad * 2);
+        const yOffset = isW4Template ? -10 : 0;
+        const x = targetRect.x + pad;
+        const y = targetRect.y + pad + yOffset;
+        const w = Math.max(1, targetRect.width - pad * 2);
+        const h = Math.max(1, targetRect.height - pad * 2);
         const sigKey = normalizeKey(signatureFieldName || "");
         const scaleByH = (h / img.height) * 0.98;
         const scaleByW = (w / img.width) * 0.98;
-        const maxScale = sigKey.includes("signature of employee") ? 12 : 2.5;
-        const scale = sigKey.includes("signature of employee")
-          ? Math.min(Math.max(scaleByH, scaleByW), maxScale)
+        const isI9EmployeeSig = sigKey.includes("signature of employee");
+        const maxScale = isI9EmployeeSig ? 5 : 2.5;
+        const scale = isI9EmployeeSig
+          ? Math.min(scaleByH, scaleByW, maxScale)
           : Math.min(w / img.width, h / img.height, maxScale);
         const imgW = img.width * scale;
         const imgH = img.height * scale;
-        const verticalBias = sigKey.includes("signature of employee")
-          ? 0.65
+        const verticalBias = isI9EmployeeSig
+          ? 0.5
           : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5);
+        let drawX = x;
+        let drawY = y + (h - imgH) * verticalBias;
+        drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
+        drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
+        if (debugRects && page?.drawRectangle) {
+          page.drawRectangle({
+            x: targetRect.x,
+            y: targetRect.y,
+            width: targetRect.width,
+            height: targetRect.height,
+            borderColor: rgb(1, 0, 0),
+            borderWidth: 0.5,
+            color: undefined
+          });
+          if (targetDateRect) {
+            page.drawRectangle({
+              x: targetDateRect.x,
+              y: targetDateRect.y,
+              width: targetDateRect.width,
+              height: targetDateRect.height,
+              borderColor: rgb(0, 0, 1),
+              borderWidth: 0.5,
+              color: undefined
+            });
+          }
+        }
+        logRectDebug("signature", targetRect, { imgW, imgH, drawX, drawY });
+        if (targetDateRect) logRectDebug("date", targetDateRect);
         page.drawImage(img, {
-          x,
-          y: y + (h - imgH) * verticalBias,
+          x: drawX,
+          y: drawY,
           width: imgW,
           height: imgH
         });
+        if (isW4Template && targetDateRect) {
+          const dateValue = payload?.__signature_date
+            || payload?.[signatureDateFieldName]
+            || payload?.signature_date
+            || new Date();
+          const dateText = formatDateUs(dateValue);
+          const dateFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+          const fontSize = 10;
+          const datePad = 2;
+          const dateX = targetDateRect.x + datePad;
+          const dateY = targetDateRect.y + datePad;
+          const dateW = Math.max(1, targetDateRect.width - datePad * 2);
+          const dateH = Math.max(1, targetDateRect.height - datePad * 2);
+          const textHeight = fontSize;
+          const textY = clamp(dateY + (dateH - textHeight) * 0.5, targetDateRect.y + datePad, targetDateRect.y + targetDateRect.height - datePad - textHeight);
+          page.drawText(dateText, { x: dateX, y: textY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
+        }
         signaturePlaced = true;
       }
     }
@@ -7270,13 +7358,16 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     const keepFirstPage = ["i9", "w4"].includes(normalizeKey(docType));
     const mappedFields = await mapPdfFieldsIfNeeded({ docType, fields: rawFields, templateUrl });
     const signatureFieldName = mappedFields?.__signature_field || "";
+    const signatureDateFieldName = mappedFields?.__signature_date_field || "";
     if (mappedFields && mappedFields.__signature_field) delete mappedFields.__signature_field;
+    if (mappedFields && mappedFields.__signature_date_field) delete mappedFields.__signature_date_field;
     const pdfBuffer = await fillPdfTemplate({
       templateUrl,
       fields: mappedFields,
       signatureName,
       signatureDataUrl,
       signatureFieldName,
+      signatureDateFieldName,
       keepFirstPage
     });
     const dataUrl = "data:application/pdf;base64," + pdfBuffer.toString("base64");
