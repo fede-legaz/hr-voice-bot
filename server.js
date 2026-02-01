@@ -3883,6 +3883,7 @@ async function fillPdfTemplate({
     setValue(field, value);
   });
   let signaturePlaced = false;
+  let signatureRect = null;
   if (signatureName) {
     const preferredSig = signatureFieldName
       ? exactMap.get(signatureFieldName) || normMap.get(normalizeKey(signatureFieldName))
@@ -3906,27 +3907,15 @@ async function fillPdfTemplate({
             let w = rect.width ?? (rect[2] - rect[0]);
             let h = rect.height ?? (rect[3] - rect[1]);
             if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(w) && Number.isFinite(h)) {
-              const parsed = parseDataUrl(signatureDataUrl);
-              if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
-                const img = parsed.mime.includes("png")
-                  ? await pdfDoc.embedPng(parsed.buffer)
-                  : await pdfDoc.embedJpg(parsed.buffer);
-                const pad = 2;
-                x += pad;
-                y += pad;
-                w = Math.max(1, w - pad * 2);
-                h = Math.max(1, h - pad * 2);
-                const scale = Math.min(w / img.width, h / img.height, 1);
-                const imgW = img.width * scale;
-                const imgH = img.height * scale;
-                page.drawImage(img, {
-                  x,
-                  y: y + (h - imgH) / 2,
-                  width: imgW,
-                  height: imgH
-                });
-                signaturePlaced = true;
-              }
+              const pages = pdfDoc.getPages();
+              const pageIndex = pages.indexOf(page);
+              signatureRect = {
+                pageIndex: pageIndex >= 0 ? pageIndex : 0,
+                x,
+                y,
+                width: w,
+                height: h
+              };
             }
           }
         } catch (err) {
@@ -3936,6 +3925,33 @@ async function fillPdfTemplate({
     }
   }
   form.flatten();
+  if (signatureDataUrl && signatureRect && !signaturePlaced) {
+    const parsed = parseDataUrl(signatureDataUrl);
+    if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
+      const pages = pdfDoc.getPages();
+      const page = pages[signatureRect.pageIndex] || pages[0];
+      if (page) {
+        const img = parsed.mime.includes("png")
+          ? await pdfDoc.embedPng(parsed.buffer)
+          : await pdfDoc.embedJpg(parsed.buffer);
+        const pad = 2;
+        const x = signatureRect.x + pad;
+        const y = signatureRect.y + pad;
+        const w = Math.max(1, signatureRect.width - pad * 2);
+        const h = Math.max(1, signatureRect.height - pad * 2);
+        const scale = Math.min(w / img.width, h / img.height, 1);
+        const imgW = img.width * scale;
+        const imgH = img.height * scale;
+        page.drawImage(img, {
+          x,
+          y: y + (h - imgH) / 2,
+          width: imgW,
+          height: imgH
+        });
+        signaturePlaced = true;
+      }
+    }
+  }
   if (keepFirstPage) {
     const total = pdfDoc.getPageCount();
     for (let i = total - 1; i >= 1; i -= 1) {
