@@ -4130,16 +4130,21 @@ async function fillPdfTemplate({
         const scaleByW = (w / img.width) * 0.98;
         const isI9EmployeeSig = sigKey.includes("signature of employee");
         const maxScale = isI9EmployeeSig ? 5 : 2.5;
-        const scale = isI9EmployeeSig
+        let scale = isI9EmployeeSig
           ? Math.min(scaleByH, scaleByW, maxScale)
           : Math.min(w / img.width, h / img.height, maxScale);
+        if (isI9EmployeeSig) {
+          scale = Math.min(scale * 1.3, maxScale);
+        }
         const imgW = img.width * scale;
         const imgH = img.height * scale;
         const verticalBias = isW4Template
-          ? 0.0
+          ? 0.45
           : (isI9EmployeeSig ? 0.5 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
-        let drawX = x + (w - imgW) * 0.5;
+        const w4SigNudgeY = isW4Template ? 6 : 0;
+        let drawX = isI9EmployeeSig ? x : x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
+        drawY += w4SigNudgeY;
         drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
         drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
         if (debugRects && page?.drawRectangle) {
@@ -4182,7 +4187,7 @@ async function fillPdfTemplate({
           const fontSize = 10;
           const datePad = 2;
           const dateX = targetDateRect.x + datePad;
-          const dateY = targetDateRect.y + 6;
+          const dateY = targetDateRect.y + 8;
           page.drawText(dateText, { x: dateX, y: dateY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
         }
         signaturePlaced = true;
