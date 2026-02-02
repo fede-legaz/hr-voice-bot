@@ -4391,7 +4391,7 @@ async function fillPdfTemplate({
         const imgH = img.height * scale;
         const verticalBias = isW4Template
           ? 0.65
-          : (isI9EmployeeSig ? 0.5 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
+          : (isI9EmployeeSig ? 0.6 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
         let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
         drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
