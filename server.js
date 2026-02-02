@@ -7319,7 +7319,8 @@ function renderOnboardingPageHtml(token) {
           const latest = match.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
           let mode = doc.mode || '';
           const normalizedDocKey = String(doc.key || '').toLowerCase();
-          if ((!mode || mode === 'upload') && ['i9', 'w4'].includes(normalizedDocKey) && doc.template_url) {
+          if (['i9', 'w4'].includes(normalizedDocKey) && doc.template_url) {
+            // Always use PDF flow for I-9 / W-4 when a template URL exists.
             mode = 'pdf';
           }
           if (mode === 'policy') {
