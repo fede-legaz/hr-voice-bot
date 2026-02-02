@@ -24028,8 +24028,22 @@ async function fetchLastNoAnswerByPhone(phone) {
   const result = await dbQuery(sql, [phone]);
   const row = result?.rows?.[0];
   if (!row) return null;
-  const docTypesRaw = Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []);
-  const docTypes = applyPolicyTemplateToDocTypes(docTypesRaw, row.brand || "");
+  let docTypesRaw = row.doc_types;
+  if (typeof docTypesRaw === "string") {
+    try {
+      docTypesRaw = JSON.parse(docTypesRaw);
+    } catch (err) {
+      docTypesRaw = [];
+    }
+  }
+  if (!Array.isArray(docTypesRaw)) docTypesRaw = docTypesRaw ? [docTypesRaw] : [];
+  let docTypes = [];
+  try {
+    docTypes = applyPolicyTemplateToDocTypes(docTypesRaw, row.brand || "");
+  } catch (err) {
+    console.error("[onboarding] doc_types normalize failed", err.message);
+    docTypes = Array.isArray(docTypesRaw) ? docTypesRaw : [];
+  }
   return {
     callSid: row.call_sid,
     brand: row.brand || DEFAULT_BRAND,
