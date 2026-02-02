@@ -6675,8 +6675,12 @@ function renderOnboardingPageHtml(token) {
         return { label, key, type, options: options || [], extra: extra || {} };
       }
 
+      function normalizeDocKey(value) {
+        return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      }
+
       function getFormFields(docKey) {
-        const key = (docKey || '').toLowerCase();
+        const key = normalizeDocKey(docKey);
         const L = (es, en) => (onboardLang === 'en' ? en : es);
         if (key === 'i9') {
           return [
@@ -6723,7 +6727,7 @@ function renderOnboardingPageHtml(token) {
       }
 
       function getPdfSchema(docKey) {
-        const key = (docKey || '').toLowerCase();
+        const key = normalizeDocKey(docKey);
         const L = (es, en) => (onboardLang === 'en' ? en : es);
         if (key === 'i9') {
           return {
@@ -7038,7 +7042,7 @@ function renderOnboardingPageHtml(token) {
             if (statusInput) statusInput.addEventListener('change', applyConditional);
             if (authInput) authInput.addEventListener('change', applyConditional);
             applyConditional();
-            if ((docType || '').toLowerCase() === 'w4') {
+            if (normalizeDocKey(docType) === 'w4') {
               const childrenInput = formFieldsEl.querySelector('[data-key="dependents_children"]');
               const otherInput = formFieldsEl.querySelector('[data-key="dependents_other"]');
               const creditsInput = formFieldsEl.querySelector('[data-key="other_credits"]');
@@ -7136,7 +7140,7 @@ function renderOnboardingPageHtml(token) {
         formFieldsEl.querySelectorAll('[data-key]').forEach((input) => {
           data[input.dataset.key] = input.value || '';
         });
-        if ((activeFormDocType || '').toLowerCase() === 'w4') {
+        if (normalizeDocKey(activeFormDocType) === 'w4') {
           const toInt = (val) => {
             const num = parseInt(String(val || '').replace(/\\D+/g, ''), 10);
             return Number.isFinite(num) && num > 0 ? num : 0;
@@ -7169,7 +7173,7 @@ function renderOnboardingPageHtml(token) {
               formStatusEl.textContent = t('signatureMissing');
               return;
             }
-            if (String(activeFormDocType || '').toLowerCase() === 'i9') {
+            if (normalizeDocKey(activeFormDocType) === 'i9') {
               const profileName = (state.profile && state.profile.name) ? String(state.profile.name).trim() : '';
               const first = String(data.first_name || '').trim();
               const last = String(data.last_name || '').trim();
@@ -7318,7 +7322,7 @@ function renderOnboardingPageHtml(token) {
           const match = state.docs.filter((d) => d.doc_type === doc.key);
           const latest = match.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
           let mode = doc.mode || '';
-          const normalizedDocKey = String(doc.key || '').toLowerCase();
+          const normalizedDocKey = normalizeDocKey(doc.key);
           if (['i9', 'w4'].includes(normalizedDocKey) && doc.template_url) {
             // Always use PDF flow for I-9 / W-4 when a template URL exists.
             mode = 'pdf';
