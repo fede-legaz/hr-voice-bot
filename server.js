@@ -178,7 +178,7 @@ function applyPolicyTemplateToDocTypes(docTypes, brand) {
     const key = normalizeKey(doc.key || "");
     const mode = String(doc.mode || "").toLowerCase();
     if (mode === "policy" || key === "policy_renuncia") {
-      return { ...doc, template_url: url };
+      return { ...doc, mode: "policy", template_url: url };
     }
     return doc;
   });
@@ -6216,6 +6216,9 @@ function renderOnboardingPageHtml(token) {
       <div class="card grid" id="onboard-policy-card" style="display:none;">
         <div style="font-weight:700;" id="onboard-policy-title"></div>
         <div class="policy" id="onboard-policy-text"></div>
+        <div class="doc-actions" id="onboard-policy-actions" style="justify-content:flex-start;">
+          <a id="onboard-policy-link" class="pill" href="#" target="_blank" rel="noopener" style="display:none;">Ver política</a>
+        </div>
         <div class="sig-pad">
           <div class="label">Firma dibujada</div>
           <canvas id="onboard-policy-sign" class="sig-canvas" height="140"></canvas>
@@ -6285,6 +6288,7 @@ function renderOnboardingPageHtml(token) {
       const docsCardEl = document.getElementById('onboard-docs-card');
       const docsEl = document.getElementById('onboard-docs');
       const policyCardEl = document.getElementById('onboard-policy-card');
+      const policyLinkEl = document.getElementById('onboard-policy-link');
       const ackNameEl = document.getElementById('onboard-ack-name');
       const ackBtnEl = document.getElementById('onboard-ack-btn');
       const ackStatusEl = document.getElementById('onboard-ack-status');
@@ -7057,6 +7061,15 @@ function renderOnboardingPageHtml(token) {
         const docTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
         const policyDoc = docTypes.find((doc) => doc && doc.mode === 'policy');
         policyDocKey = policyDoc?.key || policyDocKey;
+        if (policyLinkEl) {
+          if (policyDoc?.template_url) {
+            policyLinkEl.href = policyDoc.template_url;
+            policyLinkEl.textContent = 'Ver política';
+            policyLinkEl.style.display = 'inline-flex';
+          } else {
+            policyLinkEl.style.display = 'none';
+          }
+        }
         setText('onboard-name', p.name || '');
         setText('onboard-role', [p.brand, p.role].filter(Boolean).join(' • '));
         setText('onboard-phone', p.phone || '');
