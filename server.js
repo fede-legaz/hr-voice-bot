@@ -4293,7 +4293,7 @@ async function fillPdfTemplate({
     const fontSize = 10;
     const datePad = 2;
     const dateX = w4DateRect.x + datePad;
-    const dateY = w4DateRect.y + 12;
+    const dateY = w4DateRect.y + 8;
     const pagesNow = pdfDoc.getPages();
     const datePage = pagesNow[w4DateRect.pageIndex || 0] || pagesNow[0];
     if (datePage) {
