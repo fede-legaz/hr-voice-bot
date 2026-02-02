@@ -59,6 +59,7 @@ const WHATSAPP_TO = process.env.WHATSAPP_TO || "";
 const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
 const TWILIO_SMS_MESSAGING_SERVICE_SID = process.env.TWILIO_SMS_MESSAGING_SERVICE_SID || "";
 const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM || "+18556431913";
+const TWILIO_ONBOARDING_SMS_FROM = process.env.TWILIO_ONBOARDING_SMS_FROM || "+18556431913";
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
@@ -1197,6 +1198,11 @@ function normalizePhone(num) {
     else if (s.length === 11 && s.startsWith("1")) s = "+" + s;
   }
   return s;
+}
+
+function last4Digits(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  return digits.slice(-4);
 }
 
 function normalizeSmsBody(text) {
@@ -6053,6 +6059,12 @@ function renderOnboardingPageHtml(token) {
         display: grid;
         gap: 12px;
       }
+      .pin-card { width: min(420px, 92vw); }
+      .pin-card input {
+        text-align: center;
+        letter-spacing: 0.35em;
+        font-size: 18px;
+      }
       .form-grid { display: grid; gap: 10px; }
       .form-grid.two { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
       .form-actions { display: flex; gap: 10px; justify-content: flex-end; }
@@ -6191,9 +6203,26 @@ function renderOnboardingPageHtml(token) {
         </div>
       </div>
     </div>
+    <div class="form-modal" id="onboard-pin-modal">
+      <div class="form-card pin-card">
+        <div style="font-weight:700;">Ingresá tu clave</div>
+        <div class="sub">Usá los últimos 4 dígitos de tu teléfono.</div>
+        <div class="form-field">
+          <label for="onboard-pin-input">Clave</label>
+          <input id="onboard-pin-input" type="password" inputmode="numeric" maxlength="4" autocomplete="one-time-code" />
+        </div>
+        <div class="form-actions">
+          <button class="secondary" id="onboard-pin-cancel" type="button">Cerrar</button>
+          <button id="onboard-pin-submit" type="button">Ingresar</button>
+          <span class="status" id="onboard-pin-error"></span>
+        </div>
+      </div>
+    </div>
     <script>
       const TOKEN = ${JSON.stringify(token || "")};
       const state = { profile: null, docs: [] };
+      const PIN_STORAGE_KEY = 'onboard_pin_' + TOKEN;
+      let onboardPin = '';
       const subEl = document.getElementById('onboard-sub');
       const summaryEl = document.getElementById('onboard-summary');
       const instructionsEl = document.getElementById('onboard-instructions');
@@ -6216,6 +6245,11 @@ function renderOnboardingPageHtml(token) {
       const formSignCanvas = document.getElementById('onboard-form-sign');
       const formSignClearEl = document.getElementById('onboard-form-sign-clear');
       const formSignStatusEl = document.getElementById('onboard-form-sign-status');
+      const pinModalEl = document.getElementById('onboard-pin-modal');
+      const pinInputEl = document.getElementById('onboard-pin-input');
+      const pinSubmitEl = document.getElementById('onboard-pin-submit');
+      const pinCancelEl = document.getElementById('onboard-pin-cancel');
+      const pinErrorEl = document.getElementById('onboard-pin-error');
       let activeFormDocType = '';
       let activeFormMode = 'form';
       let activeFormTemplateUrl = '';
@@ -6228,6 +6262,52 @@ function renderOnboardingPageHtml(token) {
       function setText(id, value) {
         const el = document.getElementById(id);
         if (el) el.textContent = value || '—';
+      }
+
+      function getStoredPin() {
+        try {
+          return localStorage.getItem(PIN_STORAGE_KEY) || '';
+        } catch (err) {
+          return '';
+        }
+      }
+
+      function setStoredPin(pin) {
+        onboardPin = pin || '';
+        try {
+          if (pin) localStorage.setItem(PIN_STORAGE_KEY, pin);
+        } catch (err) {}
+      }
+
+      function withPin(url) {
+        const pin = onboardPin || getStoredPin();
+        if (!pin) return url;
+        const joiner = url.includes('?') ? '&' : '?';
+        return url + joiner + 'pin=' + encodeURIComponent(pin);
+      }
+
+      function onboardAuthHeaders() {
+        const pin = onboardPin || getStoredPin();
+        return pin ? { 'x-onboard-pin': pin } : {};
+      }
+
+      function onboardFetch(url, options) {
+        const opts = options || {};
+        const headers = Object.assign({}, opts.headers || {}, onboardAuthHeaders());
+        return fetch(url, Object.assign({}, opts, { headers }));
+      }
+
+      function openPinModal(message) {
+        if (pinErrorEl) pinErrorEl.textContent = message || '';
+        if (pinInputEl) {
+          pinInputEl.value = '';
+          pinInputEl.focus();
+        }
+        if (pinModalEl) pinModalEl.style.display = 'flex';
+      }
+
+      function closePinModal() {
+        if (pinModalEl) pinModalEl.style.display = 'none';
       }
 
       function initSignaturePad(canvas, clearBtn, statusEl) {
@@ -6483,9 +6563,14 @@ function renderOnboardingPageHtml(token) {
       }
 
       async function fetchPdfTemplateFields(docType) {
-        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/template-fields?doc_type=' + encodeURIComponent(docType));
+        const resp = await onboardFetch(withPin('/onboard/' + encodeURIComponent(TOKEN) + '/template-fields?doc_type=' + encodeURIComponent(docType)));
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || data.error || 'template_fields_failed');
+        if (!resp.ok) {
+          if (data.error === 'pin_required' || data.error === 'pin_invalid') {
+            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+          }
+          throw new Error(data.detail || data.error || 'template_fields_failed');
+        }
         return Array.isArray(data.fields) ? data.fields : [];
       }
 
@@ -6850,7 +6935,7 @@ function renderOnboardingPageHtml(token) {
               data.signature_date = yyyy + '-' + mm + '-' + dd;
             }
             delete data.__signature_name;
-            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/pdf', {
+            const resp = await onboardFetch('/onboard/' + encodeURIComponent(TOKEN) + '/pdf', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -6861,7 +6946,12 @@ function renderOnboardingPageHtml(token) {
               })
             });
             const payload = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(payload.detail || payload.error || 'pdf_failed');
+            if (!resp.ok) {
+              if (payload.error === 'pin_required' || payload.error === 'pin_invalid') {
+                openPinModal(payload.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+              }
+              throw new Error(payload.detail || payload.error || 'pdf_failed');
+            }
             state.docs = payload.docs || [];
           } else {
             if (!data.signature) {
@@ -6873,13 +6963,18 @@ function renderOnboardingPageHtml(token) {
               return;
             }
             data.signature_data_url = signaturePayload;
-            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/form', {
+            const resp = await onboardFetch('/onboard/' + encodeURIComponent(TOKEN) + '/form', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ doc_type: activeFormDocType, doc_data: data })
             });
             const payload = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(payload.detail || payload.error || 'form_failed');
+            if (!resp.ok) {
+              if (payload.error === 'pin_required' || payload.error === 'pin_invalid') {
+                openPinModal(payload.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+              }
+              throw new Error(payload.detail || payload.error || 'form_failed');
+            }
             state.docs = payload.docs || [];
           }
           renderDocs();
@@ -7035,21 +7130,30 @@ function renderOnboardingPageHtml(token) {
       }
 
       async function uploadDoc(docType, fileName, dataUrl) {
-        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/upload', {
+        const resp = await onboardFetch('/onboard/' + encodeURIComponent(TOKEN) + '/upload', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ doc_type: docType, file_name: fileName, data_url: dataUrl })
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || data.error || 'upload_failed');
+        if (!resp.ok) {
+          if (data.error === 'pin_required' || data.error === 'pin_invalid') {
+            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+          }
+          throw new Error(data.detail || data.error || 'upload_failed');
+        }
         state.docs = data.docs || [];
         renderDocs();
       }
 
       async function loadData() {
-        const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/data');
+        const resp = await onboardFetch(withPin('/onboard/' + encodeURIComponent(TOKEN) + '/data'));
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
+          if (data.error === 'pin_required' || data.error === 'pin_invalid') {
+            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+            return;
+          }
           subEl.textContent = 'No pudimos encontrar tu perfil.';
           return;
         }
@@ -7069,7 +7173,7 @@ function renderOnboardingPageHtml(token) {
               ackBtnEl.disabled = false;
               return;
             }
-            const resp = await fetch('/onboard/' + encodeURIComponent(TOKEN) + '/ack', {
+            const resp = await onboardFetch('/onboard/' + encodeURIComponent(TOKEN) + '/ack', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -7079,7 +7183,12 @@ function renderOnboardingPageHtml(token) {
               })
             });
             const data = await resp.json().catch(() => ({}));
-            if (!resp.ok) throw new Error(data.detail || data.error || 'ack_failed');
+            if (!resp.ok) {
+              if (data.error === 'pin_required' || data.error === 'pin_invalid') {
+                openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+              }
+              throw new Error(data.detail || data.error || 'ack_failed');
+            }
             ackStatusEl.textContent = 'Política aceptada.';
             ackBtnEl.disabled = true;
             ackNameEl.disabled = true;
@@ -7100,6 +7209,30 @@ function renderOnboardingPageHtml(token) {
       if (formModalEl) {
         formModalEl.addEventListener('click', (event) => {
           if (event.target === formModalEl) closeFormModal();
+        });
+      }
+
+      if (pinCancelEl) pinCancelEl.onclick = closePinModal;
+      if (pinModalEl) {
+        pinModalEl.addEventListener('click', (event) => {
+          if (event.target === pinModalEl) closePinModal();
+        });
+      }
+      if (pinSubmitEl) {
+        pinSubmitEl.onclick = async () => {
+          const raw = (pinInputEl?.value || '').replace(/\D+/g, '').slice(-4);
+          if (!raw || raw.length < 4) {
+            if (pinErrorEl) pinErrorEl.textContent = 'Ingresá los últimos 4 dígitos.';
+            return;
+          }
+          setStoredPin(raw);
+          closePinModal();
+          await loadData();
+        };
+      }
+      if (pinInputEl) {
+        pinInputEl.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter' && pinSubmitEl) pinSubmitEl.click();
         });
       }
 
@@ -7281,6 +7414,30 @@ app.get("/admin/onboarding/:id", requirePermission("onboarding_manage"), async (
   } catch (err) {
     console.error("[admin/onboarding] fetch failed", err);
     return res.status(400).json({ error: "onboarding_fetch_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/onboarding/:id/send-sms", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const id = (req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    let profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    if (!profile.public_token) {
+      await updateOnboardingProfile(id, { public_token: randomToken() });
+      profile = await fetchOnboardingProfile(id);
+    }
+    if (!profile?.phone) return res.status(400).json({ error: "missing_phone" });
+    const pin = last4Digits(profile.phone);
+    if (!pin || pin.length < 4) return res.status(400).json({ error: "missing_pin" });
+    const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
+    if (!url) return res.status(400).json({ error: "missing_link" });
+    const message = `Yes Restaurants: tu link de onboarding: ${url} Clave: ${pin}`;
+    await sendOnboardingSms(profile.phone, message);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("[admin/onboarding] sms failed", err);
+    return res.status(400).json({ error: "onboarding_sms_failed", detail: err.message });
   }
 });
 
@@ -7477,6 +7634,22 @@ app.delete("/admin/onboarding/:id/doc/:docId", requirePermission("onboarding_man
   }
 });
 
+function getOnboardPinFromRequest(req) {
+  const pin = (req.query?.pin || req.headers["x-onboard-pin"] || req.body?.pin || "").toString().trim();
+  return pin;
+}
+
+function requireOnboardPin(req, profile) {
+  const expected = last4Digits(profile?.phone || "");
+  if (!expected || expected.length < 4) {
+    return { ok: false, error: "pin_unavailable" };
+  }
+  const pin = getOnboardPinFromRequest(req);
+  if (!pin) return { ok: false, error: "pin_required" };
+  if (pin !== expected) return { ok: false, error: "pin_invalid" };
+  return { ok: true, pin };
+}
+
 app.get("/onboard/:token", async (req, res) => {
   const token = (req.params?.token || "").trim();
   if (!token) return res.status(404).send("Not found");
@@ -7491,6 +7664,10 @@ app.get("/onboard/:token/data", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const docs = await fetchOnboardingDocs(profile.id);
     return res.json({ ok: true, profile, docs });
   } catch (err) {
@@ -7505,6 +7682,10 @@ app.post("/onboard/:token/upload", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const body = req.body || {};
     const docType = String(body.doc_type || body.docType || "").trim();
     const dataUrl = String(body.data_url || body.dataUrl || "").trim();
@@ -7546,6 +7727,10 @@ app.post("/onboard/:token/form", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const docType = (req.body?.doc_type || req.body?.docType || "").toString().trim();
     const docData = req.body?.doc_data || req.body?.docData || null;
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
@@ -7580,6 +7765,10 @@ app.get("/onboard/:token/template-fields", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const docType = (req.query?.doc_type || req.query?.docType || "").toString().trim();
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
     const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
@@ -7601,6 +7790,10 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const docType = (req.body?.doc_type || req.body?.docType || "").toString().trim();
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
     const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
@@ -7663,6 +7856,10 @@ app.post("/onboard/:token/ack", async (req, res) => {
     if (!token) return res.status(404).json({ error: "not_found" });
     const profile = await fetchOnboardingProfileByToken(token);
     if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
     const name = String(req.body?.name || "").trim();
     const signatureDataUrl = (req.body?.signature_data_url || req.body?.signatureDataUrl || "").toString();
     const policyKey = String(req.body?.policy_key || "").trim()
@@ -12285,6 +12482,8 @@ app.get("/admin/ui", (req, res) => {
           <input type="text" id="onboarding-link" readonly />
           <button class="secondary btn-compact" id="onboarding-copy" type="button">Copiar</button>
           <button class="secondary btn-compact" id="onboarding-open" type="button">Abrir</button>
+          <button class="secondary btn-compact" id="onboarding-sms" type="button">Enviar SMS</button>
+          <span class="small" id="onboarding-link-status"></span>
         </div>
         <div class="small">Compartí este link para que el empleado cargue sus papeles.</div>
       </div>
@@ -12654,10 +12853,12 @@ app.get("/admin/ui", (req, res) => {
     const onboardingSummaryEl = document.getElementById('onboarding-summary');
     const onboardingNameEl = document.getElementById('onboarding-name');
     const onboardingRoleEl = document.getElementById('onboarding-role');
-    const onboardingPhoneEl = document.getElementById('onboarding-phone');
-    const onboardingLinkEl = document.getElementById('onboarding-link');
-    const onboardingCopyEl = document.getElementById('onboarding-copy');
-    const onboardingOpenEl = document.getElementById('onboarding-open');
+      const onboardingPhoneEl = document.getElementById('onboarding-phone');
+      const onboardingLinkEl = document.getElementById('onboarding-link');
+      const onboardingCopyEl = document.getElementById('onboarding-copy');
+      const onboardingOpenEl = document.getElementById('onboarding-open');
+      const onboardingSmsEl = document.getElementById('onboarding-sms');
+      const onboardingLinkStatusEl = document.getElementById('onboarding-link-status');
     const onboardingDocListEl = document.getElementById('onboarding-doc-list');
     const onboardingDocFileEl = document.getElementById('onboarding-doc-file');
     const onboardingDocStatusEl = document.getElementById('onboarding-doc-status');
@@ -20537,6 +20738,8 @@ app.get("/admin/ui", (req, res) => {
           if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
           if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
           if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
+          if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
+          if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
           if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
           if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
           if (onboardingStartDateEl) {
@@ -20569,6 +20772,8 @@ app.get("/admin/ui", (req, res) => {
         if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
         if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
         if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
+        if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
+        if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
         if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
         if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
         if (onboardingStartDateEl) {
@@ -21253,6 +21458,26 @@ app.get("/admin/ui", (req, res) => {
       onboardingOpenEl.onclick = () => {
         const url = (onboardingLinkEl?.value || '').trim();
         if (url) window.open(url, '_blank', 'noopener');
+      };
+    }
+    if (onboardingSmsEl) {
+      onboardingSmsEl.onclick = async () => {
+        try {
+          if (!onboardingProfile?.id) return;
+          if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'Enviando SMS...';
+          onboardingSmsEl.disabled = true;
+          const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/send-sms', {
+            method: 'POST',
+            headers: portalAuthHeaders()
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.detail || data.error || 'sms_failed');
+          if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'SMS enviado.';
+        } catch (err) {
+          if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'Error: ' + err.message;
+        } finally {
+          if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
+        }
       };
     }
     if (onboardingDocFileEl) {
@@ -24394,6 +24619,40 @@ async function sendSms(to, body) {
   }
   const data = await resp.json();
   console.log("[sms] sent", { sid: data.sid, to: toNorm });
+}
+
+async function sendOnboardingSms(to, body) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+    throw new Error("missing sms credentials");
+  }
+  const toNorm = normalizePhone(to);
+  if (!toNorm) {
+    throw new Error(`invalid to for sms to=${to}`);
+  }
+  if (isSmsOptedOut(toNorm)) {
+    throw new Error("sms_opted_out");
+  }
+  const fromNorm = normalizePhone(TWILIO_ONBOARDING_SMS_FROM || TWILIO_SMS_FROM);
+  if (!fromNorm) {
+    throw new Error("missing onboarding sms from");
+  }
+  const params = new URLSearchParams();
+  params.append("To", toNorm);
+  params.append("From", fromNorm);
+  params.append("Body", body);
+  const resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`, {
+    method: "POST",
+    headers: {
+      Authorization: `Basic ${base64Auth(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)}`
+    },
+    body: params
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`sms send failed ${resp.status} ${text}`);
+  }
+  const data = await resp.json();
+  console.log("[sms] sent", { sid: data.sid, to: toNorm, from: fromNorm });
 }
 
 async function hangupCall(call) {
