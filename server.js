@@ -2951,6 +2951,8 @@ async function initDb() {
         start_date DATE,
         admin_notes TEXT,
         status TEXT,
+        last_sms_phone TEXT,
+        last_sms_sent_at TIMESTAMPTZ,
         policy_ack BOOLEAN NOT NULL DEFAULT FALSE,
         policy_ack_name TEXT,
         policy_ack_at TIMESTAMPTZ,
@@ -2963,6 +2965,8 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_unit TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS admin_notes TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_phone TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_sent_at TIMESTAMPTZ;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_token ON onboarding_profiles (public_token);`);
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS onboarding_docs (
@@ -7427,14 +7431,26 @@ app.post("/admin/onboarding/:id/send-sms", requirePermission("onboarding_manage"
       await updateOnboardingProfile(id, { public_token: randomToken() });
       profile = await fetchOnboardingProfile(id);
     }
-    if (!profile?.phone) return res.status(400).json({ error: "missing_phone" });
-    const pin = last4Digits(profile.phone);
+    const requestedPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
+    const savePhone = !!(req.body?.save_phone || req.body?.savePhone);
+    const phoneToUse = requestedPhone || profile.phone || "";
+    if (!phoneToUse) return res.status(400).json({ error: "missing_phone" });
+    const normalized = normalizePhone(phoneToUse) || phoneToUse;
+    const pin = last4Digits(normalized);
     if (!pin || pin.length < 4) return res.status(400).json({ error: "missing_pin" });
     const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
     if (!url) return res.status(400).json({ error: "missing_link" });
     const message = `Yes Restaurants: tu link de onboarding: ${url} Clave: ${pin}`;
-    await sendOnboardingSms(profile.phone, message);
-    return res.json({ ok: true });
+    await sendOnboardingSms(normalized, message);
+    const patch = {
+      last_sms_phone: normalized,
+      last_sms_sent_at: new Date().toISOString()
+    };
+    if (savePhone && requestedPhone) {
+      patch.phone = normalized;
+    }
+    profile = await updateOnboardingProfile(id, patch);
+    return res.json({ ok: true, profile });
   } catch (err) {
     console.error("[admin/onboarding] sms failed", err);
     return res.status(400).json({ error: "onboarding_sms_failed", detail: err.message });
@@ -7641,12 +7657,13 @@ function getOnboardPinFromRequest(req) {
 
 function requireOnboardPin(req, profile) {
   const expected = last4Digits(profile?.phone || "");
-  if (!expected || expected.length < 4) {
+  const alt = last4Digits(profile?.last_sms_phone || "");
+  if ((!expected || expected.length < 4) && (!alt || alt.length < 4)) {
     return { ok: false, error: "pin_unavailable" };
   }
   const pin = getOnboardPinFromRequest(req);
   if (!pin) return { ok: false, error: "pin_required" };
-  if (pin !== expected) return { ok: false, error: "pin_invalid" };
+  if (pin !== expected && pin !== alt) return { ok: false, error: "pin_invalid" };
   return { ok: true, pin };
 }
 
@@ -10058,6 +10075,22 @@ app.get("/admin/ui", (req, res) => {
       border-radius: 14px;
       border: 1px solid var(--border);
       background: #fbfaf7;
+    }
+    .onboarding-summary input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      font-family: inherit;
+      margin-top: 6px;
+    }
+    .onboarding-summary label.small {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
     }
     .onboarding-link-row {
       display: flex;
@@ -12473,7 +12506,8 @@ app.get("/admin/ui", (req, res) => {
         </div>
         <div>
           <div class="small">Teléfono</div>
-          <div id="onboarding-phone"></div>
+          <input type="text" id="onboarding-phone-input" placeholder="+1..." />
+          <label class="small"><input type="checkbox" id="onboarding-phone-save" /> Guardar este número</label>
         </div>
       </div>
       <div class="row">
@@ -12853,12 +12887,13 @@ app.get("/admin/ui", (req, res) => {
     const onboardingSummaryEl = document.getElementById('onboarding-summary');
     const onboardingNameEl = document.getElementById('onboarding-name');
     const onboardingRoleEl = document.getElementById('onboarding-role');
-      const onboardingPhoneEl = document.getElementById('onboarding-phone');
-      const onboardingLinkEl = document.getElementById('onboarding-link');
-      const onboardingCopyEl = document.getElementById('onboarding-copy');
-      const onboardingOpenEl = document.getElementById('onboarding-open');
-      const onboardingSmsEl = document.getElementById('onboarding-sms');
-      const onboardingLinkStatusEl = document.getElementById('onboarding-link-status');
+    const onboardingPhoneInputEl = document.getElementById('onboarding-phone-input');
+    const onboardingPhoneSaveEl = document.getElementById('onboarding-phone-save');
+    const onboardingLinkEl = document.getElementById('onboarding-link');
+    const onboardingCopyEl = document.getElementById('onboarding-copy');
+    const onboardingOpenEl = document.getElementById('onboarding-open');
+    const onboardingSmsEl = document.getElementById('onboarding-sms');
+    const onboardingLinkStatusEl = document.getElementById('onboarding-link-status');
     const onboardingDocListEl = document.getElementById('onboarding-doc-list');
     const onboardingDocFileEl = document.getElementById('onboarding-doc-file');
     const onboardingDocStatusEl = document.getElementById('onboarding-doc-status');
@@ -20736,10 +20771,11 @@ app.get("/admin/ui", (req, res) => {
           onboardingDocs = data.docs || [];
           if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
           if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
-          if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
+          if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
+          if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
           if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
-          if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
+          if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
           if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
           if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
           if (onboardingStartDateEl) {
@@ -20770,10 +20806,11 @@ app.get("/admin/ui", (req, res) => {
         onboardingDocs = data.docs || [];
         if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
         if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
-        if (onboardingPhoneEl) onboardingPhoneEl.textContent = onboardingProfile?.phone || '';
+        if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
+        if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
         if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
         if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
-        if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
+        if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
         if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
         if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
         if (onboardingStartDateEl) {
@@ -21460,23 +21497,32 @@ app.get("/admin/ui", (req, res) => {
         if (url) window.open(url, '_blank', 'noopener');
       };
     }
+    if (onboardingPhoneInputEl) {
+      onboardingPhoneInputEl.addEventListener('input', () => {
+        if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl.value || '').trim());
+      });
+    }
     if (onboardingSmsEl) {
       onboardingSmsEl.onclick = async () => {
         try {
           if (!onboardingProfile?.id) return;
+          const phone = (onboardingPhoneInputEl?.value || '').trim();
+          if (!phone) throw new Error('missing_phone');
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'Enviando SMS...';
           onboardingSmsEl.disabled = true;
           const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/send-sms', {
             method: 'POST',
-            headers: portalAuthHeaders()
+            headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+            body: JSON.stringify({ phone, save_phone: onboardingPhoneSaveEl?.checked })
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok) throw new Error(data.detail || data.error || 'sms_failed');
+          if (data.profile) onboardingProfile = data.profile;
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'SMS enviado.';
         } catch (err) {
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'Error: ' + err.message;
         } finally {
-          if (onboardingSmsEl) onboardingSmsEl.disabled = !(onboardingProfile?.phone);
+          if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
         }
       };
     }
@@ -24046,7 +24092,8 @@ async function fetchOnboardingProfile(profileId) {
   const result = await dbQuery(
     `SELECT id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
             policy_title, policy_text, doc_types, pay_rate, pay_unit, start_date, admin_notes,
-            status, policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
+            status, last_sms_phone, last_sms_sent_at,
+            policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
      FROM onboarding_profiles WHERE id = $1 LIMIT 1`,
     [profileId]
   );
@@ -24073,6 +24120,8 @@ async function fetchOnboardingProfile(profileId) {
     start_date: row.start_date ? new Date(row.start_date).toISOString() : "",
     admin_notes: row.admin_notes || "",
     status: row.status || "",
+    last_sms_phone: row.last_sms_phone || "",
+    last_sms_sent_at: row.last_sms_sent_at ? new Date(row.last_sms_sent_at).toISOString() : "",
     policy_ack: !!row.policy_ack,
     policy_ack_name: row.policy_ack_name || "",
     policy_ack_at: row.policy_ack_at ? new Date(row.policy_ack_at).toISOString() : "",
@@ -24138,16 +24187,18 @@ async function createOnboardingProfile(payload = {}) {
     start_date: payload.start_date || payload.startDate || "",
     admin_notes: payload.admin_notes || payload.adminNotes || "",
     status: payload.status || "pending",
+    last_sms_phone: payload.last_sms_phone || payload.lastSmsPhone || "",
+    last_sms_sent_at: payload.last_sms_sent_at || payload.lastSmsSentAt || "",
     created_at: nowIso,
     updated_at: nowIso
   };
   await dbQuery(
     `INSERT INTO onboarding_profiles (
         id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
-        policy_title, policy_text, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, created_at, updated_at
+        policy_title, policy_text, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
      ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22
+        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
      )`,
     [
       entry.id,
@@ -24170,6 +24221,8 @@ async function createOnboardingProfile(payload = {}) {
       entry.start_date || null,
       entry.admin_notes,
       entry.status,
+      entry.last_sms_phone || null,
+      entry.last_sms_sent_at || null,
       entry.created_at,
       entry.updated_at
     ]
@@ -24209,7 +24262,9 @@ async function updateOnboardingProfile(profileId, patch = {}) {
     admin_notes: "admin_notes",
     status: "status",
     cv_id: "cv_id",
-    call_sid: "call_sid"
+    call_sid: "call_sid",
+    last_sms_phone: "last_sms_phone",
+    last_sms_sent_at: "last_sms_sent_at"
   };
   const sets = [];
   const values = [profileId];
