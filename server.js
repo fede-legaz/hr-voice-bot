@@ -4391,9 +4391,10 @@ async function fillPdfTemplate({
         const imgH = img.height * scale;
         const verticalBias = isW4Template
           ? 0.65
-          : (isI9EmployeeSig ? 0.78 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
+          : (isI9EmployeeSig ? 0.9 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
         let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
+        if (isI9EmployeeSig) drawY += 4;
         drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
         drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
         if (debugRects && page?.drawRectangle) {
