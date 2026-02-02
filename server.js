@@ -6453,7 +6453,7 @@ function renderOnboardingPageHtml(token) {
                 info: 'If you want tax withheld for other income you expect this year that won’t have withholding, enter the amount of other income here. This may include interest, dividends, and retirement income.'
               }),
               formField('Deductions (4b)', 'deductions', 'number', [], {
-                info: 'Use the Deductions Worksheet on page 4 to determine the amount of deductions you may claim, which will reduce your withholding. If you skip this line, your withholding will be based on the standard deduction.'
+                info: 'Use the Deductions Worksheet on page 4 to determine the amount of deductions you may claim, which will reduce your withholding. If you skip this line, your withholding will be based on the standard deduction. (Si no completas este campo, se usa la deduccion estandar.)'
               }),
               formField('Extra withholding (4c)', 'extra_withholding', 'number', [], {
                 info: 'Enter any additional tax you want withheld each pay period.'
