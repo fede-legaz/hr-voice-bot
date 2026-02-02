@@ -24173,6 +24173,8 @@ async function fetchOnboardingProfile(profileId) {
   );
   const row = result?.rows?.[0];
   if (!row) return null;
+  const docTypesRaw = Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []);
+  const docTypes = applyPolicyTemplateToDocTypes(docTypesRaw, row.brand || "");
   return {
     id: row.id,
     public_token: row.public_token || "",
