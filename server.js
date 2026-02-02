@@ -141,9 +141,14 @@ const ROLE_NOTES = {
 const ONBOARDING_CONFIG_KEY = "onboarding_config";
 const DEFAULT_ONBOARDING_CONFIG = {
   dress_code: "Vestimenta prolija y cómoda. Remera negra, pantalón oscuro y calzado cerrado.",
+  dress_code_en: "Neat, comfortable attire. Black shirt, dark pants, closed-toe shoes.",
   instructions: "Llegá 10 minutos antes. Traé documento con foto y confirmá tu disponibilidad con el manager.",
+  instructions_en: "Arrive 10 minutes early. Bring a photo ID and confirm availability with the manager.",
   policy_title: "Política de renuncia",
+  policy_title_en: "Resignation policy",
   policy_text: "Confirmo que leí y entiendo la política de renuncia y los lineamientos internos.",
+  policy_text_en: "I confirm I have read and understand the resignation policy and internal guidelines.",
+  role_notes_en: "",
   doc_types: [
     { key: "id", label: "ID / Licencia", mode: "upload", template_url: "" },
     { key: "i9", label: "I-9", mode: "form", template_url: "" },
@@ -2972,10 +2977,15 @@ async function initDb() {
         brand TEXT,
         role TEXT,
         dress_code TEXT,
+        dress_code_en TEXT,
         instructions TEXT,
+        instructions_en TEXT,
         role_notes TEXT,
+        role_notes_en TEXT,
         policy_title TEXT,
+        policy_title_en TEXT,
         policy_text TEXT,
+        policy_text_en TEXT,
         doc_types JSONB,
         pay_rate TEXT,
         pay_unit TEXT,
@@ -2992,6 +3002,11 @@ async function initDb() {
       );
     `);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS public_token TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS dress_code_en TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS instructions_en TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS role_notes_en TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS policy_title_en TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS policy_text_en TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_rate TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_unit TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS start_date DATE;`);
@@ -6056,6 +6071,7 @@ function renderOnboardingPageHtml(token) {
         padding: 24px;
       }
       .shell { max-width: 920px; margin: 0 auto; display: grid; gap: 16px; }
+      .head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
       .card {
         background: var(--card);
         border: 1px solid var(--border);
@@ -6072,6 +6088,9 @@ function renderOnboardingPageHtml(token) {
         display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
         background: rgba(27, 122, 140, 0.12); color: var(--primary-dark); font-weight: 700; font-size: 12px;
       }
+      .lang-toggle { display: inline-flex; gap: 6px; align-items: center; }
+      .lang-toggle .pill { cursor: pointer; border: 1px solid var(--border); background: #f3eee5; }
+      .lang-toggle .pill.active { background: var(--primary); color: #fff; border-color: var(--primary); }
       .doc-row {
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -6178,101 +6197,115 @@ function renderOnboardingPageHtml(token) {
   <body>
     <div class="shell">
       <div class="card">
-        <h1>Onboarding de ingreso</h1>
-        <div class="sub" id="onboard-sub">Cargando información…</div>
+        <div class="head-row">
+          <div>
+            <h1 id="onboard-title" data-i18n="title">Onboarding de ingreso</h1>
+            <div class="sub" id="onboard-sub" data-i18n="loading">Cargando información…</div>
+          </div>
+          <div class="lang-toggle" id="onboard-lang-toggle">
+            <button type="button" class="pill" data-lang-btn="es">ES</button>
+            <button type="button" class="pill" data-lang-btn="en">EN</button>
+          </div>
+        </div>
       </div>
       <div class="card grid two" id="onboard-summary" style="display:none;">
         <div>
-          <div class="label">Candidato</div>
+          <div class="label" id="onboard-label-candidate" data-i18n="labelCandidate">Candidato</div>
           <div id="onboard-name" style="font-weight:700;"></div>
         </div>
         <div>
-          <div class="label">Local / puesto</div>
+          <div class="label" id="onboard-label-role" data-i18n="labelRole">Local / puesto</div>
           <div id="onboard-role"></div>
         </div>
         <div>
-          <div class="label">Teléfono</div>
+          <div class="label" id="onboard-label-phone" data-i18n="labelPhone">Teléfono</div>
           <div id="onboard-phone"></div>
         </div>
       </div>
       <div class="card grid" id="onboard-instructions" style="display:none;">
         <div>
-          <div class="label">Dress code</div>
+          <div class="label" id="onboard-label-dress" data-i18n="labelDress">Dress code</div>
           <div id="onboard-dress"></div>
         </div>
         <div>
-          <div class="label">Instrucciones</div>
+          <div class="label" id="onboard-label-instructions" data-i18n="labelInstructions">Instrucciones</div>
           <div id="onboard-instructions-text"></div>
         </div>
         <div>
-          <div class="label">Notas del rol</div>
+          <div class="label" id="onboard-label-notes" data-i18n="labelRoleNotes">Notas del rol</div>
           <div id="onboard-role-notes"></div>
         </div>
       </div>
       <div class="card grid" id="onboard-docs-card" style="display:none;">
-        <div style="font-weight:700;">Documentos requeridos</div>
+        <div style="font-weight:700;" id="onboard-docs-title" data-i18n="docsRequired">Documentos requeridos</div>
         <div class="grid" id="onboard-docs"></div>
       </div>
       <div class="card grid" id="onboard-policy-card" style="display:none;">
         <div style="font-weight:700;" id="onboard-policy-title"></div>
         <div class="policy" id="onboard-policy-text"></div>
         <div class="doc-actions" id="onboard-policy-actions" style="justify-content:flex-start;">
-          <a id="onboard-policy-link" class="pill" href="#" target="_blank" rel="noopener" style="display:none;">Ver política</a>
+          <a id="onboard-policy-link" class="pill" href="#" target="_blank" rel="noopener" style="display:none;" data-i18n="viewPolicy">Ver política</a>
         </div>
         <div class="sig-pad">
-          <div class="label">Firma dibujada</div>
+          <div class="label" data-i18n="labelSignature">Firma dibujada</div>
           <canvas id="onboard-policy-sign" class="sig-canvas" height="140"></canvas>
           <div class="sig-actions">
-            <button class="secondary" id="onboard-policy-sign-clear" type="button">Limpiar firma</button>
+            <button class="secondary" id="onboard-policy-sign-clear" type="button" data-i18n="clearSignature">Limpiar firma</button>
             <span class="status" id="onboard-policy-sign-status"></span>
           </div>
         </div>
         <div class="grid two" style="align-items:center;">
           <div>
-            <div class="label">Nombre completo</div>
-            <input type="text" id="onboard-ack-name" placeholder="Tu nombre y apellido" style="width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--border);" />
+            <div class="label" data-i18n="labelFullName">Nombre completo</div>
+            <input type="text" id="onboard-ack-name" data-i18n-placeholder="placeholderFullName" placeholder="Tu nombre y apellido" style="width:100%; padding:8px 10px; border-radius:10px; border:1px solid var(--border);" />
           </div>
           <div class="doc-actions" style="justify-content:flex-start;">
-            <button id="onboard-ack-btn" type="button">Aceptar política</button>
+            <button id="onboard-ack-btn" type="button" data-i18n="acceptPolicy">Aceptar política</button>
             <span class="status" id="onboard-ack-status"></span>
           </div>
         </div>
       </div>
-      <div class="card footer" id="onboard-footer">Si necesitás ayuda, respondé este mensaje o contactá a RRHH.</div>
+      <div class="card footer" id="onboard-footer" data-i18n="footerHelp">Si necesitás ayuda, respondé este mensaje o contactá a RRHH.</div>
     </div>
     <div class="form-modal" id="onboard-form-modal">
       <div class="form-card">
         <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-          <div style="font-weight:700;" id="onboard-form-title">Formulario</div>
-          <button class="secondary" id="onboard-form-close" type="button">Cerrar</button>
+          <div style="font-weight:700;" id="onboard-form-title" data-i18n="formTitle">Formulario</div>
+          <button class="secondary" id="onboard-form-close" type="button" data-i18n="close">Cerrar</button>
         </div>
         <div class="form-grid" id="onboard-form-fields"></div>
         <div class="sig-pad">
-          <div class="label">Firma dibujada</div>
+          <div class="label" data-i18n="labelSignature">Firma dibujada</div>
           <canvas id="onboard-form-sign" class="sig-canvas" height="140"></canvas>
           <div class="sig-actions">
-            <button class="secondary" id="onboard-form-sign-clear" type="button">Limpiar firma</button>
+            <button class="secondary" id="onboard-form-sign-clear" type="button" data-i18n="clearSignature">Limpiar firma</button>
             <span class="status" id="onboard-form-sign-status"></span>
           </div>
         </div>
         <div class="form-actions">
-          <button class="secondary" id="onboard-form-cancel" type="button">Cancelar</button>
-          <button id="onboard-form-save" type="button">Guardar</button>
+          <button class="secondary" id="onboard-form-cancel" type="button" data-i18n="cancel">Cancelar</button>
+          <button id="onboard-form-save" type="button" data-i18n="save">Guardar</button>
           <span class="status" id="onboard-form-status"></span>
         </div>
       </div>
     </div>
     <div class="form-modal" id="onboard-pin-modal">
       <div class="form-card pin-card">
-        <div style="font-weight:700;">Ingresá tu clave</div>
-        <div class="sub">Usá los últimos 4 dígitos de tu teléfono.</div>
+        <div class="head-row" style="margin-bottom:6px;">
+          <div style="font-weight:700;" data-i18n="pinTitle">Ingresá tu clave</div>
+          <div class="lang-toggle">
+            <button type="button" class="pill" data-lang-btn="es">ES</button>
+            <button type="button" class="pill" data-lang-btn="en">EN</button>
+          </div>
+        </div>
+        <div class="sub" data-i18n="pinSubtitle">Usá los últimos 4 dígitos de tu teléfono.</div>
         <div class="form-field">
-          <label for="onboard-pin-input">Clave</label>
+          <label for="onboard-pin-input" data-i18n="pinLabel">Clave</label>
           <input id="onboard-pin-input" type="password" inputmode="numeric" maxlength="4" autocomplete="one-time-code" />
         </div>
         <div class="form-actions">
-          <button class="secondary" id="onboard-pin-cancel" type="button">Cerrar</button>
-          <button id="onboard-pin-submit" type="button">Ingresar</button>
+          <button class="secondary" id="onboard-pin-cancel" type="button" data-i18n="close">Cerrar</button>
+          <button id="onboard-pin-submit" type="button" data-i18n="pinSubmit">Ingresar</button>
           <span class="status" id="onboard-pin-error"></span>
         </div>
       </div>
@@ -6310,6 +6343,166 @@ function renderOnboardingPageHtml(token) {
       const pinSubmitEl = document.getElementById('onboard-pin-submit');
       const pinCancelEl = document.getElementById('onboard-pin-cancel');
       const pinErrorEl = document.getElementById('onboard-pin-error');
+      const LANG_STORAGE_KEY = 'onboard_lang_' + TOKEN;
+      let onboardLang = 'es';
+      const I18N = {
+        es: {
+          title: 'Onboarding de ingreso',
+          loading: 'Cargando información…',
+          subtitle: 'Completá tus documentos obligatorios.',
+          labelCandidate: 'Candidato',
+          labelRole: 'Local / puesto',
+          labelPhone: 'Teléfono',
+          labelDress: 'Vestimenta',
+          labelInstructions: 'Instrucciones',
+          labelRoleNotes: 'Notas del rol',
+          labelSignature: 'Firma dibujada',
+          docsRequired: 'Documentos requeridos',
+          viewPolicy: 'Ver política',
+          clearSignature: 'Limpiar firma',
+          placeholderFullName: 'Tu nombre y apellido',
+          acceptPolicy: 'Aceptar política',
+          footerHelp: 'Si necesitás ayuda, respondé este mensaje o contactá a RRHH.',
+          formTitle: 'Formulario',
+          formTitlePdf: 'Completar PDF',
+          close: 'Cerrar',
+          cancel: 'Cancelar',
+          save: 'Guardar',
+          pinTitle: 'Ingresá tu clave',
+          pinSubtitle: 'Usá los últimos 4 dígitos de tu teléfono.',
+          pinLabel: 'Clave',
+          pinSubmit: 'Ingresar',
+          statusSigned: 'Firmada',
+          statusPending: 'Pendiente',
+          statusCompleted: 'Completado',
+          statusUploaded: 'Subido',
+          statusSaved: 'Guardado',
+          statusSaving: 'Guardando…',
+          statusError: 'Error',
+          policyAccepted: 'Política aceptada',
+          signatureLoaded: 'Firma cargada',
+          docUpload: 'Subir',
+          docComplete: 'Completar',
+          docEdit: 'Editar',
+          docView: 'Ver archivo',
+          docTemplate: 'Descargar plantilla',
+          docCompletePdf: 'Completar PDF',
+          docEditPdf: 'Editar PDF',
+          docReplace: 'Reemplazar',
+          docUploading: 'Subiendo…',
+          policyHint: 'Firmá la política más abajo.',
+          pinInvalid: 'Clave incorrecta. Probá de nuevo.',
+          pinRequired: 'Ingresá los últimos 4 dígitos de tu teléfono.',
+          signatureName: 'Nombre para firma',
+          signatureRequired: 'La firma es obligatoria.',
+          signatureMissing: 'Falta la firma dibujada.',
+          ssnInvalid: 'El SSN debe tener 9 dígitos.',
+          loadingFields: 'Cargando campos...',
+          policySigned: 'Firmada'
+        },
+        en: {
+          title: 'Onboarding',
+          loading: 'Loading information…',
+          subtitle: 'Please complete your required documents.',
+          labelCandidate: 'Candidate',
+          labelRole: 'Location / role',
+          labelPhone: 'Phone',
+          labelDress: 'Dress code',
+          labelInstructions: 'Instructions',
+          labelRoleNotes: 'Role notes',
+          labelSignature: 'Drawn signature',
+          docsRequired: 'Required documents',
+          viewPolicy: 'View policy',
+          clearSignature: 'Clear signature',
+          placeholderFullName: 'Your full name',
+          acceptPolicy: 'Accept policy',
+          footerHelp: 'If you need help, reply to this message or contact HR.',
+          formTitle: 'Form',
+          formTitlePdf: 'Fill PDF',
+          close: 'Close',
+          cancel: 'Cancel',
+          save: 'Save',
+          pinTitle: 'Enter your PIN',
+          pinSubtitle: 'Use the last 4 digits of your phone.',
+          pinLabel: 'PIN',
+          pinSubmit: 'Enter',
+          statusSigned: 'Signed',
+          statusPending: 'Pending',
+          statusCompleted: 'Completed',
+          statusUploaded: 'Uploaded',
+          statusSaved: 'Saved',
+          statusSaving: 'Saving…',
+          statusError: 'Error',
+          policyAccepted: 'Policy accepted',
+          signatureLoaded: 'Signature loaded',
+          docUpload: 'Upload',
+          docComplete: 'Complete',
+          docEdit: 'Edit',
+          docView: 'View file',
+          docTemplate: 'Download template',
+          docCompletePdf: 'Complete PDF',
+          docEditPdf: 'Edit PDF',
+          docReplace: 'Replace',
+          docUploading: 'Uploading…',
+          policyHint: 'Sign the policy below.',
+          pinInvalid: 'Incorrect PIN. Try again.',
+          pinRequired: 'Enter the last 4 digits of your phone.',
+          signatureName: 'Signature name',
+          signatureRequired: 'Signature is required.',
+          signatureMissing: 'Signature is missing.',
+          ssnInvalid: 'SSN must be 9 digits.',
+          loadingFields: 'Loading fields...',
+          policySigned: 'Signed'
+        }
+      };
+      function t(key) {
+        return (I18N[onboardLang] && I18N[onboardLang][key]) || I18N.es[key] || key;
+      }
+      function pickLang(esVal, enVal) {
+        if (onboardLang === 'en' && enVal) return enVal;
+        return esVal || enVal || '';
+      }
+      function getDefaultLang() {
+        try {
+          const stored = localStorage.getItem(LANG_STORAGE_KEY);
+          if (stored === 'en' || stored === 'es') return stored;
+        } catch (err) {}
+        const nav = (navigator.language || '').toLowerCase();
+        return nav.startsWith('en') ? 'en' : 'es';
+      }
+      function syncLangButtons() {
+        document.querySelectorAll('[data-lang-btn]').forEach((btn) => {
+          const lang = btn.dataset.langBtn;
+          btn.classList.toggle('active', lang === onboardLang);
+        });
+      }
+      function applyLang() {
+        document.querySelectorAll('[data-i18n]').forEach((el) => {
+          const key = el.dataset.i18n;
+          if (key) el.textContent = t(key);
+        });
+        document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+          const key = el.dataset.i18nPlaceholder;
+          if (key) el.setAttribute('placeholder', t(key));
+        });
+        syncLangButtons();
+      }
+      function setLang(lang, opts) {
+        onboardLang = lang === 'en' ? 'en' : 'es';
+        if (!opts || !opts.skipPersist) {
+          try { localStorage.setItem(LANG_STORAGE_KEY, onboardLang); } catch (err) {}
+        }
+        applyLang();
+        if (state.profile) renderProfile();
+      }
+      function initLang() {
+        onboardLang = getDefaultLang();
+        applyLang();
+      }
+      initLang();
+      document.querySelectorAll('[data-lang-btn]').forEach((btn) => {
+        btn.addEventListener('click', () => setLang(btn.dataset.langBtn));
+      });
       let activeFormDocType = '';
       let activeFormMode = 'form';
       let activeFormTemplateUrl = '';
@@ -6358,7 +6551,7 @@ function renderOnboardingPageHtml(token) {
       }
 
       function openPinModal(message) {
-        if (pinErrorEl) pinErrorEl.textContent = message || '';
+        if (pinErrorEl) pinErrorEl.textContent = message || t('pinRequired');
         if (pinInputEl) {
           pinInputEl.value = '';
           pinInputEl.focus();
@@ -6484,38 +6677,39 @@ function renderOnboardingPageHtml(token) {
 
       function getFormFields(docKey) {
         const key = (docKey || '').toLowerCase();
+        const L = (es, en) => (onboardLang === 'en' ? en : es);
         if (key === 'i9') {
           return [
-            formField('Nombre completo', 'full_name'),
-            formField('Dirección', 'address'),
-            formField('Fecha de nacimiento (MM/DD/YYYY)', 'dob', 'text'),
+            formField(L('Nombre completo', 'Full name'), 'full_name'),
+            formField(L('Dirección', 'Address'), 'address'),
+            formField(L('Fecha de nacimiento (MM/DD/YYYY)', 'Date of birth (MM/DD/YYYY)'), 'dob', 'text'),
             formField('SSN', 'ssn'),
-            formField('Estatus de elegibilidad', 'status', 'select', [
+            formField(L('Estatus de elegibilidad', 'Eligibility status'), 'status', 'select', [
               'Citizen',
               'Noncitizen national',
               'Permanent resident',
               'Authorized to work'
             ]),
-            formField('Firma (escribí tu nombre)', 'signature')
+            formField(L('Firma (escribí tu nombre)', 'Signature (type your name)'), 'signature')
           ];
         }
         if (key === 'w4') {
           return [
-            formField('Nombre completo', 'full_name'),
-            formField('Dirección', 'address'),
+            formField(L('Nombre completo', 'Full name'), 'full_name'),
+            formField(L('Dirección', 'Address'), 'address'),
             formField('SSN', 'ssn'),
-            formField('Estado civil', 'filing_status', 'select', [
+            formField(L('Estado civil', 'Filing status'), 'filing_status', 'select', [
               'Single',
               'Married filing jointly',
               'Head of household'
             ]),
-            formField('Firma (escribí tu nombre)', 'signature')
+            formField(L('Firma (escribí tu nombre)', 'Signature (type your name)'), 'signature')
           ];
         }
         return [
-          formField('Nombre completo', 'full_name'),
-          formField('Detalle', 'detail', 'textarea'),
-          formField('Firma (escribí tu nombre)', 'signature')
+          formField(L('Nombre completo', 'Full name'), 'full_name'),
+          formField(L('Detalle', 'Details'), 'detail', 'textarea'),
+          formField(L('Firma (escribí tu nombre)', 'Signature (type your name)'), 'signature')
         ];
       }
 
@@ -6530,75 +6724,85 @@ function renderOnboardingPageHtml(token) {
 
       function getPdfSchema(docKey) {
         const key = (docKey || '').toLowerCase();
+        const L = (es, en) => (onboardLang === 'en' ? en : es);
         if (key === 'i9') {
           return {
-            title: 'I-9 (Sección 1)',
+            title: L('I-9 (Sección 1)', 'I-9 (Section 1)'),
             fields: [
-              formField('Apellido', 'last_name'),
-              formField('Nombre', 'first_name'),
-              formField('Inicial segundo nombre', 'middle_initial'),
-              formField('Otros apellidos usados', 'other_last_names'),
-              formField('Dirección (número y calle)', 'address'),
-              formField('Apto (si aplica)', 'apt'),
-              formField('Ciudad', 'city'),
-              formField('Estado', 'state'),
+              formField(L('Apellido', 'Last name'), 'last_name'),
+              formField(L('Nombre', 'First name'), 'first_name'),
+              formField(L('Inicial segundo nombre', 'Middle initial'), 'middle_initial'),
+              formField(L('Otros apellidos usados', 'Other last names used'), 'other_last_names'),
+              formField(L('Dirección (número y calle)', 'Address (street number and name)'), 'address'),
+              formField(L('Apto (si aplica)', 'Apt (if any)'), 'apt'),
+              formField(L('Ciudad', 'City or town'), 'city'),
+              formField(L('Estado', 'State'), 'state'),
               formField('ZIP', 'zip'),
-              formField('Fecha de nacimiento', 'dob', 'date'),
+              formField(L('Fecha de nacimiento', 'Date of birth'), 'dob', 'date'),
               formField('SSN', 'ssn'),
               formField('Email', 'email'),
-              formField('Teléfono', 'phone'),
-              formField('Fecha de firma', 'signature_date', 'date'),
-              formField('Estatus de elegibilidad', 'status', 'select', [
-                { label: 'Citizen', value: 'citizen' },
-                { label: 'Noncitizen national', value: 'noncitizen' },
-                { label: 'Permanent resident', value: 'permanent' },
-                { label: 'Authorized to work', value: 'authorized' }
+              formField(L('Teléfono', 'Phone'), 'phone'),
+              formField(L('Fecha de firma', 'Signature date'), 'signature_date', 'date'),
+              formField(L('Estatus de elegibilidad', 'Eligibility status'), 'status', 'select', [
+                { label: L('Citizen', 'Citizen'), value: 'citizen' },
+                { label: L('Noncitizen national', 'Noncitizen national'), value: 'noncitizen' },
+                { label: L('Permanent resident', 'Permanent resident'), value: 'permanent' },
+                { label: L('Authorized to work', 'Authorized to work'), value: 'authorized' }
               ]),
-              formField('USCIS A-Number', 'lpr_a_number', 'text', [], { showStatus: 'permanent' }),
-              formField('Fecha de expiración', 'auth_exp', 'date', [], { showStatus: 'authorized' }),
-              formField('Documento (si autorizado)', 'auth_doc_type', 'select', [
-                { label: 'USCIS A-Number', value: 'a_number' },
-                { label: 'Form I-94', value: 'i94' },
-                { label: 'Passport', value: 'passport' }
+              formField(L('USCIS A-Number', 'USCIS A-Number'), 'lpr_a_number', 'text', [], { showStatus: 'permanent' }),
+              formField(L('Fecha de expiración', 'Expiration date'), 'auth_exp', 'date', [], { showStatus: 'authorized' }),
+              formField(L('Documento (si autorizado)', 'Document (if authorized)'), 'auth_doc_type', 'select', [
+                { label: L('USCIS A-Number', 'USCIS A-Number'), value: 'a_number' },
+                { label: L('Form I-94', 'Form I-94'), value: 'i94' },
+                { label: L('Passport', 'Passport'), value: 'passport' }
               ], { showStatus: 'authorized' }),
-              formField('USCIS A-Number', 'auth_a_number', 'text', [], { showStatus: 'authorized', showAuth: 'a_number' }),
-              formField('I-94 Admission Number', 'auth_i94', 'text', [], { showStatus: 'authorized', showAuth: 'i94' }),
-              formField('Passport Number', 'auth_passport', 'text', [], { showStatus: 'authorized', showAuth: 'passport' }),
-              formField('Country of Issuance', 'auth_country', 'text', [], { showStatus: 'authorized', showAuth: 'passport' })
+              formField(L('USCIS A-Number', 'USCIS A-Number'), 'auth_a_number', 'text', [], { showStatus: 'authorized', showAuth: 'a_number' }),
+              formField(L('I-94 Admission Number', 'I-94 Admission Number'), 'auth_i94', 'text', [], { showStatus: 'authorized', showAuth: 'i94' }),
+              formField(L('Passport Number', 'Passport Number'), 'auth_passport', 'text', [], { showStatus: 'authorized', showAuth: 'passport' }),
+              formField(L('Country of Issuance', 'Country of issuance'), 'auth_country', 'text', [], { showStatus: 'authorized', showAuth: 'passport' })
             ]
           };
         }
         if (key === 'w4') {
           return {
-            title: 'W-4 (Página 1)',
+            title: L('W-4 (Página 1)', 'W-4 (Page 1)'),
             fields: [
-              formField('Apellido', 'last_name'),
-              formField('Nombre', 'first_name'),
-              formField('Dirección (número y calle)', 'address'),
-              formField('Apto (si aplica)', 'apt'),
-              formField('Ciudad', 'city'),
-              formField('Estado', 'state'),
+              formField(L('Apellido', 'Last name'), 'last_name'),
+              formField(L('Nombre', 'First name'), 'first_name'),
+              formField(L('Dirección (número y calle)', 'Address (street number and name)'), 'address'),
+              formField(L('Apto (si aplica)', 'Apt (if any)'), 'apt'),
+              formField(L('Ciudad', 'City or town'), 'city'),
+              formField(L('Estado', 'State'), 'state'),
               formField('ZIP', 'zip'),
               formField('SSN', 'ssn'),
-              formField('Estado civil', 'filing_status', 'select', [
-                { label: 'Single or Married filing separately', value: 'single' },
-                { label: 'Married filing jointly', value: 'married' },
-                { label: 'Head of household', value: 'head' }
+              formField(L('Estado civil', 'Filing status'), 'filing_status', 'select', [
+                { label: L('Single or Married filing separately', 'Single or Married filing separately'), value: 'single' },
+                { label: L('Married filing jointly', 'Married filing jointly'), value: 'married' },
+                { label: L('Head of household', 'Head of household'), value: 'head' }
               ]),
-              formField('Cantidad de hijos <17 (Step 3a)', 'dependents_children', 'number', [], { multiplier: 2200, hint: 'Se multiplica por $2,200.' }),
-              formField('Cantidad de otros dependientes (Step 3b)', 'dependents_other', 'number', [], { multiplier: 500, hint: 'Se multiplica por $500.' }),
-              formField('Otros créditos (Step 3, opcional)', 'other_credits', 'number', [], { hint: 'Monto adicional si aplica.' }),
-              formField('Total Step 3 (auto)', 'dependents_total', 'number', [], { readOnly: true }),
-              formField('Other income (4a)', 'other_income', 'number', [], {
-                info: 'If you want tax withheld for other income you expect this year that won’t have withholding, enter the amount of other income here. This may include interest, dividends, and retirement income.'
+              formField(L('Cantidad de hijos <17 (Step 3a)', 'Qualifying children under 17 (Step 3a)'), 'dependents_children', 'number', [], { multiplier: 2200, hint: L('Se multiplica por $2,200.', 'Multiply by $2,200.') }),
+              formField(L('Cantidad de otros dependientes (Step 3b)', 'Other dependents (Step 3b)'), 'dependents_other', 'number', [], { multiplier: 500, hint: L('Se multiplica por $500.', 'Multiply by $500.') }),
+              formField(L('Otros créditos (Step 3, opcional)', 'Other credits (Step 3, optional)'), 'other_credits', 'number', [], { hint: L('Monto adicional si aplica.', 'Additional amount if applicable.') }),
+              formField(L('Total Step 3 (auto)', 'Step 3 total (auto)'), 'dependents_total', 'number', [], { readOnly: true }),
+              formField(L('Other income (4a)', 'Other income (4a)'), 'other_income', 'number', [], {
+                info: L(
+                  'Si querés que te retengan impuestos por otros ingresos sin retención, ingresá el monto. Puede incluir intereses, dividendos o retiros.',
+                  'If you want tax withheld for other income you expect this year that won’t have withholding, enter the amount of other income here. This may include interest, dividends, and retirement income.'
+                )
               }),
-              formField('Deductions (4b)', 'deductions', 'number', [], {
-                info: 'Use the Deductions Worksheet on page 4 to determine the amount of deductions you may claim, which will reduce your withholding. If you skip this line, your withholding will be based on the standard deduction. (Si no completas este campo, se usa la deduccion estandar.)'
+              formField(L('Deducciones (4b)', 'Deductions (4b)'), 'deductions', 'number', [], {
+                info: L(
+                  'Usá la hoja de deducciones (página 4) para calcular el monto. Si omitís este campo, se aplica la deducción estándar.',
+                  'Use the Deductions Worksheet on page 4 to determine the amount of deductions you may claim, which will reduce your withholding. If you skip this line, your withholding will be based on the standard deduction.'
+                )
               }),
-              formField('Extra withholding (4c)', 'extra_withholding', 'number', [], {
-                info: 'Enter any additional tax you want withheld each pay period.'
+              formField(L('Retención extra (4c)', 'Extra withholding (4c)'), 'extra_withholding', 'number', [], {
+                info: L(
+                  'Impuesto adicional que querés que te retengan por período de pago.',
+                  'Enter any additional tax you want withheld each pay period.'
+                )
               }),
-              formField('Fecha de firma', 'signature_date', 'date')
+              formField(L('Fecha de firma', 'Signature date'), 'signature_date', 'date')
             ]
           };
         }
@@ -6627,7 +6831,7 @@ function renderOnboardingPageHtml(token) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
           if (data.error === 'pin_required' || data.error === 'pin_invalid') {
-            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+            openPinModal(data.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
           }
           throw new Error(data.detail || data.error || 'template_fields_failed');
         }
@@ -6644,7 +6848,7 @@ function renderOnboardingPageHtml(token) {
         formStatusEl.textContent = '';
         formSignatureExisting = (existing && (existing.signature_data_url || existing.signatureDataUrl)) ? (existing.signature_data_url || existing.signatureDataUrl) : '';
         const fields = getFormFields(docType);
-        if (formTitleEl) formTitleEl.textContent = 'Formulario ' + (docType || '').toUpperCase();
+        if (formTitleEl) formTitleEl.textContent = t('formTitle') + ' ' + (docType || '').toUpperCase();
         fields.forEach((field) => {
           const wrap = document.createElement('div');
           wrap.className = 'form-field';
@@ -6678,7 +6882,7 @@ function renderOnboardingPageHtml(token) {
           formSignaturePad.clear();
           if (formSignatureExisting) {
             formSignaturePad.loadDataUrl(formSignatureExisting);
-            if (formSignStatusEl) formSignStatusEl.textContent = 'Firma cargada';
+            if (formSignStatusEl) formSignStatusEl.textContent = t('signatureLoaded');
           } else if (formSignStatusEl) {
             formSignStatusEl.textContent = '';
           }
@@ -6693,9 +6897,9 @@ function renderOnboardingPageHtml(token) {
         activePdfFieldNames = [];
         activeFormDocType = docType || '';
         formFieldsEl.innerHTML = '';
-        formStatusEl.textContent = 'Cargando campos...';
+        formStatusEl.textContent = t('loadingFields');
         formSignatureExisting = '';
-        if (formTitleEl) formTitleEl.textContent = 'Completar PDF ' + (docType || '').toUpperCase();
+        if (formTitleEl) formTitleEl.textContent = t('formTitlePdf') + ' ' + (docType || '').toUpperCase();
         if (!formSignaturePad && formSignCanvas) {
           formSignaturePad = initSignaturePad(formSignCanvas, formSignClearEl, formSignStatusEl);
         }
@@ -6708,7 +6912,7 @@ function renderOnboardingPageHtml(token) {
           const profile = state.profile || {};
           formFieldsEl.innerHTML = '';
           if (schema && Array.isArray(schema.fields)) {
-            if (formTitleEl) formTitleEl.textContent = schema.title || ('Completar PDF ' + (docType || '').toUpperCase());
+            if (formTitleEl) formTitleEl.textContent = schema.title || (t('formTitlePdf') + ' ' + (docType || '').toUpperCase());
             schema.fields.forEach((field) => {
               const wrap = document.createElement('div');
               wrap.className = 'form-field';
@@ -6809,7 +7013,7 @@ function renderOnboardingPageHtml(token) {
             const sigWrap = document.createElement('div');
             sigWrap.className = 'form-field';
             const sigLabel = document.createElement('label');
-            sigLabel.textContent = 'Nombre para firma';
+            sigLabel.textContent = t('signatureName');
             sigWrap.appendChild(sigLabel);
             const sigInput = document.createElement('input');
             sigInput.type = 'text';
@@ -6860,9 +7064,11 @@ function renderOnboardingPageHtml(token) {
                 const childHint = childrenInput?.closest('.form-field')?.querySelector('.form-hint');
                 const otherHint = otherInput?.closest('.form-field')?.querySelector('.form-hint');
                 const creditsHint = creditsInput?.closest('.form-field')?.querySelector('.form-hint');
-                if (childHint) childHint.textContent = 'Monto: $' + amountChildren;
-                if (otherHint) otherHint.textContent = 'Monto: $' + amountOther;
-                if (creditsHint) creditsHint.textContent = 'Monto adicional: $' + otherCredits;
+                const amountLabel = onboardLang === 'en' ? 'Amount' : 'Monto';
+                const extraLabel = onboardLang === 'en' ? 'Additional amount' : 'Monto adicional';
+                if (childHint) childHint.textContent = amountLabel + ': $' + amountChildren;
+                if (otherHint) otherHint.textContent = amountLabel + ': $' + amountOther;
+                if (creditsHint) creditsHint.textContent = extraLabel + ': $' + otherCredits;
               };
               if (childrenInput) childrenInput.addEventListener('input', updateStep3);
               if (otherInput) otherInput.addEventListener('input', updateStep3);
@@ -6895,7 +7101,7 @@ function renderOnboardingPageHtml(token) {
             const sigWrap = document.createElement('div');
             sigWrap.className = 'form-field';
             const sigLabel = document.createElement('label');
-            sigLabel.textContent = 'Nombre para firma';
+            sigLabel.textContent = t('signatureName');
             sigWrap.appendChild(sigLabel);
             const sigInput = document.createElement('input');
             sigInput.type = 'text';
@@ -6910,7 +7116,7 @@ function renderOnboardingPageHtml(token) {
             }
           }
         } catch (err) {
-          formStatusEl.textContent = 'Error: ' + err.message;
+          formStatusEl.textContent = t('statusError') + ': ' + err.message;
           formModalEl.style.display = 'flex';
         }
       }
@@ -6951,16 +7157,16 @@ function renderOnboardingPageHtml(token) {
         }
         const signatureDataUrl = formSignaturePad ? formSignaturePad.getDataUrl() : '';
         const signaturePayload = signatureDataUrl || formSignatureExisting;
-        formStatusEl.textContent = 'Guardando...';
+        formStatusEl.textContent = t('statusSaving');
         try {
           if (activeFormMode === 'pdf') {
             const signatureName = data.__signature_name || '';
             if (!signatureName) {
-              formStatusEl.textContent = 'La firma es obligatoria.';
+              formStatusEl.textContent = t('signatureRequired');
               return;
             }
             if (!signaturePayload) {
-              formStatusEl.textContent = 'Falta la firma dibujada.';
+              formStatusEl.textContent = t('signatureMissing');
               return;
             }
             if (String(activeFormDocType || '').toLowerCase() === 'i9') {
@@ -6980,7 +7186,7 @@ function renderOnboardingPageHtml(token) {
             if (data.ssn) {
               const digits = String(data.ssn || '').replace(/\D+/g, '');
               if (digits.length !== 9) {
-                formStatusEl.textContent = 'El SSN debe tener 9 dígitos.';
+                formStatusEl.textContent = t('ssnInvalid');
                 return;
               }
               data.ssn = digits;
@@ -7008,18 +7214,18 @@ function renderOnboardingPageHtml(token) {
             const payload = await resp.json().catch(() => ({}));
             if (!resp.ok) {
               if (payload.error === 'pin_required' || payload.error === 'pin_invalid') {
-                openPinModal(payload.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+                openPinModal(payload.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
               }
               throw new Error(payload.detail || payload.error || 'pdf_failed');
             }
             state.docs = payload.docs || [];
           } else {
             if (!data.signature) {
-              formStatusEl.textContent = 'La firma es obligatoria.';
+              formStatusEl.textContent = t('signatureRequired');
               return;
             }
             if (!signaturePayload) {
-              formStatusEl.textContent = 'Falta la firma dibujada.';
+              formStatusEl.textContent = t('signatureMissing');
               return;
             }
             data.signature_data_url = signaturePayload;
@@ -7031,17 +7237,17 @@ function renderOnboardingPageHtml(token) {
             const payload = await resp.json().catch(() => ({}));
             if (!resp.ok) {
               if (payload.error === 'pin_required' || payload.error === 'pin_invalid') {
-                openPinModal(payload.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+                openPinModal(payload.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
               }
               throw new Error(payload.detail || payload.error || 'form_failed');
             }
             state.docs = payload.docs || [];
           }
           renderDocs();
-          formStatusEl.textContent = 'Guardado';
+          formStatusEl.textContent = t('statusSaved');
           setTimeout(() => closeFormModal(), 500);
         } catch (err) {
-          formStatusEl.textContent = 'Error: ' + err.message;
+          formStatusEl.textContent = t('statusError') + ': ' + err.message;
         }
       }
 
@@ -7051,7 +7257,7 @@ function renderOnboardingPageHtml(token) {
         instructionsEl.style.display = 'grid';
         docsCardEl.style.display = 'grid';
         policyCardEl.style.display = 'grid';
-        subEl.textContent = 'Completá tus documentos obligatorios.';
+        subEl.textContent = t('subtitle');
         if (!policySignaturePad && policySignCanvas) {
           policySignaturePad = initSignaturePad(policySignCanvas, policySignClearEl, policySignStatusEl);
         }
@@ -7064,7 +7270,7 @@ function renderOnboardingPageHtml(token) {
         if (policyLinkEl) {
           if (policyDoc?.template_url) {
             policyLinkEl.href = policyDoc.template_url;
-            policyLinkEl.textContent = 'Ver política';
+            policyLinkEl.textContent = t('viewPolicy');
             policyLinkEl.style.display = 'inline-flex';
           } else {
             policyLinkEl.style.display = 'none';
@@ -7073,18 +7279,18 @@ function renderOnboardingPageHtml(token) {
         setText('onboard-name', p.name || '');
         setText('onboard-role', [p.brand, p.role].filter(Boolean).join(' • '));
         setText('onboard-phone', p.phone || '');
-        setText('onboard-dress', p.dress_code || '');
-        setText('onboard-instructions-text', p.instructions || '');
-        setText('onboard-role-notes', p.role_notes || '');
-        setText('onboard-policy-title', p.policy_title || 'Política');
+        setText('onboard-dress', pickLang(p.dress_code, p.dress_code_en));
+        setText('onboard-instructions-text', pickLang(p.instructions, p.instructions_en));
+        setText('onboard-role-notes', pickLang(p.role_notes, p.role_notes_en));
+        setText('onboard-policy-title', pickLang(p.policy_title || 'Política', p.policy_title_en));
         const policyTextEl = document.getElementById('onboard-policy-text');
-        if (policyTextEl) policyTextEl.textContent = p.policy_text || '';
+        if (policyTextEl) policyTextEl.textContent = pickLang(p.policy_text, p.policy_text_en);
         if (p.policy_ack) {
-          ackStatusEl.textContent = 'Política aceptada';
+          ackStatusEl.textContent = t('policyAccepted');
           if (ackNameEl) ackNameEl.value = p.policy_ack_name || '';
           if (ackBtnEl) ackBtnEl.disabled = true;
           if (ackNameEl) ackNameEl.disabled = true;
-          if (policySignStatusEl) policySignStatusEl.textContent = 'Firmada';
+          if (policySignStatusEl) policySignStatusEl.textContent = t('policySigned');
           if (policySignaturePad) policySignaturePad.clear();
           if (policySignClearEl) policySignClearEl.disabled = true;
           if (policySignCanvas) policySignCanvas.style.pointerEvents = 'none';
@@ -7106,7 +7312,7 @@ function renderOnboardingPageHtml(token) {
           head.className = 'doc-row-head';
           const title = document.createElement('div');
           title.style.fontWeight = '700';
-          title.textContent = doc.label || doc.key || 'Documento';
+          title.textContent = doc.label || doc.key || t('docsRequired');
           const status = document.createElement('div');
           status.className = 'doc-status';
           const match = state.docs.filter((d) => d.doc_type === doc.key);
@@ -7117,11 +7323,11 @@ function renderOnboardingPageHtml(token) {
             mode = 'pdf';
           }
           if (mode === 'policy') {
-            status.textContent = p.policy_ack ? 'Firmada' : 'Pendiente';
+            status.textContent = p.policy_ack ? t('statusSigned') : t('statusPending');
           } else if (latest) {
-            status.textContent = latest.doc_data ? 'Completado' : 'Subido';
+            status.textContent = latest.doc_data ? t('statusCompleted') : t('statusUploaded');
           } else {
-            status.textContent = 'Pendiente';
+            status.textContent = t('statusPending');
           }
           head.appendChild(title);
           head.appendChild(status);
@@ -7131,7 +7337,7 @@ function renderOnboardingPageHtml(token) {
             templateLink.href = doc.template_url;
             templateLink.target = '_blank';
             templateLink.rel = 'noopener';
-            templateLink.textContent = 'Descargar plantilla';
+            templateLink.textContent = t('docTemplate');
             templateLink.className = 'pill';
             row.appendChild(templateLink);
           }
@@ -7140,7 +7346,7 @@ function renderOnboardingPageHtml(token) {
             link.href = latest.doc_url;
             link.target = '_blank';
             link.rel = 'noopener';
-            link.textContent = 'Ver archivo';
+            link.textContent = t('docView');
             link.className = 'pill';
             row.appendChild(link);
           }
@@ -7149,19 +7355,19 @@ function renderOnboardingPageHtml(token) {
           if (mode === 'form') {
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.textContent = latest ? 'Editar' : 'Completar';
+            btn.textContent = latest ? t('docEdit') : t('docComplete');
             btn.onclick = () => openFormModal(doc.key, latest?.doc_data || {});
             actions.appendChild(btn);
           } else if (mode === 'pdf') {
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.textContent = latest ? 'Editar PDF' : 'Completar PDF';
+            btn.textContent = latest ? t('docEditPdf') : t('docCompletePdf');
             btn.onclick = () => openPdfModal(doc.key, latest?.doc_data || {});
             actions.appendChild(btn);
           } else if (mode === 'policy') {
             const note = document.createElement('div');
             note.className = 'doc-status';
-            note.textContent = 'Firmá la política más abajo.';
+            note.textContent = t('policyHint');
             actions.appendChild(note);
           } else {
             const input = document.createElement('input');
@@ -7169,21 +7375,21 @@ function renderOnboardingPageHtml(token) {
             input.accept = 'application/pdf,image/*';
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.textContent = latest ? 'Reemplazar' : 'Subir';
+            btn.textContent = latest ? t('docReplace') : t('docUpload');
             btn.onclick = async () => {
               const file = input.files && input.files[0];
               if (!file) return;
               btn.disabled = true;
-              btn.textContent = 'Subiendo...';
+              btn.textContent = t('docUploading');
               const reader = new FileReader();
               reader.onload = async () => {
                 try {
                   const dataUrl = reader.result;
                   await uploadDoc(doc.key, file.name, dataUrl);
-                  btn.textContent = 'Subido';
+                  btn.textContent = t('statusUploaded');
                 } catch (err) {
-                  alert('Error: ' + err.message);
-                  btn.textContent = latest ? 'Reemplazar' : 'Subir';
+                  alert(t('statusError') + ': ' + err.message);
+                  btn.textContent = latest ? t('docReplace') : t('docUpload');
                 } finally {
                   btn.disabled = false;
                 }
@@ -7207,7 +7413,7 @@ function renderOnboardingPageHtml(token) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
           if (data.error === 'pin_required' || data.error === 'pin_invalid') {
-            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+            openPinModal(data.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
           }
           throw new Error(data.detail || data.error || 'upload_failed');
         }
@@ -7220,10 +7426,10 @@ function renderOnboardingPageHtml(token) {
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
           if (data.error === 'pin_required' || data.error === 'pin_invalid') {
-            openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+            openPinModal(data.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
             return;
           }
-          subEl.textContent = 'No pudimos encontrar tu perfil.';
+          subEl.textContent = t('statusError');
           return;
         }
         state.profile = data.profile || {};
@@ -7234,11 +7440,11 @@ function renderOnboardingPageHtml(token) {
       if (ackBtnEl) {
         ackBtnEl.addEventListener('click', async () => {
           ackBtnEl.disabled = true;
-          ackStatusEl.textContent = 'Guardando...';
+          ackStatusEl.textContent = t('statusSaving');
           try {
             const signatureDataUrl = policySignaturePad ? policySignaturePad.getDataUrl() : '';
             if (!signatureDataUrl) {
-              ackStatusEl.textContent = 'Falta la firma dibujada.';
+              ackStatusEl.textContent = t('signatureMissing');
               ackBtnEl.disabled = false;
               return;
             }
@@ -7254,11 +7460,11 @@ function renderOnboardingPageHtml(token) {
             const data = await resp.json().catch(() => ({}));
             if (!resp.ok) {
               if (data.error === 'pin_required' || data.error === 'pin_invalid') {
-                openPinModal(data.error === 'pin_invalid' ? 'Clave incorrecta. Probá de nuevo.' : 'Ingresá los últimos 4 dígitos de tu teléfono.');
+                openPinModal(data.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
               }
               throw new Error(data.detail || data.error || 'ack_failed');
             }
-            ackStatusEl.textContent = 'Política aceptada.';
+            ackStatusEl.textContent = t('policyAccepted');
             ackBtnEl.disabled = true;
             ackNameEl.disabled = true;
             if (data.docs) {
@@ -7266,7 +7472,7 @@ function renderOnboardingPageHtml(token) {
               renderDocs();
             }
           } catch (err) {
-            ackStatusEl.textContent = 'Error: ' + err.message;
+            ackStatusEl.textContent = t('statusError') + ': ' + err.message;
             ackBtnEl.disabled = false;
           }
         });
@@ -7291,7 +7497,7 @@ function renderOnboardingPageHtml(token) {
         pinSubmitEl.onclick = async () => {
           const raw = (pinInputEl?.value || '').replace(/\D+/g, '').slice(-4);
           if (!raw || raw.length < 4) {
-            if (pinErrorEl) pinErrorEl.textContent = 'Ingresá los últimos 4 dígitos.';
+            if (pinErrorEl) pinErrorEl.textContent = t('pinRequired');
             return;
           }
           setStoredPin(raw);
@@ -7324,9 +7530,14 @@ app.post("/admin/onboarding/config", requirePermission("onboarding_manage"), asy
     const raw = req.body?.config ?? req.body ?? {};
     const normalized = {
       dress_code: String(raw.dress_code || raw.dressCode || DEFAULT_ONBOARDING_CONFIG.dress_code || "").trim(),
+      dress_code_en: String(raw.dress_code_en || raw.dressCodeEn || DEFAULT_ONBOARDING_CONFIG.dress_code_en || "").trim(),
       instructions: String(raw.instructions || DEFAULT_ONBOARDING_CONFIG.instructions || "").trim(),
+      instructions_en: String(raw.instructions_en || raw.instructionsEn || DEFAULT_ONBOARDING_CONFIG.instructions_en || "").trim(),
       policy_title: String(raw.policy_title || raw.policyTitle || DEFAULT_ONBOARDING_CONFIG.policy_title || "").trim(),
+      policy_title_en: String(raw.policy_title_en || raw.policyTitleEn || DEFAULT_ONBOARDING_CONFIG.policy_title_en || "").trim(),
       policy_text: String(raw.policy_text || raw.policyText || DEFAULT_ONBOARDING_CONFIG.policy_text || "").trim(),
+      policy_text_en: String(raw.policy_text_en || raw.policyTextEn || DEFAULT_ONBOARDING_CONFIG.policy_text_en || "").trim(),
+      role_notes_en: String(raw.role_notes_en || raw.roleNotesEn || DEFAULT_ONBOARDING_CONFIG.role_notes_en || "").trim(),
       doc_types: Array.isArray(raw.doc_types) ? raw.doc_types : (Array.isArray(raw.docTypes) ? raw.docTypes : [])
     };
     if (!normalized.doc_types.length) normalized.doc_types = DEFAULT_ONBOARDING_CONFIG.doc_types.slice();
@@ -7389,6 +7600,7 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
       const brand = (body.brand || candidate.brand || DEFAULT_BRAND).toString().trim();
       const role = (body.role || candidate.role || DEFAULT_ROLE).toString().trim();
       const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
+      const roleNotesEn = getRoleConfig(brand, role)?.notes_en || config.role_notes_en || "";
       profile = await createOnboardingProfile({
         cv_id: cvId || candidate.cv_id || "",
         call_sid: callSid || candidate.call_sid || "",
@@ -7398,10 +7610,15 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
         brand,
         role,
         dress_code: config.dress_code,
+        dress_code_en: config.dress_code_en,
         instructions: config.instructions,
+        instructions_en: config.instructions_en,
         role_notes: roleNotes,
+        role_notes_en: roleNotesEn,
         policy_title: config.policy_title,
+        policy_title_en: config.policy_title_en,
         policy_text: config.policy_text,
+        policy_text_en: config.policy_text_en,
         doc_types: config.doc_types,
         status: "pending"
       });
@@ -11223,20 +11440,40 @@ app.get("/admin/ui", (req, res) => {
           <div class="panel-sub">Configurá el portal seguro donde el empleado sube documentación y firma la política.</div>
           <div class="grid">
             <div>
-              <label>Dress code</label>
+              <label>Dress code (ES)</label>
               <textarea id="onboarding-dress" placeholder="Ej: remera negra, pantalón oscuro, calzado cerrado."></textarea>
             </div>
             <div>
-              <label>Instrucciones</label>
+              <label>Instrucciones (ES)</label>
               <textarea id="onboarding-instructions" placeholder="Ej: llegar 10 minutos antes, contactar al manager."></textarea>
             </div>
             <div>
-              <label>Título política</label>
+              <label>Título política (ES)</label>
               <input type="text" id="onboarding-policy-title" placeholder="Política de renuncia" />
             </div>
             <div>
-              <label>Texto política</label>
+              <label>Texto política (ES)</label>
               <textarea id="onboarding-policy-text" placeholder="Confirmo que leí y entiendo..."></textarea>
+            </div>
+            <div>
+              <label>Dress code (EN)</label>
+              <textarea id="onboarding-dress-en" placeholder="Ex: black shirt, dark pants, closed-toe shoes."></textarea>
+            </div>
+            <div>
+              <label>Instructions (EN)</label>
+              <textarea id="onboarding-instructions-en" placeholder="Ex: arrive 10 minutes early, contact manager."></textarea>
+            </div>
+            <div>
+              <label>Policy title (EN)</label>
+              <input type="text" id="onboarding-policy-title-en" placeholder="Resignation policy" />
+            </div>
+            <div>
+              <label>Policy text (EN)</label>
+              <textarea id="onboarding-policy-text-en" placeholder="I confirm I have read and understand..."></textarea>
+            </div>
+            <div>
+              <label>Notas del rol (EN)</label>
+              <textarea id="onboarding-role-notes-en" placeholder="Optional role notes in English."></textarea>
             </div>
           </div>
           <div class="divider"></div>
@@ -12879,9 +13116,14 @@ app.get("/admin/ui", (req, res) => {
     const usersPanelEl = document.getElementById('users-panel');
     const onboardingPanelEl = document.getElementById('onboarding-panel');
     const onboardingDressEl = document.getElementById('onboarding-dress');
+    const onboardingDressEnEl = document.getElementById('onboarding-dress-en');
     const onboardingInstructionsEl = document.getElementById('onboarding-instructions');
+    const onboardingInstructionsEnEl = document.getElementById('onboarding-instructions-en');
     const onboardingPolicyTitleEl = document.getElementById('onboarding-policy-title');
+    const onboardingPolicyTitleEnEl = document.getElementById('onboarding-policy-title-en');
     const onboardingPolicyTextEl = document.getElementById('onboarding-policy-text');
+    const onboardingPolicyTextEnEl = document.getElementById('onboarding-policy-text-en');
+    const onboardingRoleNotesEnEl = document.getElementById('onboarding-role-notes-en');
     const onboardingDocsListEl = document.getElementById('onboarding-docs-list');
     const onboardingDocAddEl = document.getElementById('onboarding-doc-add');
     const onboardingSaveEl = document.getElementById('onboarding-save');
@@ -20682,9 +20924,14 @@ app.get("/admin/ui", (req, res) => {
     function applyOnboardingConfig(config) {
       onboardingConfigState = config || {};
       if (onboardingDressEl) onboardingDressEl.value = config?.dress_code || '';
+      if (onboardingDressEnEl) onboardingDressEnEl.value = config?.dress_code_en || '';
       if (onboardingInstructionsEl) onboardingInstructionsEl.value = config?.instructions || '';
+      if (onboardingInstructionsEnEl) onboardingInstructionsEnEl.value = config?.instructions_en || '';
       if (onboardingPolicyTitleEl) onboardingPolicyTitleEl.value = config?.policy_title || '';
+      if (onboardingPolicyTitleEnEl) onboardingPolicyTitleEnEl.value = config?.policy_title_en || '';
       if (onboardingPolicyTextEl) onboardingPolicyTextEl.value = config?.policy_text || '';
+      if (onboardingPolicyTextEnEl) onboardingPolicyTextEnEl.value = config?.policy_text_en || '';
+      if (onboardingRoleNotesEnEl) onboardingRoleNotesEnEl.value = config?.role_notes_en || '';
       const docs = Array.isArray(config?.doc_types) ? config.doc_types : [];
       renderOnboardingConfigDocList(docs);
     }
@@ -20699,9 +20946,14 @@ app.get("/admin/ui", (req, res) => {
       }).filter((doc) => doc.key);
       return {
         dress_code: onboardingDressEl?.value || '',
+        dress_code_en: onboardingDressEnEl?.value || '',
         instructions: onboardingInstructionsEl?.value || '',
+        instructions_en: onboardingInstructionsEnEl?.value || '',
         policy_title: onboardingPolicyTitleEl?.value || '',
+        policy_title_en: onboardingPolicyTitleEnEl?.value || '',
         policy_text: onboardingPolicyTextEl?.value || '',
+        policy_text_en: onboardingPolicyTextEnEl?.value || '',
+        role_notes_en: onboardingRoleNotesEnEl?.value || '',
         doc_types: docs
       };
     }
@@ -24178,8 +24430,8 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
 async function fetchOnboardingProfile(profileId) {
   if (!dbPool || !profileId) return null;
   const result = await dbQuery(
-    `SELECT id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
-            policy_title, policy_text, doc_types, pay_rate, pay_unit, start_date, admin_notes,
+    `SELECT id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
+            policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes,
             status, last_sms_phone, last_sms_sent_at,
             policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
      FROM onboarding_profiles WHERE id = $1 LIMIT 1`,
@@ -24200,10 +24452,15 @@ async function fetchOnboardingProfile(profileId) {
     brand: row.brand || "",
     role: row.role || "",
     dress_code: row.dress_code || "",
+    dress_code_en: row.dress_code_en || "",
     instructions: row.instructions || "",
+    instructions_en: row.instructions_en || "",
     role_notes: row.role_notes || "",
+    role_notes_en: row.role_notes_en || "",
     policy_title: row.policy_title || "",
+    policy_title_en: row.policy_title_en || "",
     policy_text: row.policy_text || "",
+    policy_text_en: row.policy_text_en || "",
     doc_types: docTypes,
     pay_rate: row.pay_rate || "",
     pay_unit: row.pay_unit || "",
@@ -24268,10 +24525,15 @@ async function createOnboardingProfile(payload = {}) {
     brand: payload.brand || "",
     role: payload.role || "",
     dress_code: payload.dress_code || "",
+    dress_code_en: payload.dress_code_en || payload.dressCodeEn || "",
     instructions: payload.instructions || "",
+    instructions_en: payload.instructions_en || payload.instructionsEn || "",
     role_notes: payload.role_notes || "",
+    role_notes_en: payload.role_notes_en || payload.roleNotesEn || "",
     policy_title: payload.policy_title || "",
+    policy_title_en: payload.policy_title_en || payload.policyTitleEn || "",
     policy_text: payload.policy_text || "",
+    policy_text_en: payload.policy_text_en || payload.policyTextEn || "",
     doc_types: rawDocTypes,
     pay_rate: payload.pay_rate || payload.payRate || "",
     pay_unit: payload.pay_unit || payload.payUnit || "",
@@ -24286,11 +24548,11 @@ async function createOnboardingProfile(payload = {}) {
   entry.doc_types = applyPolicyTemplateToDocTypes(entry.doc_types, entry.brand);
   await dbQuery(
     `INSERT INTO onboarding_profiles (
-        id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
-        policy_title, policy_text, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
+        id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
+        policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-        $13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
      )`,
     [
       entry.id,
@@ -24303,10 +24565,15 @@ async function createOnboardingProfile(payload = {}) {
       entry.brand,
       entry.role,
       entry.dress_code,
+      entry.dress_code_en,
       entry.instructions,
+      entry.instructions_en,
       entry.role_notes,
+      entry.role_notes_en,
       entry.policy_title,
+      entry.policy_title_en,
       entry.policy_text,
+      entry.policy_text_en,
       JSON.stringify(entry.doc_types || []),
       entry.pay_rate,
       entry.pay_unit,
@@ -24343,10 +24610,15 @@ async function updateOnboardingProfile(profileId, patch = {}) {
     brand: "brand",
     role: "role",
     dress_code: "dress_code",
+    dress_code_en: "dress_code_en",
     instructions: "instructions",
+    instructions_en: "instructions_en",
     role_notes: "role_notes",
+    role_notes_en: "role_notes_en",
     policy_title: "policy_title",
+    policy_title_en: "policy_title_en",
     policy_text: "policy_text",
+    policy_text_en: "policy_text_en",
     doc_types: "doc_types",
     pay_rate: "pay_rate",
     pay_unit: "pay_unit",
