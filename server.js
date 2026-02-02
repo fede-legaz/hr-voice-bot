@@ -4048,6 +4048,7 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
 
 async function fillPdfTemplate({
   templateUrl,
+  docType = "",
   fields,
   signatureName,
   signatureDataUrl,
@@ -4181,8 +4182,9 @@ async function fillPdfTemplate({
     signatureDateRect = getFieldRect(dateField);
   }
   form.flatten();
-  const isW4Template = /fw4\\.pdf/i.test(String(templateUrl || ""));
-  const isI9Template = /i-9\\.pdf/i.test(String(templateUrl || ""));
+  const normalizedDocType = normalizeKey(docType);
+  const isW4Template = normalizedDocType === "w4" || /fw4\\.pdf/i.test(String(templateUrl || "")) || /w-?4\\.pdf/i.test(String(templateUrl || ""));
+  const isI9Template = normalizedDocType === "i9" || /i-9\\.pdf/i.test(String(templateUrl || ""));
   let w4Page = null;
   let w4SignatureRect = null;
   let w4DateRect = null;
@@ -4230,17 +4232,18 @@ async function fillPdfTemplate({
         const scaleByH = (h / img.height) * 0.98;
         const scaleByW = (w / img.width) * 0.98;
         const isI9EmployeeSig = sigKey.includes("signature of employee") || isI9Template;
-        const maxScale = isI9EmployeeSig ? 5 : 2.5;
-        let scale = isI9EmployeeSig
+        const maxScale = isI9EmployeeSig ? 6.5 : 2.5;
+        const baseScale = isI9EmployeeSig
           ? Math.min(scaleByH, scaleByW, maxScale)
           : Math.min(w / img.width, h / img.height, maxScale);
+        let scale = baseScale;
         if (isI9EmployeeSig) {
-          scale = Math.min(scale * 1.6, maxScale);
+          scale = Math.min(baseScale * 2.7, maxScale);
         }
         const imgW = img.width * scale;
         const imgH = img.height * scale;
         const verticalBias = isW4Template
-          ? 0.55
+          ? 0.65
           : (isI9EmployeeSig ? 0.5 : (sigKey.includes("f1 12") || sigKey.includes("f1_12") ? 0.75 : 0.5));
         let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
@@ -4290,7 +4293,7 @@ async function fillPdfTemplate({
     const fontSize = 10;
     const datePad = 2;
     const dateX = w4DateRect.x + datePad;
-    const dateY = w4DateRect.y + 6;
+    const dateY = w4DateRect.y + 12;
     const pagesNow = pdfDoc.getPages();
     const datePage = pagesNow[w4DateRect.pageIndex || 0] || pagesNow[0];
     if (datePage) {
@@ -6054,6 +6057,24 @@ function renderOnboardingPageHtml(token) {
       .form-grid.two { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
       .form-actions { display: flex; gap: 10px; justify-content: flex-end; }
       .form-field label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+      .label-row { display: flex; align-items: center; gap: 8px; }
+      .info-btn {
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: #fff;
+        color: var(--primary-dark);
+        font-size: 12px;
+        padding: 0;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .info-text { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+      .form-hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+      .form-field input.readonly { background: #f6f4ef; }
       .form-field input, .form-field select, .form-field textarea {
         width: 100%;
         padding: 8px 10px;
@@ -6424,12 +6445,19 @@ function renderOnboardingPageHtml(token) {
                 { label: 'Married filing jointly', value: 'married' },
                 { label: 'Head of household', value: 'head' }
               ]),
-              formField('Dependientes (Step 3a)', 'dependents_children', 'number'),
-              formField('Otros dependientes (Step 3b)', 'dependents_other', 'number'),
-              formField('Total Step 3', 'dependents_total', 'number'),
-              formField('Other income (4a)', 'other_income', 'number'),
-              formField('Deductions (4b)', 'deductions', 'number'),
-              formField('Extra withholding (4c)', 'extra_withholding', 'number'),
+              formField('Cantidad de hijos <17 (Step 3a)', 'dependents_children', 'number', [], { multiplier: 2200, hint: 'Se multiplica por $2,200.' }),
+              formField('Cantidad de otros dependientes (Step 3b)', 'dependents_other', 'number', [], { multiplier: 500, hint: 'Se multiplica por $500.' }),
+              formField('Otros créditos (Step 3, opcional)', 'other_credits', 'number', [], { hint: 'Monto adicional si aplica.' }),
+              formField('Total Step 3 (auto)', 'dependents_total', 'number', [], { readOnly: true }),
+              formField('Other income (4a)', 'other_income', 'number', [], {
+                info: 'If you want tax withheld for other income you expect this year that won’t have withholding, enter the amount of other income here. This may include interest, dividends, and retirement income.'
+              }),
+              formField('Deductions (4b)', 'deductions', 'number', [], {
+                info: 'Use the Deductions Worksheet on page 4 to determine the amount of deductions you may claim, which will reduce your withholding. If you skip this line, your withholding will be based on the standard deduction.'
+              }),
+              formField('Extra withholding (4c)', 'extra_withholding', 'number', [], {
+                info: 'Enter any additional tax you want withheld each pay period.'
+              }),
               formField('Fecha de firma', 'signature_date', 'date')
             ]
           };
@@ -6543,7 +6571,27 @@ function renderOnboardingPageHtml(token) {
               if (field.extra?.showAuth) wrap.dataset.showAuth = field.extra.showAuth;
               const label = document.createElement('label');
               label.textContent = field.label;
-              wrap.appendChild(label);
+              if (field.extra?.info) {
+                const row = document.createElement('div');
+                row.className = 'label-row';
+                row.appendChild(label);
+                const infoBtn = document.createElement('button');
+                infoBtn.type = 'button';
+                infoBtn.className = 'info-btn';
+                infoBtn.textContent = 'i';
+                row.appendChild(infoBtn);
+                wrap.appendChild(row);
+                const infoText = document.createElement('div');
+                infoText.className = 'info-text';
+                infoText.textContent = field.extra.info;
+                infoText.style.display = 'none';
+                infoBtn.addEventListener('click', () => {
+                  infoText.style.display = infoText.style.display === 'none' ? 'block' : 'none';
+                });
+                wrap.appendChild(infoText);
+              } else {
+                wrap.appendChild(label);
+              }
               let input;
               if (field.type === 'select') {
                 input = document.createElement('select');
@@ -6588,6 +6636,10 @@ function renderOnboardingPageHtml(token) {
                   input.value = input.value.replace(/[^a-zA-Z]/g, '').slice(0, 1);
                 });
               }
+              if (field.extra?.readOnly) {
+                input.readOnly = true;
+                input.classList.add('readonly');
+              }
               const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
               if (existingValue) {
                 input.value = existingValue || '';
@@ -6601,6 +6653,12 @@ function renderOnboardingPageHtml(token) {
                 input.value = '';
               }
               wrap.appendChild(input);
+              if (field.extra?.hint) {
+                const hint = document.createElement('div');
+                hint.className = 'form-hint';
+                hint.textContent = field.extra.hint;
+                wrap.appendChild(hint);
+              }
               formFieldsEl.appendChild(wrap);
             });
             const sigWrap = document.createElement('div');
@@ -6631,6 +6689,41 @@ function renderOnboardingPageHtml(token) {
             if (statusInput) statusInput.addEventListener('change', applyConditional);
             if (authInput) authInput.addEventListener('change', applyConditional);
             applyConditional();
+            if ((docType || '').toLowerCase() === 'w4') {
+              const childrenInput = formFieldsEl.querySelector('[data-key="dependents_children"]');
+              const otherInput = formFieldsEl.querySelector('[data-key="dependents_other"]');
+              const creditsInput = formFieldsEl.querySelector('[data-key="other_credits"]');
+              const totalInput = formFieldsEl.querySelector('[data-key="dependents_total"]');
+              const updateStep3 = () => {
+                const getCount = (val) => {
+                  const num = parseInt(String(val || '').replace(/\D+/g, ''), 10);
+                  return Number.isFinite(num) && num > 0 ? num : 0;
+                };
+                const getMoney = (val) => {
+                  const num = parseFloat(String(val || '').replace(/[^\d.]/g, ''));
+                  return Number.isFinite(num) && num > 0 ? num : 0;
+                };
+                const childCount = getCount(childrenInput?.value);
+                const otherCount = getCount(otherInput?.value);
+                const otherCredits = getMoney(creditsInput?.value);
+                const amountChildren = childCount * 2200;
+                const amountOther = otherCount * 500;
+                const total = amountChildren + amountOther + otherCredits;
+                if (childrenInput) childrenInput.dataset.amount = String(amountChildren);
+                if (otherInput) otherInput.dataset.amount = String(amountOther);
+                if (totalInput) totalInput.value = total ? String(total) : '';
+                const childHint = childrenInput?.closest('.form-field')?.querySelector('.form-hint');
+                const otherHint = otherInput?.closest('.form-field')?.querySelector('.form-hint');
+                const creditsHint = creditsInput?.closest('.form-field')?.querySelector('.form-hint');
+                if (childHint) childHint.textContent = 'Monto: $' + amountChildren;
+                if (otherHint) otherHint.textContent = 'Monto: $' + amountOther;
+                if (creditsHint) creditsHint.textContent = 'Monto adicional: $' + otherCredits;
+              };
+              if (childrenInput) childrenInput.addEventListener('input', updateStep3);
+              if (otherInput) otherInput.addEventListener('input', updateStep3);
+              if (creditsInput) creditsInput.addEventListener('input', updateStep3);
+              updateStep3();
+            }
             formStatusEl.textContent = '';
             formModalEl.style.display = 'flex';
             if (formSignaturePad && typeof formSignaturePad.resize === 'function') {
@@ -6692,6 +6785,25 @@ function renderOnboardingPageHtml(token) {
         formFieldsEl.querySelectorAll('[data-key]').forEach((input) => {
           data[input.dataset.key] = input.value || '';
         });
+        if ((activeFormDocType || '').toLowerCase() === 'w4') {
+          const toInt = (val) => {
+            const num = parseInt(String(val || '').replace(/\\D+/g, ''), 10);
+            return Number.isFinite(num) && num > 0 ? num : 0;
+          };
+          const toMoney = (val) => {
+            const num = parseFloat(String(val || '').replace(/[^\\d.]/g, ''));
+            return Number.isFinite(num) && num > 0 ? num : 0;
+          };
+          const childCount = toInt(data.dependents_children);
+          const otherCount = toInt(data.dependents_other);
+          const otherCredits = toMoney(data.other_credits);
+          const amountChildren = childCount * 2200;
+          const amountOther = otherCount * 500;
+          const total = amountChildren + amountOther + otherCredits;
+          data.dependents_children = amountChildren ? String(amountChildren) : '';
+          data.dependents_other = amountOther ? String(amountOther) : '';
+          data.dependents_total = total ? String(total) : '';
+        }
         const signatureDataUrl = formSignaturePad ? formSignaturePad.getDataUrl() : '';
         const signaturePayload = signatureDataUrl || formSignatureExisting;
         formStatusEl.textContent = 'Guardando...';
@@ -7507,6 +7619,7 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     if (mappedFields && mappedFields.__signature_date_field) delete mappedFields.__signature_date_field;
     const pdfBuffer = await fillPdfTemplate({
       templateUrl,
+      docType,
       fields: mappedFields,
       signatureName,
       signatureDataUrl,
