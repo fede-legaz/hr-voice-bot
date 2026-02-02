@@ -9773,6 +9773,8 @@ app.get("/admin/ui", (req, res) => {
       color: var(--primary-dark);
       border: 1px solid var(--border);
     }
+    .onboarding-table tr.clickable-row { cursor: pointer; }
+    .onboarding-table tr.clickable-row:hover { background: #f7f5f0; }
     .onboarding-table .status-pill .status-icon { font-size: 12px; }
     .onboarding-table .status-hired { background: #e6f5ee; color: #1b6b3a; border-color: rgba(27, 107, 58, 0.2); }
     .onboarding-table .status-complete { background: #eaf6fb; color: #1b6b85; border-color: rgba(27, 107, 133, 0.2); }
@@ -21210,6 +21212,11 @@ app.get("/admin/ui", (req, res) => {
       } else {
         filtered.forEach((item) => {
           const tr = document.createElement('tr');
+          tr.classList.add('clickable-row');
+          tr.addEventListener('click', (event) => {
+            if (event.target && event.target.closest && event.target.closest('button,a,input,select,textarea')) return;
+            openOnboardingModal({ onboardingId: item.id });
+          });
           const dateTd = document.createElement('td');
           dateTd.dataset.label = 'Fecha';
           dateTd.textContent = formatDate(item.created_at);
