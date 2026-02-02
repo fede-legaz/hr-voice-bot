@@ -153,6 +153,37 @@ const DEFAULT_ONBOARDING_CONFIG = {
   ]
 };
 
+const ONBOARDING_POLICY_TEMPLATES = {
+  campo: "Politica_Aviso_Renuncia_NCA_-_Miami_Beach.pdf",
+  yes: "Politica_Aviso_Renuncia_YES_CAFE_-_Miami_Beach.pdf",
+  mexi: "Politica_Aviso_Renuncia_MEXI_CAFE_-_Miami_Beach.pdf",
+  mexitrailer: "Politica_Aviso_Renuncia_MEXI_CAFE_-_Miami_Beach.pdf"
+};
+const ONBOARDING_POLICY_FILES = new Set(Object.values(ONBOARDING_POLICY_TEMPLATES).filter(Boolean));
+
+function resolveOnboardingPolicyTemplateUrl(brand) {
+  const key = brandKey(brand || "");
+  const file = ONBOARDING_POLICY_TEMPLATES[key] || "";
+  if (!file) return "";
+  const base = String(PUBLIC_BASE_URL || "").trim();
+  const pathPart = "/assets/onboarding/" + encodeURIComponent(file);
+  return base ? base + pathPart : pathPart;
+}
+
+function applyPolicyTemplateToDocTypes(docTypes, brand) {
+  const url = resolveOnboardingPolicyTemplateUrl(brand);
+  if (!url || !Array.isArray(docTypes)) return Array.isArray(docTypes) ? docTypes : [];
+  return docTypes.map((doc) => {
+    if (!doc || typeof doc !== "object") return doc;
+    const key = normalizeKey(doc.key || "");
+    const mode = String(doc.mode || "").toLowerCase();
+    if (mode === "policy" || key === "policy_renuncia") {
+      return { ...doc, template_url: url };
+    }
+    return doc;
+  });
+}
+
 const BRAND_NOTES = {
   "new campo argentino": "Steakhouse full service, carnes, ritmo alto, ambiente familiar.",
   "yes cafe & pizza": "Fast casual, desayunos/burgers/burritos/shakes/pizzas; turno AM/PM, alta rotación.",
@@ -3411,6 +3442,10 @@ async function resolveTemplateUrl(templateUrl) {
   if (!templateUrl) return "";
   const raw = String(templateUrl || "").trim();
   if (!raw) return "";
+  if (raw.startsWith("/")) {
+    const base = String(PUBLIC_BASE_URL || "").trim();
+    return base ? base + raw : raw;
+  }
   if (/^https?:\/\//i.test(raw)) return raw;
   return await resolveStoredUrl(raw, 24 * 60 * 60);
 }
@@ -4465,6 +4500,23 @@ async function uploadToSpaces({ key, body, contentType }) {
 const app = express();
 app.use(express.json({ limit: "12mb" }));
 app.use(express.urlencoded({ extended: false }));
+
+app.get("/assets/onboarding/:file", (req, res) => {
+  const rawFile = String(req.params?.file || "");
+  if (!rawFile || !ONBOARDING_POLICY_FILES.has(rawFile)) {
+    return res.status(404).send("Not found");
+  }
+  const safeFile = sanitizeFilename(rawFile);
+  const baseDir = path.join(__dirname, "assets", "onboarding");
+  const fullPath = path.join(baseDir, safeFile);
+  res.setHeader("Content-Type", "application/pdf");
+  res.sendFile(fullPath, (err) => {
+    if (err) {
+      const code = err.statusCode || err.status || 404;
+      res.status(code).send("Not found");
+    }
+  });
+});
 
 app.use((req, res, next) => {
   if (req.method !== "POST") return next();
@@ -23956,6 +24008,8 @@ async function fetchLastNoAnswerByPhone(phone) {
   const result = await dbQuery(sql, [phone]);
   const row = result?.rows?.[0];
   if (!row) return null;
+  const docTypesRaw = Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []);
+  const docTypes = applyPolicyTemplateToDocTypes(docTypesRaw, row.brand || "");
   return {
     callSid: row.call_sid,
     brand: row.brand || DEFAULT_BRAND,
@@ -24114,7 +24168,7 @@ async function fetchOnboardingProfile(profileId) {
     role_notes: row.role_notes || "",
     policy_title: row.policy_title || "",
     policy_text: row.policy_text || "",
-    doc_types: Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []),
+    doc_types: docTypes,
     pay_rate: row.pay_rate || "",
     pay_unit: row.pay_unit || "",
     start_date: row.start_date ? new Date(row.start_date).toISOString() : "",
@@ -24166,6 +24220,7 @@ async function createOnboardingProfile(payload = {}) {
   const id = payload.id || randomToken();
   const publicToken = payload.public_token || payload.publicToken || randomToken();
   const nowIso = new Date().toISOString();
+  const rawDocTypes = Array.isArray(payload.doc_types) ? payload.doc_types : [];
   const entry = {
     id,
     public_token: publicToken,
@@ -24181,7 +24236,7 @@ async function createOnboardingProfile(payload = {}) {
     role_notes: payload.role_notes || "",
     policy_title: payload.policy_title || "",
     policy_text: payload.policy_text || "",
-    doc_types: Array.isArray(payload.doc_types) ? payload.doc_types : [],
+    doc_types: rawDocTypes,
     pay_rate: payload.pay_rate || payload.payRate || "",
     pay_unit: payload.pay_unit || payload.payUnit || "",
     start_date: payload.start_date || payload.startDate || "",
@@ -24192,6 +24247,7 @@ async function createOnboardingProfile(payload = {}) {
     created_at: nowIso,
     updated_at: nowIso
   };
+  entry.doc_types = applyPolicyTemplateToDocTypes(entry.doc_types, entry.brand);
   await dbQuery(
     `INSERT INTO onboarding_profiles (
         id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, instructions, role_notes,
