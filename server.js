@@ -189,6 +189,93 @@ function applyPolicyTemplateToDocTypes(docTypes, brand) {
   });
 }
 
+function normalizeDocTypeKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function mergeDocTypesWithConfig(profileDocTypes, configDocTypes) {
+  const configList = Array.isArray(configDocTypes) ? configDocTypes : [];
+  const profileList = Array.isArray(profileDocTypes) ? profileDocTypes : [];
+  const profileByKey = new Map();
+  const out = [];
+  const used = new Set();
+
+  for (const doc of profileList) {
+    const key = normalizeDocTypeKey(doc?.key);
+    if (!key) continue;
+    profileByKey.set(key, doc);
+  }
+
+  const mergeDoc = (base, override) => {
+    const baseKey = base?.key || "";
+    const overrideKey = override?.key || "";
+    const key = String(overrideKey || baseKey || "").trim();
+    const normKey = normalizeDocTypeKey(key);
+    const mode = String(
+      override?.mode ||
+        base?.mode ||
+        (["i9", "w4"].includes(normKey) ? "pdf" : "upload")
+    ).toLowerCase();
+    const template_url =
+      override?.template_url ||
+      override?.templateUrl ||
+      base?.template_url ||
+      base?.templateUrl ||
+      "";
+    return {
+      ...base,
+      ...override,
+      key: key || normKey,
+      label: override?.label || base?.label || key || normKey,
+      mode,
+      template_url
+    };
+  };
+
+  for (const doc of configList) {
+    const key = normalizeDocTypeKey(doc?.key);
+    if (!key) continue;
+    const merged = mergeDoc(doc, profileByKey.get(key) || {});
+    out.push(merged);
+    used.add(key);
+  }
+
+  for (const doc of profileList) {
+    const key = normalizeDocTypeKey(doc?.key);
+    if (!key || used.has(key)) continue;
+    out.push(mergeDoc(doc, {}));
+    used.add(key);
+  }
+
+  return out;
+}
+
+function resolveOnboardingDocType(profile, docType) {
+  const key = normalizeDocTypeKey(docType);
+  const profileDocs = Array.isArray(profile?.doc_types) ? profile.doc_types : [];
+  const configDocs = getOnboardingConfig().doc_types || [];
+  const fromProfile = profileDocs.find((d) => normalizeDocTypeKey(d?.key) === key);
+  const fromConfig = configDocs.find((d) => normalizeDocTypeKey(d?.key) === key);
+  if (fromProfile && fromConfig) {
+    return {
+      ...fromConfig,
+      ...fromProfile,
+      key: fromProfile.key || fromConfig.key || key,
+      label: fromProfile.label || fromConfig.label || fromProfile.key || fromConfig.key || key,
+      mode: fromProfile.mode || fromConfig.mode || "",
+      template_url:
+        fromProfile.template_url ||
+        fromProfile.templateUrl ||
+        fromConfig.template_url ||
+        fromConfig.templateUrl ||
+        ""
+    };
+  }
+  return fromProfile || fromConfig || null;
+}
+
 const BRAND_NOTES = {
   "new campo argentino": "Steakhouse full service, carnes, ritmo alto, ambiente familiar.",
   "yes cafe & pizza": "Fast casual, desayunos/burgers/burritos/shakes/pizzas; turno AM/PM, alta rotación.",
@@ -7995,10 +8082,10 @@ app.post("/onboard/:token/upload", async (req, res) => {
     const dataUrl = String(body.data_url || body.dataUrl || "").trim();
     const fileName = String(body.file_name || body.fileName || "document").trim();
     if (!docType || !dataUrl) return res.status(400).json({ error: "missing_doc" });
-    const allowed = Array.isArray(profile.doc_types)
-      ? profile.doc_types.map((d) => d?.key).filter(Boolean)
-      : [];
-    if (allowed.length && !allowed.includes(docType)) {
+    const allowedDocs = mergeDocTypesWithConfig(profile.doc_types, getOnboardingConfig().doc_types);
+    const allowed = allowedDocs.map((d) => normalizeDocTypeKey(d?.key)).filter(Boolean);
+    const requestedKey = normalizeDocTypeKey(docType);
+    if (allowed.length && !allowed.includes(requestedKey)) {
       return res.status(400).json({ error: "invalid_doc_type" });
     }
     const docUrl = await saveOnboardingDoc({
@@ -8038,10 +8125,10 @@ app.post("/onboard/:token/form", async (req, res) => {
     const docType = (req.body?.doc_type || req.body?.docType || "").toString().trim();
     const docData = req.body?.doc_data || req.body?.docData || null;
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
-    const allowed = Array.isArray(profile.doc_types)
-      ? profile.doc_types.map((d) => d?.key).filter(Boolean)
-      : [];
-    if (allowed.length && !allowed.includes(docType)) {
+    const allowedDocs = mergeDocTypesWithConfig(profile.doc_types, getOnboardingConfig().doc_types);
+    const allowed = allowedDocs.map((d) => normalizeDocTypeKey(d?.key)).filter(Boolean);
+    const requestedKey = normalizeDocTypeKey(docType);
+    if (allowed.length && !allowed.includes(requestedKey)) {
       return res.status(400).json({ error: "doc_type_not_allowed" });
     }
     if (!docData || typeof docData !== "object") {
@@ -8075,8 +8162,7 @@ app.get("/onboard/:token/template-fields", async (req, res) => {
     }
     const docType = (req.query?.doc_type || req.query?.docType || "").toString().trim();
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
-    const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
-    const doc = docTypes.find((d) => d && d.key === docType);
+    const doc = resolveOnboardingDocType(profile, docType);
     if (!doc) return res.status(404).json({ error: "doc_not_found" });
     const templateUrl = doc.template_url || doc.templateUrl || "";
     if (!templateUrl) return res.status(400).json({ error: "missing_template_url" });
@@ -8100,8 +8186,7 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     }
     const docType = (req.body?.doc_type || req.body?.docType || "").toString().trim();
     if (!docType) return res.status(400).json({ error: "missing_doc_type" });
-    const docTypes = Array.isArray(profile.doc_types) ? profile.doc_types : [];
-    const doc = docTypes.find((d) => d && d.key === docType);
+    const doc = resolveOnboardingDocType(profile, docType);
     if (!doc) return res.status(404).json({ error: "doc_not_found" });
     const templateUrl = doc.template_url || doc.templateUrl || "";
     if (!templateUrl) return res.status(400).json({ error: "missing_template_url" });
@@ -24445,7 +24530,9 @@ async function fetchOnboardingProfile(profileId) {
   const row = result?.rows?.[0];
   if (!row) return null;
   const docTypesRaw = Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []);
-  const docTypes = applyPolicyTemplateToDocTypes(docTypesRaw, row.brand || "");
+  const configDocTypes = getOnboardingConfig().doc_types;
+  const mergedDocTypes = mergeDocTypesWithConfig(docTypesRaw, configDocTypes);
+  const docTypes = applyPolicyTemplateToDocTypes(mergedDocTypes, row.brand || "");
   return {
     id: row.id,
     public_token: row.public_token || "",
@@ -24519,6 +24606,8 @@ async function createOnboardingProfile(payload = {}) {
   const publicToken = payload.public_token || payload.publicToken || randomToken();
   const nowIso = new Date().toISOString();
   const rawDocTypes = Array.isArray(payload.doc_types) ? payload.doc_types : [];
+  const configDocTypes = getOnboardingConfig().doc_types;
+  const baseDocTypes = rawDocTypes.length ? rawDocTypes : configDocTypes;
   const entry = {
     id,
     public_token: publicToken,
@@ -24550,7 +24639,10 @@ async function createOnboardingProfile(payload = {}) {
     created_at: nowIso,
     updated_at: nowIso
   };
-  entry.doc_types = applyPolicyTemplateToDocTypes(entry.doc_types, entry.brand);
+  entry.doc_types = applyPolicyTemplateToDocTypes(
+    mergeDocTypesWithConfig(baseDocTypes, configDocTypes),
+    entry.brand
+  );
   await dbQuery(
     `INSERT INTO onboarding_profiles (
         id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
