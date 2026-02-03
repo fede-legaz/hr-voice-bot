@@ -70,6 +70,8 @@ const USER_SESSION_TTL_MS = Number(process.env.USER_SESSION_TTL_MS) || VIEWER_SE
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY || "";
 const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || PUBLIC_BASE_URL;
+const INBOUND_LOOKBACK_DAYS = Number(process.env.INBOUND_LOOKBACK_DAYS) || 90;
+const INBOUND_CODE_LENGTH = Number(process.env.INBOUND_CODE_LENGTH) || 6;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -1334,6 +1336,82 @@ function normalizeSmsBody(text) {
     .trim()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
+}
+
+function normalizeDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function extractLastNameFromSpeech(speech) {
+  const norm = normalizeKey(speech || "");
+  if (!norm) return "";
+  const parts = norm.split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  const blacklist = new Set(["mi", "apellido", "es", "soy", "me", "llamo", "llama", "por", "para", "en", "de", "del", "la", "el"]);
+  const filtered = parts.filter((p) => !blacklist.has(p));
+  const pick = filtered.length ? filtered : parts;
+  return pick[pick.length - 1] || "";
+}
+
+async function fetchRecentPortalApplication({ phone, code, lastName }) {
+  const since = new Date(Date.now() - INBOUND_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+  const phoneNorm = normalizePhone(phone || "");
+  const codeNorm = normalizeDigits(code || "");
+  const lastNameNorm = normalizeKey(lastName || "");
+  if (dbPool) {
+    const params = [since.toISOString()];
+    let sql = `
+      SELECT id, slug, brand, role, name, email, phone, application_code, answers, resume_url, photo_url, locations, created_at
+      FROM portal_applications
+      WHERE created_at >= $1
+    `;
+    if (phoneNorm) {
+      params.push(phoneNorm);
+      sql += ` AND phone = $${params.length}`;
+    }
+    if (codeNorm) {
+      params.push(codeNorm);
+      sql += ` AND (application_code = $${params.length} OR (answers->>'apply_code') = $${params.length})`;
+    }
+    if (lastNameNorm) {
+      params.push(`%${lastNameNorm}%`);
+      sql += ` AND LOWER(name) LIKE $${params.length}`;
+    }
+    sql += " ORDER BY created_at DESC LIMIT 1";
+    try {
+      const resp = await dbPool.query(sql, params);
+      return resp.rows?.[0] || null;
+    } catch (err) {
+      console.error("[inbound] failed to fetch portal application", err);
+    }
+  }
+  try {
+    if (!fs.existsSync(PORTAL_APPS_PATH)) return null;
+    const raw = await fs.promises.readFile(PORTAL_APPS_PATH, "utf8");
+    const list = JSON.parse(raw || "[]");
+    const filtered = Array.isArray(list) ? list.filter((app) => {
+      if (!app) return false;
+      const createdAt = app.created_at ? new Date(app.created_at) : null;
+      if (!createdAt || Number.isNaN(createdAt.getTime())) return false;
+      if (createdAt < since) return false;
+      if (phoneNorm && normalizePhone(app.phone || "") !== phoneNorm) return false;
+      if (codeNorm) {
+        const appCode = normalizeDigits(app.application_code || app.answers?.apply_code || app.answers?.__apply_code || "");
+        if (!appCode || appCode !== codeNorm) return false;
+      }
+      if (lastNameNorm) {
+        const nameNorm = normalizeKey(app.name || "");
+        if (!nameNorm.includes(lastNameNorm)) return false;
+      }
+      return true;
+    }) : [];
+    if (!filtered.length) return null;
+    filtered.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    return filtered[0];
+  } catch (err) {
+    console.error("[inbound] failed to read portal apps file", err);
+  }
+  return null;
 }
 
 function inferSourceFromReferrer(referrer) {
@@ -3201,6 +3279,7 @@ async function initDb() {
         name TEXT,
         email TEXT,
         phone TEXT,
+        application_code TEXT,
         consent BOOLEAN NOT NULL DEFAULT FALSE,
         answers JSONB,
         resume_url TEXT,
@@ -3210,6 +3289,7 @@ async function initDb() {
       );
     `);
     await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS consent BOOLEAN NOT NULL DEFAULT FALSE;`);
+    await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS application_code TEXT;`);
     await dbPool.query(`ALTER TABLE portal_applications ADD COLUMN IF NOT EXISTS locations JSONB;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_slug ON portal_applications (slug);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_portal_apps_created ON portal_applications (created_at DESC);`);
@@ -22919,6 +22999,65 @@ function isConsentNo({ speech, digits }) {
   return /\b(no|prefiero no|no gracias|don'?t|do not)\b/.test(norm);
 }
 
+function buildStreamTwiml({ payload, lang }) {
+  const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
+  const paramTags = [
+    { name: "to", value: payload.to },
+    { name: "brand", value: payload.brand },
+    { name: "role", value: payload.role },
+    { name: "english", value: payload.englishRequired },
+    { name: "address", value: payload.address },
+    { name: "applicant", value: payload.applicant },
+    { name: "cv_summary", value: payload.cv_summary },
+    { name: "cv_id", value: payload.cv_id },
+    { name: "resume_url", value: payload.resume_url },
+    { name: "custom_question", value: payload.custom_question || payload.customQuestion },
+    { name: "custom_question_mode", value: payload.custom_question_mode || payload.customQuestionMode },
+    { name: "lang", value: lang }
+  ]
+    .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
+    .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
+    .join("\n");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">Perfecto, arrancamos.</Say>
+  <Connect>
+    <Stream url="${wsUrl}">
+${paramTags}
+    </Stream>
+  </Connect>
+</Response>`;
+}
+
+function buildInboundIdentifyTwiml({ token, lang }) {
+  const promptEs = "Si ya aplicaste, ingresá tu código de seis dígitos. Si no, decí tu apellido.";
+  const promptEn = "If you already applied, enter your six digit code. If not, say your last name.";
+  const gatherAction = xmlEscapeAttr(`${PUBLIC_BASE_URL}/inbound/identify?token=${token}&lang=${lang}`);
+  const line = lang === "en" ? promptEn : promptEs;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech dtmf" action="${gatherAction}" method="POST" timeout="6" speechTimeout="auto" language="${lang === "en" ? "en-US" : "es-US"}" hints="yes cafe, mexi cafe, campo, apellido, codigo, code">
+    <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">${xmlEscapeAttr(line)}</Say>
+  </Gather>
+  <Hangup/>
+</Response>`;
+}
+
+function buildInboundBrandTwiml({ token, lang }) {
+  const promptEs = "No encontré tu aplicación. ¿Para qué local querés aplicar? Decí: Yes Café, Mexi Café o New Campo Argentino. También podés presionar 1, 2 o 3.";
+  const promptEn = "I couldn't find your application. Which location are you applying to? Say: Yes Cafe, Mexi Cafe, or New Campo Argentino. You can also press 1, 2, or 3.";
+  const gatherAction = xmlEscapeAttr(`${PUBLIC_BASE_URL}/inbound/brand?token=${token}&lang=${lang}`);
+  const line = lang === "en" ? promptEn : promptEs;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Gather input="speech dtmf" action="${gatherAction}" method="POST" timeout="6" speechTimeout="auto" language="${lang === "en" ? "en-US" : "es-US"}" hints="yes cafe, mexi cafe, campo, 1, 2, 3">
+    <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">${xmlEscapeAttr(line)}</Say>
+  </Gather>
+  <Hangup/>
+</Response>`;
+}
+
 app.post("/consent", express.urlencoded({ extended: false }), async (req, res) => {
   const token = String(req.query?.token || "").trim();
   const attempt = Number(req.query?.attempt || "1");
@@ -22956,35 +23095,13 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
   }
 
   if (yes) {
+    if (entry.mode === "inbound") {
+      entry.payload = entry.payload || {};
+      if (!entry.payload.caller) entry.payload.caller = normalizePhone(req.body?.From || payload.to || "");
+      return res.type("text/xml").send(buildInboundIdentifyTwiml({ token, lang }));
+    }
     voiceCtxByToken.delete(token);
-    const wsUrl = xmlEscapeAttr(`${toWss(PUBLIC_BASE_URL)}/media-stream`);
-    const paramTags = [
-      { name: "to", value: payload.to },
-      { name: "brand", value: payload.brand },
-      { name: "role", value: payload.role },
-      { name: "english", value: payload.englishRequired },
-      { name: "address", value: payload.address },
-      { name: "applicant", value: payload.applicant },
-      { name: "cv_summary", value: payload.cv_summary },
-      { name: "cv_id", value: payload.cv_id },
-      { name: "resume_url", value: payload.resume_url },
-      { name: "custom_question", value: payload.custom_question || payload.customQuestion },
-      { name: "custom_question_mode", value: payload.custom_question_mode || payload.customQuestionMode },
-      { name: "lang", value: lang }
-    ]
-      .filter(p => p.value !== undefined && p.value !== null && `${p.value}` !== "")
-      .map(p => `      <Parameter name="${xmlEscapeAttr(p.name)}" value="${xmlEscapeAttr(p.value)}" />`)
-      .join("\n");
-
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">Perfecto, arrancamos.</Say>
-  <Connect>
-    <Stream url="${wsUrl}">
-${paramTags}
-    </Stream>
-  </Connect>
-</Response>`;
+    const twiml = buildStreamTwiml({ payload, lang });
     return res.type("text/xml").send(twiml);
   }
 
@@ -23042,6 +23159,125 @@ ${paramTags}
     <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(confirmLine)}</Say>
   </Gather>
   <Say language="en-US" voice="Polly.Joanna-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
+  <Hangup/>
+</Response>`;
+  return res.type("text/xml").send(twiml);
+});
+
+function resolveInboundBrandChoice(text = "", digits = "") {
+  const d = String(digits || "").trim();
+  if (d === "1") return { slug: "yes", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
+  if (d === "2") return { slug: "mexi", brand: "Mexi Cafe – Miami Beach" };
+  if (d === "3") return { slug: "campo", brand: "New Campo Argentino" };
+  const norm = normalizeKey(text || "");
+  if (norm.includes("mexi")) return { slug: "mexi", brand: "Mexi Cafe – Miami Beach" };
+  if (norm.includes("campo")) return { slug: "campo", brand: "New Campo Argentino" };
+  if (norm.includes("yes")) return { slug: "yes", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
+  return null;
+}
+
+app.post("/twilio/voice/inbound", express.urlencoded({ extended: false }), (req, res) => {
+  const from = normalizePhone(req.body?.From || "");
+  const callSid = req.body?.CallSid || "";
+  if (!from) {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
+  const token = randomToken();
+  voiceCtxByToken.set(token, {
+    mode: "inbound",
+    callSid,
+    payload: {
+      to: from,
+      caller: from,
+      brand: DEFAULT_BRAND,
+      role: DEFAULT_ROLE
+    },
+    expiresAt: Date.now() + CALL_TTL_MS
+  });
+  const consentParams = new URLSearchParams({ token, attempt: "1", lang: "es" }).toString();
+  const recVarsEs = buildRecordingVars({ brand: DEFAULT_BRAND, role: DEFAULT_ROLE, applicant: "", lang: "es" });
+  const introLine = getRecordingCopy("es", "recording_intro", DEFAULT_RECORDING_INTRO_ES, recVarsEs);
+  const consentLine = getRecordingCopy("es", "recording_consent", DEFAULT_RECORDING_CONSENT_ES, recVarsEs);
+  const noResponseLine = getRecordingCopy("es", "recording_no_response", DEFAULT_RECORDING_NO_RESPONSE_ES, recVarsEs);
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(introLine)}</Say>
+  <Gather input="speech dtmf" action="${xmlEscapeAttr(`${PUBLIC_BASE_URL}/consent?${consentParams}`)}" method="POST" timeout="6" speechTimeout="auto" language="es-US" hints="si, sí, no, yes, sure, ok, 1, 2, english">
+    <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(consentLine)}</Say>
+  </Gather>
+  <Say language="es-US" voice="Polly.Lupe-Neural">${xmlEscapeAttr(noResponseLine)}</Say>
+  <Hangup/>
+</Response>`;
+  return res.type("text/xml").send(twiml);
+});
+
+app.post("/inbound/identify", express.urlencoded({ extended: false }), async (req, res) => {
+  const token = String(req.query?.token || "").trim();
+  const lang = (req.query?.lang || "es").toString();
+  const entry = token ? voiceCtxByToken.get(token) : null;
+  if (!entry) {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
+  const speech = req.body?.SpeechResult || "";
+  const digits = normalizeDigits(req.body?.Digits || "");
+  const from = normalizePhone(req.body?.From || entry.payload?.caller || "");
+  const code = digits.length >= INBOUND_CODE_LENGTH ? digits.slice(0, INBOUND_CODE_LENGTH) : "";
+  const lastName = code ? "" : extractLastNameFromSpeech(speech);
+  const app = await fetchRecentPortalApplication({ phone: from, code, lastName });
+  if (app) {
+    const brand = app.brand || DEFAULT_BRAND;
+    const role = app.role || DEFAULT_ROLE;
+    const applicant = app.name || "";
+    const payload = {
+      to: from,
+      from: TWILIO_VOICE_FROM || "",
+      brand,
+      role,
+      englishRequired: resolveEnglishRequired(brand, role, {}),
+      address: resolveAddress(brand, null),
+      applicant,
+      cv_summary: "",
+      cv_id: "",
+      resume_url: app.resume_url || ""
+    };
+    if (entry.callSid) {
+      const call = buildCallFromPayload(payload, { callSid: entry.callSid, to: from });
+      call.from = normalizePhone(req.body?.To || "") || call.from;
+      call.callStatus = "inbound";
+      callsByCallSid.set(entry.callSid, call);
+    }
+    voiceCtxByToken.delete(token);
+    return res.type("text/xml").send(buildStreamTwiml({ payload, lang }));
+  }
+  return res.type("text/xml").send(buildInboundBrandTwiml({ token, lang }));
+});
+
+app.post("/inbound/brand", express.urlencoded({ extended: false }), async (req, res) => {
+  const token = String(req.query?.token || "").trim();
+  const lang = (req.query?.lang || "es").toString();
+  const entry = token ? voiceCtxByToken.get(token) : null;
+  if (!entry) {
+    return res.type("text/xml").send(`<?xml version="1.0" encoding="UTF-8"?><Response><Hangup/></Response>`);
+  }
+  const choice = resolveInboundBrandChoice(req.body?.SpeechResult || "", req.body?.Digits || "");
+  if (!choice) {
+    return res.type("text/xml").send(buildInboundBrandTwiml({ token, lang }));
+  }
+  const slug = choice.slug;
+  const applyUrl = PUBLIC_BASE_URL ? `${PUBLIC_BASE_URL}/apply/${slug}?src=phone_inbound` : `/apply/${slug}`;
+  const msg = lang === "en"
+    ? `Thanks! Apply here: ${applyUrl}`
+    : `Gracias. Aplicá acá: ${applyUrl}`;
+  try {
+    const to = entry.payload?.caller || "";
+    if (to) await sendSms(to, msg);
+  } catch (err) {
+    console.error("[inbound] sms send failed", err);
+  }
+  voiceCtxByToken.delete(token);
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say language="${lang === "en" ? "en-US" : "es-US"}" voice="${lang === "en" ? "Polly.Joanna-Neural" : "Polly.Lupe-Neural"}">${xmlEscapeAttr(msg)}</Say>
   <Hangup/>
 </Response>`;
   return res.type("text/xml").send(twiml);

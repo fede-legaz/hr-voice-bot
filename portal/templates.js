@@ -381,6 +381,28 @@ function renderApplyPage(page, options = {}) {
       font-weight: 700;
       text-decoration: none;
     }
+    .status-note .code-card {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px dashed rgba(36, 27, 19, 0.2);
+      background: rgba(31,111,92,0.06);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .status-note .code-label {
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .status-note .code-value {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      color: var(--primary);
+    }
     .form-grid.is-complete {
       min-height: 320px;
       align-content: center;
@@ -482,6 +504,7 @@ function renderApplyPage(page, options = {}) {
     let roleMultiple = false;
     const contactPhoneRaw = page.contactPhone || (page.contact && page.contact.phone) || '';
     const contactName = page.contactName || (page.contact && page.contact.name) || 'Yes! Hiring Team';
+    let lastApplicationCode = '';
 
     const els = {
       brand: document.querySelector('[data-brand]'),
@@ -582,7 +605,7 @@ function renderApplyPage(page, options = {}) {
       els.statusNote.textContent = '';
       els.statusNote.innerHTML = '';
       const phone = normalizePhoneForLink(contactPhoneRaw);
-      if (!phone) return;
+      if (!phone && !lastApplicationCode) return;
       const noteText = t(
         {
           es: 'Para evitar perder la llamada, guardá el número del que te vamos a contactar:',
@@ -590,43 +613,61 @@ function renderApplyPage(page, options = {}) {
         },
         'Please save our calling number:'
       );
-      const wrapper = document.createElement('div');
-      wrapper.className = 'contact-card';
-      const titleEl = document.createElement('div');
-      titleEl.className = 'contact-title';
-      titleEl.textContent = noteText;
-      const nameEl = document.createElement('div');
-      nameEl.className = 'contact-name';
-      const vcardName = contactName || 'Yes! Hiring Team';
-      nameEl.textContent = vcardName;
-      const phoneLink = document.createElement('a');
-      phoneLink.href = 'tel:' + phone;
-      phoneLink.textContent = contactPhoneRaw || phone;
-      phoneLink.rel = 'noopener';
-      phoneLink.className = 'contact-phone';
-      const actions = document.createElement('div');
-      actions.className = 'contact-actions';
-      const safeName = String(vcardName || contactName || 'HR Team').replace(/[\\n\\r]/g, ' ').trim() || 'HR Team';
-      const vcard = [
-        'BEGIN:VCARD',
-        'VERSION:3.0',
-        'FN:' + safeName,
-        'N:;'+ safeName +';;;',
-        'TEL;TYPE=CELL:' + phone,
-        'END:VCARD'
-      ].join('\\n');
-      const vcardLink = document.createElement('a');
-      vcardLink.href = 'data:text/vcard;charset=utf-8,' + encodeURIComponent(vcard);
-      vcardLink.download = 'contact.vcf';
-      vcardLink.textContent = t({ es: 'Guardar contacto', en: 'Save contact' }, 'Save contact') + ' · ' + vcardName;
-      vcardLink.rel = 'noopener';
-      vcardLink.className = 'contact-save';
-      actions.appendChild(vcardLink);
-      wrapper.appendChild(titleEl);
-      wrapper.appendChild(nameEl);
-      wrapper.appendChild(phoneLink);
-      wrapper.appendChild(actions);
-      els.statusNote.appendChild(wrapper);
+      if (phone) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'contact-card';
+        const titleEl = document.createElement('div');
+        titleEl.className = 'contact-title';
+        titleEl.textContent = noteText;
+        const nameEl = document.createElement('div');
+        nameEl.className = 'contact-name';
+        const vcardName = contactName || 'Yes! Hiring Team';
+        nameEl.textContent = vcardName;
+        const phoneLink = document.createElement('a');
+        phoneLink.href = 'tel:' + phone;
+        phoneLink.textContent = contactPhoneRaw || phone;
+        phoneLink.rel = 'noopener';
+        phoneLink.className = 'contact-phone';
+        const actions = document.createElement('div');
+        actions.className = 'contact-actions';
+        const safeName = String(vcardName || contactName || 'HR Team').replace(/[\\n\\r]/g, ' ').trim() || 'HR Team';
+        const vcard = [
+          'BEGIN:VCARD',
+          'VERSION:3.0',
+          'FN:' + safeName,
+          'N:;'+ safeName +';;;',
+          'TEL;TYPE=CELL:' + phone,
+          'END:VCARD'
+        ].join('\\n');
+        const vcardLink = document.createElement('a');
+        vcardLink.href = 'data:text/vcard;charset=utf-8,' + encodeURIComponent(vcard);
+        vcardLink.download = 'contact.vcf';
+        vcardLink.textContent = t({ es: 'Guardar contacto', en: 'Save contact' }, 'Save contact') + ' · ' + vcardName;
+        vcardLink.rel = 'noopener';
+        vcardLink.className = 'contact-save';
+        actions.appendChild(vcardLink);
+        wrapper.appendChild(titleEl);
+        wrapper.appendChild(nameEl);
+        wrapper.appendChild(phoneLink);
+        wrapper.appendChild(actions);
+        els.statusNote.appendChild(wrapper);
+      }
+      if (lastApplicationCode) {
+        const codeWrap = document.createElement('div');
+        codeWrap.className = 'code-card';
+        const codeLabel = document.createElement('div');
+        codeLabel.className = 'code-label';
+        codeLabel.textContent = t(
+          { es: 'Tu código de entrevista', en: 'Your interview code' },
+          'Interview code'
+        );
+        const codeValue = document.createElement('div');
+        codeValue.className = 'code-value';
+        codeValue.textContent = lastApplicationCode;
+        codeWrap.appendChild(codeLabel);
+        codeWrap.appendChild(codeValue);
+        els.statusNote.appendChild(codeWrap);
+      }
     }
 
     function applyTheme() {
@@ -1143,6 +1184,7 @@ function renderApplyPage(page, options = {}) {
         const data = await resp.json();
         if (!resp.ok) throw new Error(data.error || 'submit_failed');
 
+        lastApplicationCode = data.application_code || '';
         setStatus(t(page.content?.thankYou, 'Thanks! We will contact you soon.'), false);
         if (els.form) els.form.classList.add('is-complete');
         renderStatusNote();

@@ -2,6 +2,7 @@
 
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const express = require("express");
 const { createPortalStore } = require("./store");
 const { renderApplyPage } = require("./templates");
@@ -28,6 +29,8 @@ const IMAGE_MIME = new Set([
   "image/x-icon",
   "image/vnd.microsoft.icon"
 ]);
+
+const APPLY_CODE_LENGTH = Math.max(4, Math.min(10, Number(process.env.APPLY_CODE_LENGTH || 6) || 6));
 
 const MIME_EXT = {
   "application/pdf": ".pdf",
@@ -61,6 +64,15 @@ function extForMime(mime, fallbackName) {
   const fallback = path.extname(fallbackName || "");
   if (fallback) return fallback.toLowerCase();
   return ".bin";
+}
+
+function generateApplicationCode(length = APPLY_CODE_LENGTH) {
+  const size = Math.max(4, Math.min(10, Number(length) || 6));
+  let out = "";
+  for (let i = 0; i < size; i += 1) {
+    out += String(crypto.randomInt(0, 10));
+  }
+  return out;
 }
 
 async function saveBufferFile({ uploadsDir, relDir, fileName, buffer, contentType, uploadToSpaces, publicUploadsBaseUrl }) {
@@ -397,6 +409,7 @@ function createPortalRouter(options = {}) {
       const customQuestionMode = customQuestion ? "ai" : "";
 
       const appId = randomToken(10);
+      const applicationCode = generateApplicationCode();
       const appDir = path.posix.join("portal-apps", slug, appId);
       let resumeUrl = "";
       let photoUrl = "";
@@ -437,6 +450,8 @@ function createPortalRouter(options = {}) {
         });
         if (saved) photoUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
       }
+      answers.apply_code = applicationCode;
+      answers.__apply_code = applicationCode;
 
       const application = {
         id: appId,
@@ -447,6 +462,7 @@ function createPortalRouter(options = {}) {
         name,
         email,
         phone,
+        application_code: applicationCode,
         consent,
         answers,
         locations,
@@ -483,7 +499,7 @@ function createPortalRouter(options = {}) {
         });
       }
 
-      return res.json({ ok: true, application_id: appId });
+      return res.json({ ok: true, application_id: appId, application_code: applicationCode });
     } catch (err) {
       logger.error("[portal] submit failed", err.message);
       return res.status(400).json({ error: err.message || "submit_failed" });

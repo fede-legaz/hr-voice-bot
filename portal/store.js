@@ -180,6 +180,7 @@ function createPortalStore(options = {}) {
     const entry = {
       id: app.id || randomToken(8),
       created_at: app.created_at || new Date().toISOString(),
+      application_code: app.application_code || app.answers?.apply_code || app.answers?.__apply_code || "",
       ...app
     };
     state.apps.unshift(entry);
@@ -270,6 +271,7 @@ function createPortalStore(options = {}) {
       name: row.name || "",
       email: row.email || "",
       phone: row.phone || "",
+      application_code: row.application_code || "",
       consent: !!row.consent,
       answers: row.answers || {},
       resume_url: row.resume_url || "",
@@ -405,6 +407,7 @@ function createPortalStore(options = {}) {
       name: app.name || "",
       email: app.email || "",
       phone: app.phone || "",
+      application_code: app.application_code || app.answers?.apply_code || app.answers?.__apply_code || "",
       consent: !!app.consent,
       answers: app.answers || {},
       resume_url: app.resume_url || "",
@@ -415,10 +418,10 @@ function createPortalStore(options = {}) {
       const resp = await dbPool.query(
         `
         INSERT INTO portal_applications (
-          id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations
+          id, slug, brand, role, name, email, phone, application_code, consent, answers, resume_url, photo_url, locations
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        RETURNING id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        RETURNING id, slug, brand, role, name, email, phone, application_code, consent, answers, resume_url, photo_url, locations, created_at
       `,
         [
           entry.id,
@@ -428,6 +431,7 @@ function createPortalStore(options = {}) {
           entry.name,
           entry.email,
           entry.phone,
+          entry.application_code,
           entry.consent,
           ensureJsonValue(entry.answers, {}),
           entry.resume_url,
@@ -449,7 +453,7 @@ function createPortalStore(options = {}) {
       if (!slug) {
         const resp = await dbPool.query(
           `
-          SELECT id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
+          SELECT id, slug, brand, role, name, email, phone, application_code, consent, answers, resume_url, photo_url, locations, created_at
           FROM portal_applications
           ORDER BY created_at DESC
         `
@@ -459,7 +463,7 @@ function createPortalStore(options = {}) {
       }
       const resp = await dbPool.query(
         `
-        SELECT id, slug, brand, role, name, email, phone, consent, answers, resume_url, photo_url, locations, created_at
+        SELECT id, slug, brand, role, name, email, phone, application_code, consent, answers, resume_url, photo_url, locations, created_at
         FROM portal_applications
         WHERE slug = $1
         ORDER BY created_at DESC
