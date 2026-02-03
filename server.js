@@ -4371,14 +4371,22 @@ async function fillPdfTemplate({
         const img = isPng ? await pdfDoc.embedPng(sigBytes) : await pdfDoc.embedJpg(sigBytes);
         const pad = 2;
         const yOffset = 0;
-        const x = targetRect.x + pad;
-        const y = targetRect.y + pad + yOffset;
-        const w = Math.max(1, targetRect.width - pad * 2);
-        const h = Math.max(1, targetRect.height - pad * 2);
         const sigKey = normalizeKey(signatureFieldName || signatureFieldLabel || "");
+        const isI9EmployeeSig = sigKey.includes("signature of employee") || isI9Template;
+        let rect = targetRect;
+        if (isI9EmployeeSig) {
+          rect = {
+            ...targetRect,
+            y: targetRect.y + 6,
+            height: Math.max(1, targetRect.height - 6)
+          };
+        }
+        const x = rect.x + pad;
+        const y = rect.y + pad + yOffset;
+        const w = Math.max(1, rect.width - pad * 2);
+        const h = Math.max(1, rect.height - pad * 2);
         const scaleByH = (h / img.height) * 0.98;
         const scaleByW = (w / img.width) * 0.98;
-        const isI9EmployeeSig = sigKey.includes("signature of employee") || isI9Template;
         const maxScale = isI9EmployeeSig ? 6.5 : 2.5;
         const baseScale = isI9EmployeeSig
           ? Math.min(scaleByH, scaleByW, maxScale)
@@ -4395,14 +4403,14 @@ async function fillPdfTemplate({
         let drawX = x + (w - imgW) * 0.5;
         let drawY = y + (h - imgH) * verticalBias;
         if (isI9EmployeeSig) drawY += 8;
-        drawX = clamp(drawX, targetRect.x + pad, targetRect.x + targetRect.width - pad - imgW);
-        drawY = clamp(drawY, targetRect.y + pad, targetRect.y + targetRect.height - pad - imgH);
+        drawX = clamp(drawX, rect.x + pad, rect.x + rect.width - pad - imgW);
+        drawY = clamp(drawY, rect.y + pad, rect.y + rect.height - pad - imgH);
         if (debugRects && page?.drawRectangle) {
           page.drawRectangle({
-            x: targetRect.x,
-            y: targetRect.y,
-            width: targetRect.width,
-            height: targetRect.height,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
             borderColor: rgb(1, 0, 0),
             borderWidth: 0.5,
             color: undefined
