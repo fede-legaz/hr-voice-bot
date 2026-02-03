@@ -340,6 +340,47 @@ function renderApplyPage(page, options = {}) {
       font-weight: 600;
       text-decoration: none;
     }
+    .status-note .contact-card {
+      margin-top: 12px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(36, 27, 19, 0.12);
+      background: #fff;
+      display: grid;
+      gap: 8px;
+    }
+    .status-note .contact-title {
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .status-note .contact-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .status-note .contact-phone {
+      font-size: clamp(22px, 5vw, 32px);
+      font-weight: 800;
+      color: var(--primary);
+      text-decoration: none;
+      letter-spacing: 0.01em;
+    }
+    .status-note .contact-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .status-note .contact-save {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(31, 111, 92, 0.12);
+      color: var(--accent);
+      font-weight: 700;
+      text-decoration: none;
+    }
     .form-grid.is-complete {
       min-height: 320px;
       align-content: center;
@@ -550,27 +591,41 @@ function renderApplyPage(page, options = {}) {
         'Please save our calling number:'
       );
       const wrapper = document.createElement('div');
-      wrapper.textContent = noteText + ' ';
+      wrapper.className = 'contact-card';
+      const titleEl = document.createElement('div');
+      titleEl.className = 'contact-title';
+      titleEl.textContent = noteText;
+      const nameEl = document.createElement('div');
+      nameEl.className = 'contact-name';
+      const vcardName = 'Yes! Hiring Team';
+      nameEl.textContent = vcardName;
       const phoneLink = document.createElement('a');
       phoneLink.href = 'tel:' + phone;
       phoneLink.textContent = contactPhoneRaw || phone;
       phoneLink.rel = 'noopener';
-      wrapper.appendChild(phoneLink);
-      wrapper.appendChild(document.createTextNode(' · '));
-      const safeName = String(contactName || 'HR Team').replace(/[\\n\\r]/g, ' ').trim() || 'HR Team';
+      phoneLink.className = 'contact-phone';
+      const actions = document.createElement('div');
+      actions.className = 'contact-actions';
+      const safeName = String(vcardName || contactName || 'HR Team').replace(/[\\n\\r]/g, ' ').trim() || 'HR Team';
       const vcard = [
         'BEGIN:VCARD',
         'VERSION:3.0',
         'FN:' + safeName,
+        'N:;'+ safeName +';;;',
         'TEL;TYPE=CELL:' + phone,
         'END:VCARD'
       ].join('\\n');
       const vcardLink = document.createElement('a');
       vcardLink.href = 'data:text/vcard;charset=utf-8,' + encodeURIComponent(vcard);
       vcardLink.download = 'contact.vcf';
-      vcardLink.textContent = t({ es: 'Guardar contacto', en: 'Save contact' }, 'Save contact');
+      vcardLink.textContent = t({ es: 'Guardar contacto', en: 'Save contact' }, 'Save contact') + ' · ' + vcardName;
       vcardLink.rel = 'noopener';
-      wrapper.appendChild(vcardLink);
+      vcardLink.className = 'contact-save';
+      actions.appendChild(vcardLink);
+      wrapper.appendChild(titleEl);
+      wrapper.appendChild(nameEl);
+      wrapper.appendChild(phoneLink);
+      wrapper.appendChild(actions);
       els.statusNote.appendChild(wrapper);
     }
 
