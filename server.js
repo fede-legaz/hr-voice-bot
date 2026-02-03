@@ -4377,8 +4377,8 @@ async function fillPdfTemplate({
         if (isI9EmployeeSig) {
           rect = {
             ...targetRect,
-            y: targetRect.y + 6,
-            height: Math.max(1, targetRect.height - 6)
+            y: targetRect.y + 8,
+            height: Math.max(1, targetRect.height)
           };
         }
         const x = rect.x + pad;
@@ -4393,7 +4393,7 @@ async function fillPdfTemplate({
           : Math.min(w / img.width, h / img.height, maxScale);
         let scale = baseScale;
         if (isI9EmployeeSig) {
-          scale = Math.min(baseScale * 4.0, maxScale);
+          scale = Math.min(scaleByH * 1.25, maxScale);
         }
         const imgW = img.width * scale;
         const imgH = img.height * scale;
