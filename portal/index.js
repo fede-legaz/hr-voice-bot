@@ -196,7 +196,10 @@ function buildPreferenceQuestion({ locations, roles, lang }) {
   const roleList = roleLabels.join(", ");
   if (lang === "en") {
     if (needsLocation && needsRole) {
-      return `From the locations you selected (${locList}), which one works best for you? And from the positions (${roleList}), which do you prefer and have more experience in?`;
+      return [
+        `From the locations you selected (${locList}), which one works best for you?`,
+        `From the positions (${roleList}), which do you prefer and have more experience in?`
+      ].join("\n");
     }
     if (needsLocation) {
       return `From the locations you selected (${locList}), which one works best for you?`;
@@ -204,7 +207,10 @@ function buildPreferenceQuestion({ locations, roles, lang }) {
     return `You selected multiple positions (${roleList}). Which do you prefer and have more experience in?`;
   }
   if (needsLocation && needsRole) {
-    return `De las locaciones que elegiste (${locList}), ¿cuál te queda mejor? Y de los puestos (${roleList}), ¿cuál preferís y en cuál tenés más experiencia?`;
+    return [
+      `De las locaciones que elegiste (${locList}), ¿cuál te queda mejor?`,
+      `De los puestos (${roleList}), ¿cuál preferís y en cuál tenés más experiencia?`
+    ].join("\n");
   }
   if (needsLocation) {
     return `De las locaciones que elegiste (${locList}), ¿cuál te queda mejor?`;
@@ -388,7 +394,7 @@ function createPortalRouter(options = {}) {
       }
       const langPref = body.lang === "en" ? "en" : "es";
       const customQuestion = buildPreferenceQuestion({ locations, roles, lang: langPref });
-      const customQuestionMode = customQuestion ? "exact" : "";
+      const customQuestionMode = customQuestion ? "ai" : "";
 
       const appId = randomToken(10);
       const appDir = path.posix.join("portal-apps", slug, appId);
