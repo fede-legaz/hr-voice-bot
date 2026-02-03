@@ -246,12 +246,13 @@ function createPortalRouter(options = {}) {
     if (!page || page.active === false) {
       return res.status(404).send("not_found");
     }
+    const resolvedContactName = String(page.contactName || page.contact?.name || contactName || "").trim();
     const payload = {
       ...page,
       slug,
       limits: { resumeMaxBytes, photoMaxBytes },
       contactPhone,
-      contactName
+      contactName: resolvedContactName || contactName || ""
     };
     res.type("text/html").send(renderApplyPage(payload));
   });
@@ -262,12 +263,13 @@ function createPortalRouter(options = {}) {
     if (!page || page.active === false) {
       return res.status(404).json({ error: "not_found" });
     }
+    const resolvedContactName = String(page.contactName || page.contact?.name || contactName || "").trim();
     const payload = {
       ...page,
       slug,
       limits: { resumeMaxBytes, photoMaxBytes },
       contactPhone,
-      contactName
+      contactName: resolvedContactName || contactName || ""
     };
     res.json({ ok: true, page: payload });
   });

@@ -481,7 +481,7 @@ function renderApplyPage(page, options = {}) {
     let roleMultiWrap = null;
     let roleMultiple = false;
     const contactPhoneRaw = page.contactPhone || (page.contact && page.contact.phone) || '';
-    const contactName = page.contactName || (page.contact && page.contact.name) || page.brand || 'HR Team';
+    const contactName = page.contactName || (page.contact && page.contact.name) || 'Yes! Hiring Team';
 
     const els = {
       brand: document.querySelector('[data-brand]'),
@@ -597,7 +597,7 @@ function renderApplyPage(page, options = {}) {
       titleEl.textContent = noteText;
       const nameEl = document.createElement('div');
       nameEl.className = 'contact-name';
-      const vcardName = 'Yes! Hiring Team';
+      const vcardName = contactName || 'Yes! Hiring Team';
       nameEl.textContent = vcardName;
       const phoneLink = document.createElement('a');
       phoneLink.href = 'tel:' + phone;
