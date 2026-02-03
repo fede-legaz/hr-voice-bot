@@ -16495,8 +16495,9 @@ app.get("/admin/ui", (req, res) => {
       title.className = 'swipe-title';
       title.textContent = item.applicant || 'Sin nombre';
       titleWrap.appendChild(title);
-      const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
-      const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
+      const display = getCvDisplayLabels(item);
+      const brandLabel = display.locationLabel || display.baseBrandLabel;
+      const roleLabel = display.roleLabel || display.baseRoleLabel;
       const sub = document.createElement('div');
       sub.className = 'swipe-sub';
       sub.textContent = [brandLabel, roleLabel].filter(Boolean).join(' • ');
@@ -16718,8 +16719,9 @@ app.get("/admin/ui", (req, res) => {
       title.className = 'swipe-title';
       title.textContent = call.applicant || 'Sin nombre';
       titleWrap.appendChild(title);
-      const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
-      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+      const display = getCvDisplayLabels(call);
+      const brandLabel = display.locationLabel || display.baseBrandLabel;
+      const roleLabel = display.roleLabel || display.baseRoleLabel;
       const sub = document.createElement('div');
       sub.className = 'swipe-sub';
       sub.textContent = [brandLabel, roleLabel].filter(Boolean).join(' • ');
@@ -17192,6 +17194,57 @@ app.get("/admin/ui", (req, res) => {
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/[^a-z0-9]+/g, ' ')
         .trim();
+    }
+
+    function uniqueLabelList(list) {
+      const seen = new Set();
+      const out = [];
+      (list || []).forEach((item) => {
+        const value = String(item || '').trim();
+        if (!value) return;
+        const key = value.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(value);
+      });
+      return out;
+    }
+
+    function parseCvMetaText(text) {
+      const result = { locations: [], roles: [] };
+      const raw = String(text || '');
+      if (!raw) return result;
+      const parseList = (value) => uniqueLabelList(String(value || '').split(','));
+      raw.split(/\r?\n/).forEach((line) => {
+        const cleaned = String(line || '').trim();
+        if (!cleaned) return;
+        let match = cleaned.match(/^(locations?|locaciones?|local(?:es)?|location)\s*:\s*(.+)$/i);
+        if (match) {
+          result.locations = parseList(match[2]);
+          return;
+        }
+        match = cleaned.match(/^(roles?|role|positions?|posiciones?|puesto(?:s)?)\s*:\s*(.+)$/i);
+        if (match) {
+          result.roles = parseList(match[2]);
+        }
+      });
+      return result;
+    }
+
+    function getCvDisplayLabels(item) {
+      const baseBrandLabel = item?.brandKey ? getBrandDisplayByKey(item.brandKey) : (item?.brand || '');
+      const baseRoleLabel = getRoleDisplayForBrand(item?.brandKey || item?.brand, item?.role || item?.roleKey || '');
+      const meta = parseCvMetaText(item?.cv_text || item?.cv_summary || '');
+      const locationLabels = meta.locations.length ? meta.locations : (baseBrandLabel ? [baseBrandLabel] : []);
+      const roleLabels = meta.roles.length ? meta.roles : (baseRoleLabel ? [baseRoleLabel] : []);
+      return {
+        locationLabels,
+        roleLabels,
+        locationLabel: locationLabels.join(', '),
+        roleLabel: roleLabels.join(', '),
+        baseBrandLabel,
+        baseRoleLabel
+      };
     }
 
     function getRoleDisplayForBrand(brandKey, roleKey) {
@@ -18786,8 +18839,9 @@ app.get("/admin/ui", (req, res) => {
       card.className = 'detail-card';
       const grid = document.createElement('div');
       grid.className = 'detail-grid';
-      const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
-      const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
+      const display = getCvDisplayLabels(call);
+      const brandLabel = display.locationLabel || display.baseBrandLabel;
+      const roleLabel = display.roleLabel || display.baseRoleLabel;
       const statusText = formatInterviewSummary(call);
       const stay = call.stay_plan ? (call.stay_detail ? call.stay_plan + ' (' + call.stay_detail + ')' : call.stay_plan) : '';
       const englishLabel = call.english_detail ? (call.english + ' (' + call.english_detail + ')') : (call.english || '');
@@ -18998,9 +19052,12 @@ app.get("/admin/ui", (req, res) => {
         if (value === undefined || value === null || value === '') return;
         lines.push(label + ': ' + value);
       };
+      const display = getCvDisplayLabels(call);
+      const brandLabel = display.locationLabel || display.baseBrandLabel;
+      const roleLabel = display.roleLabel || display.baseRoleLabel;
       const outcome = outcomeText(call.outcome, call.outcome_detail);
-      push('Local', call.brand || '');
-      push('Posición', call.role || '');
+      push('Local', brandLabel || '');
+      push('Posición', roleLabel || '');
       push('Candidato', call.applicant || '');
       push('Teléfono', call.phone || '');
       push('Fecha', formatDate(call.created_at));
@@ -19992,9 +20049,10 @@ app.get("/admin/ui", (req, res) => {
         const dateTd = buildDateCell(call.created_at);
         dateTd.dataset.label = 'Fecha';
         tr.appendChild(dateTd);
-        const brandLabel = call.brandKey ? getBrandDisplayByKey(call.brandKey) : (call.brand || '');
+        const display = getCvDisplayLabels(call);
+        const brandLabel = display.locationLabel || display.baseBrandLabel;
+        const roleLabel = display.roleLabel || display.baseRoleLabel;
         addCell(brandLabel, 'Local', 'cell-compact', brandLabel);
-        const roleLabel = getRoleDisplayForBrand(call.brandKey || call.brand, call.role || call.roleKey || '');
         addCell(roleLabel, 'Posición', 'cell-compact', roleLabel);
         const candidateTd = document.createElement('td');
         candidateTd.className = 'candidate-cell';
@@ -20319,8 +20377,9 @@ app.get("/admin/ui", (req, res) => {
         dateTd.title = formatDate(item.created_at);
         dateTd.dataset.label = 'Fecha';
         tr.appendChild(dateTd);
-        const brandLabel = item.brandKey ? getBrandDisplayByKey(item.brandKey) : (item.brand || '');
-        const roleLabel = getRoleDisplayForBrand(item.brandKey || item.brand, item.role || item.roleKey || '');
+        const display = getCvDisplayLabels(item);
+        const brandLabel = display.locationLabel || display.baseBrandLabel;
+        const roleLabel = display.roleLabel || display.baseRoleLabel;
         addCell(brandLabel, 'Local', 'cell-compact', brandLabel);
         addCell(roleLabel, 'Posición', 'cell-compact', roleLabel);
         const candidateTd = document.createElement('td');
