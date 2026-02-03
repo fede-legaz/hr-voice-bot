@@ -437,6 +437,8 @@ function renderApplyPage(page, options = {}) {
     const limits = page.limits || { resumeMaxBytes: 8 * 1024 * 1024, photoMaxBytes: 2 * 1024 * 1024 };
     let lang = page.localeDefault || 'es';
     let roleSelectEl = null;
+    let roleMultiWrap = null;
+    let roleMultiple = false;
     const contactPhoneRaw = page.contactPhone || (page.contact && page.contact.phone) || '';
     const contactName = page.contactName || (page.contact && page.contact.name) || page.brand || 'HR Team';
 
@@ -706,15 +708,11 @@ function renderApplyPage(page, options = {}) {
       return wrapper;
     }
 
-    function buildMultiOptionsField(id, label, required, options, layout) {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'field-span';
-      const labelEl = document.createElement('label');
-      labelEl.textContent = label + (required ? ' *' : '');
-      wrapper.appendChild(labelEl);
-
-      const list = document.createElement('div');
+    function renderMultiOptionsList(list, id, options, layout, selectedValues) {
+      if (!list) return;
+      list.innerHTML = '';
       list.className = 'multi-options layout-' + (layout || 'cards');
+      const selectedSet = new Set(selectedValues || []);
       (options || []).forEach((opt, idx) => {
         const value = optionValue(opt);
         if (!value) return;
@@ -727,6 +725,7 @@ function renderApplyPage(page, options = {}) {
         input.name = id;
         input.value = value;
         input.id = id + '_' + idx;
+        if (selectedSet.has(value)) input.checked = true;
         const mapEl = document.createElement('div');
         mapEl.className = 'multi-option-map';
         const content = document.createElement('div');
@@ -750,6 +749,17 @@ function renderApplyPage(page, options = {}) {
         syncChecked();
         list.appendChild(optLabel);
       });
+    }
+
+    function buildMultiOptionsField(id, label, required, options, layout, selectedValues) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'field-span';
+      const labelEl = document.createElement('label');
+      labelEl.textContent = label + (required ? ' *' : '');
+      wrapper.appendChild(labelEl);
+
+      const list = document.createElement('div');
+      renderMultiOptionsList(list, id, options, layout, selectedValues);
       wrapper.appendChild(list);
       const hint = document.createElement('div');
       hint.className = 'hint';
@@ -761,6 +771,12 @@ function renderApplyPage(page, options = {}) {
 
     function readSelectedLocations() {
       return Array.from(document.querySelectorAll('input[name="locations"]:checked'))
+        .map((input) => input.value)
+        .filter(Boolean);
+    }
+
+    function readSelectedRoles() {
+      return Array.from(document.querySelectorAll('input[name="roles"]:checked'))
         .map((input) => input.value)
         .filter(Boolean);
     }
@@ -782,8 +798,8 @@ function renderApplyPage(page, options = {}) {
       return out;
     }
 
-    function syncRoleOptions(roleSelectEl, fields) {
-      if (!roleSelectEl || !fields) return;
+    function syncRoleOptions(fields) {
+      if (!fields) return;
       const roleByLocation = fields.roleByLocation || {};
       const baseOptions = Array.isArray(fields.role?.options) ? fields.role.options : [];
       const selectedLocations = readSelectedLocations();
@@ -791,6 +807,13 @@ function renderApplyPage(page, options = {}) {
       const options = useByLocation
         ? buildRoleOptionsForLocations(selectedLocations, roleByLocation)
         : baseOptions;
+      if (roleMultiple && roleMultiWrap) {
+        const prevSelected = readSelectedRoles();
+        const list = roleMultiWrap.querySelector('.multi-options');
+        renderMultiOptionsList(list, 'roles', options, fields.role?.layout || 'compact', prevSelected);
+        return;
+      }
+      if (!roleSelectEl) return;
       const prev = roleSelectEl.value || '';
       roleSelectEl.innerHTML = '';
       const placeholder = document.createElement('option');
@@ -817,6 +840,8 @@ function renderApplyPage(page, options = {}) {
       els.customFields.innerHTML = '';
       els.fileFields.innerHTML = '';
       roleSelectEl = null;
+      roleMultiWrap = null;
+      roleMultiple = false;
 
       const fields = page.fields || {};
       const nameField = fields.name || { required: true };
@@ -825,6 +850,7 @@ function renderApplyPage(page, options = {}) {
       const roleField = fields.role || {};
       const roleByLocation = fields.roleByLocation || {};
       const locationLayout = fields.locations?.layout || 'cards';
+      const roleLayout = roleField.layout || 'compact';
 
       els.baseFields.appendChild(buildInputField('name', t(nameField.label, 'Full name'), 'text', nameField.required !== false));
       els.baseFields.appendChild(buildInputField('email', t(emailField.label, 'Email'), 'email', emailField.required !== false));
@@ -845,9 +871,19 @@ function renderApplyPage(page, options = {}) {
       const hasRoleByLocation = roleByLocation && Object.keys(roleByLocation).length > 0;
       const baseRoleOptions = Array.isArray(roleField.options) ? roleField.options : [];
       if (hasRoleByLocation || baseRoleOptions.length || roleField.required) {
-        const roleWrap = buildInputField('role', t(roleField.label, 'Role'), 'select', roleField.required === true, baseRoleOptions);
-        roleSelectEl = roleWrap.querySelector('select');
-        els.baseFields.appendChild(roleWrap);
+        const explicitMulti = typeof roleField.multiple === 'boolean' ? roleField.multiple : null;
+        const wantsMultiRoles = explicitMulti !== null
+          ? explicitMulti
+          : (roleField.allowMultiple || roleField.multi || baseRoleOptions.length > 1 || hasRoleByLocation);
+        if (wantsMultiRoles) {
+          roleMultiple = true;
+          roleMultiWrap = buildMultiOptionsField('roles', t(roleField.label, 'Role'), roleField.required === true, baseRoleOptions, roleLayout);
+          els.baseFields.appendChild(roleMultiWrap);
+        } else {
+          const roleWrap = buildInputField('role', t(roleField.label, 'Role'), 'select', roleField.required === true, baseRoleOptions);
+          roleSelectEl = roleWrap.querySelector('select');
+          els.baseFields.appendChild(roleWrap);
+        }
       }
 
       const questions = Array.isArray(page.questions) ? page.questions : [];
@@ -913,9 +949,9 @@ function renderApplyPage(page, options = {}) {
 
       if (hasRoleByLocation) {
         document.querySelectorAll('input[name="locations"]').forEach((input) => {
-          input.addEventListener('change', () => syncRoleOptions(roleSelectEl, fields));
+          input.addEventListener('change', () => syncRoleOptions(fields));
         });
-        syncRoleOptions(roleSelectEl, fields);
+        syncRoleOptions(fields);
       }
     }
 
@@ -940,6 +976,29 @@ function renderApplyPage(page, options = {}) {
       });
     }
 
+    function collectAttributionParams() {
+      const params = new URLSearchParams(window.location.search || '');
+      const pick = (key) => (params.get(key) || '').trim();
+      const out = {};
+      const src = pick('src') || pick('source') || pick('utm_source');
+      if (src) out.src = src;
+      const utmSource = pick('utm_source');
+      if (utmSource) out.utm_source = utmSource;
+      const utmMedium = pick('utm_medium');
+      if (utmMedium) out.utm_medium = utmMedium;
+      const utmCampaign = pick('utm_campaign');
+      if (utmCampaign) out.utm_campaign = utmCampaign;
+      const utmContent = pick('utm_content');
+      if (utmContent) out.utm_content = utmContent;
+      const utmTerm = pick('utm_term');
+      if (utmTerm) out.utm_term = utmTerm;
+      const ref = pick('ref');
+      if (ref) out.ref = ref;
+      const source = pick('source');
+      if (source) out.source = source;
+      return Object.keys(out).length ? out : null;
+    }
+
     async function handleSubmit(event) {
       event.preventDefault();
       setStatus('');
@@ -949,7 +1008,10 @@ function renderApplyPage(page, options = {}) {
         const name = document.getElementById('name')?.value?.trim() || '';
         const email = document.getElementById('email')?.value?.trim() || '';
         const phone = document.getElementById('phone')?.value?.trim() || '';
-        const role = document.getElementById('role')?.value?.trim() || '';
+        const selectedRoles = roleMultiple ? readSelectedRoles() : [];
+        const role = roleMultiple
+          ? (selectedRoles[0] || '')
+          : (document.getElementById('role')?.value?.trim() || '');
         const locationInputs = Array.from(document.querySelectorAll('input[name="locations"]:checked'));
         const locations = locationInputs.map((input) => input.value).filter(Boolean);
         const consent = !!document.getElementById('consent')?.checked;
@@ -964,6 +1026,9 @@ function renderApplyPage(page, options = {}) {
         }
         if (page.fields?.locations?.required && locations.length === 0) {
           throw new Error(t({ es: 'Selecciona una locacion', en: 'Select a location' }, 'Select a location'));
+        }
+        if (page.fields?.role?.required && roleMultiple && selectedRoles.length === 0) {
+          throw new Error(t({ es: 'Selecciona un puesto', en: 'Select a role' }, 'Select a role'));
         }
         if (!consent) {
           throw new Error(t({ es: 'Tenés que aceptar los términos de contacto', en: 'You must accept the contact terms' }, 'You must accept the contact terms'));
@@ -995,12 +1060,14 @@ function renderApplyPage(page, options = {}) {
           throw new Error(t({ es: 'Foto muy grande', en: 'Photo too large' }, 'Photo too large'));
         }
 
+        const attribution = collectAttributionParams();
         const payload = {
           slug: page.slug,
           name,
           email,
           phone,
           role,
+          roles: roleMultiple ? selectedRoles : (role ? [role] : []),
           locations,
           lang,
           consent,
@@ -1008,7 +1075,8 @@ function renderApplyPage(page, options = {}) {
           resume_data_url: resumeFile ? await readFileAsDataUrl(resumeFile) : '',
           resume_file_name: resumeFile ? resumeFile.name : '',
           photo_data_url: photoFile ? await readFileAsDataUrl(photoFile) : '',
-          photo_file_name: photoFile ? photoFile.name : ''
+          photo_file_name: photoFile ? photoFile.name : '',
+          ...(attribution || {})
         };
 
         const resp = await fetch('/apply/' + page.slug + '/submit', {
