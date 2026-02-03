@@ -12066,6 +12066,7 @@ app.get("/admin/ui", (req, res) => {
               <button class="tab-pill active" data-filter="no_calls" type="button">No llamados</button>
               <button class="tab-pill" data-filter="no_answer" type="button">No contestaron</button>
               <button class="tab-pill" data-filter="interviewed" type="button">Entrevistados</button>
+              <button class="tab-pill" data-filter="declined" type="button">Descartados</button>
               <button class="tab-pill" data-filter="hired" type="button">Contratados</button>
               <button class="tab-pill" data-filter="all" type="button">Todos</button>
             </div>
@@ -20883,15 +20884,16 @@ app.get("/admin/ui", (req, res) => {
       const grouped = groupCandidates(raw);
       lastCvList = grouped;
       const lastSeen = getSeenTimestamp(CANDIDATES_SEEN_KEY);
-      const filtered = grouped.filter((item) => {
-        const info = cvStatusInfo(item);
-        if (info.inCall) return true;
-        if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
-        if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
-        if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
-        if (cvFilterMode === 'hired') return item.decision === 'hired' || info.category === 'hired';
-        return true;
-      });
+        const filtered = grouped.filter((item) => {
+          const info = cvStatusInfo(item);
+          if (info.inCall) return true;
+          if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
+          if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
+          if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
+          if (cvFilterMode === 'declined') return item.decision === 'declined';
+          if (cvFilterMode === 'hired') return item.decision === 'hired' || info.category === 'hired';
+          return true;
+        });
       lastCvFiltered = filtered.slice();
       cvListBodyEl.innerHTML = '';
       let hasActiveCall = false;
