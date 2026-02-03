@@ -4691,7 +4691,7 @@ const portalRouter = createPortalRouter({
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
   photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
   contactPhone: TWILIO_VOICE_FROM || TWILIO_SMS_FROM,
-  contactName: "HRBOT",
+  contactName: "Yes! Hiring Team",
   requireAdmin: requireAdminUser,
   requireWrite,
   saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry)),
@@ -12383,6 +12383,10 @@ app.get("/admin/ui", (req, res) => {
                     <input type="text" id="portal-brand" placeholder="Ej. Mexi Cafe" />
                   </div>
                   <div>
+                    <label>Nombre contacto</label>
+                    <input type="text" id="portal-contact-name" placeholder="Yes! Hiring Team" />
+                  </div>
+                  <div>
                     <label>Idioma default</label>
                     <select id="portal-lang">
                       <option value="es">ES</option>
@@ -13270,6 +13274,7 @@ app.get("/admin/ui", (req, res) => {
     const portalStatusEl = document.getElementById('portal-status');
     const portalSlugEl = document.getElementById('portal-slug');
     const portalBrandEl = document.getElementById('portal-brand');
+    const portalContactNameEl = document.getElementById('portal-contact-name');
     const portalLangEl = document.getElementById('portal-lang');
     const portalActiveEl = document.getElementById('portal-active');
     const portalUrlEl = document.getElementById('portal-url');
@@ -15865,6 +15870,7 @@ app.get("/admin/ui", (req, res) => {
       return {
         slug: '',
         brand: '',
+        contactName: 'Yes! Hiring Team',
         role: '',
         active: true,
         localeDefault: 'es',
@@ -16201,6 +16207,7 @@ app.get("/admin/ui", (req, res) => {
       portalCurrent = page;
       portalSetVal(portalSlugEl, page.slug || '');
       portalSetVal(portalBrandEl, page.brand || '');
+      portalSetVal(portalContactNameEl, page.contactName || (page.contact && page.contact.name) || '');
       if (portalLangEl) portalLangEl.value = page.localeDefault === 'en' ? 'en' : 'es';
       if (portalActiveEl) portalActiveEl.value = page.active === false ? 'false' : 'true';
 
@@ -16514,6 +16521,7 @@ app.get("/admin/ui", (req, res) => {
       const data = portalDefaultPage();
       data.slug = (portalSlugEl && portalSlugEl.value || '').trim();
       data.brand = (portalBrandEl && portalBrandEl.value || '').trim();
+      data.contactName = (portalContactNameEl && portalContactNameEl.value || '').trim();
       data.localeDefault = portalLangEl && portalLangEl.value === 'en' ? 'en' : 'es';
       data.active = portalActiveEl && portalActiveEl.value === 'false' ? false : true;
 
