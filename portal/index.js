@@ -108,7 +108,47 @@ function buildCvText(app, page) {
   if (app.name) lines.push(`Name: ${app.name}`);
   if (app.email) lines.push(`Email: ${app.email}`);
   if (app.phone) lines.push(`Phone: ${app.phone}`);
-  if (app.role) lines.push(`Role: ${app.role}`);
+  const roleLabels = [];
+  if (Array.isArray(app.roles)) {
+    app.roles.forEach((role) => {
+      if (!role) return;
+      if (typeof role === "string") {
+        roleLabels.push(role);
+        return;
+      }
+      const label = role.label || role.key || role.value || "";
+      if (typeof label === "string" && label) {
+        roleLabels.push(label);
+        return;
+      }
+      if (label && typeof label === "object") {
+        const text = label.es || label.en || "";
+        if (text) roleLabels.push(text);
+      }
+    });
+  } else if (app.answers && Array.isArray(app.answers.__roles)) {
+    app.answers.__roles.forEach((role) => {
+      if (!role) return;
+      if (typeof role === "string") {
+        roleLabels.push(role);
+        return;
+      }
+      const label = role.label || role.key || role.value || "";
+      if (typeof label === "string" && label) {
+        roleLabels.push(label);
+        return;
+      }
+      if (label && typeof label === "object") {
+        const text = label.es || label.en || "";
+        if (text) roleLabels.push(text);
+      }
+    });
+  }
+  if (roleLabels.length) {
+    lines.push(`Roles: ${roleLabels.join(", ")}`);
+  } else if (app.role) {
+    lines.push(`Role: ${app.role}`);
+  }
   if (Array.isArray(app.locations) && app.locations.length) {
     const labels = app.locations.map((loc) => loc.label || loc.key || "").filter(Boolean);
     if (labels.length) lines.push(`Locations: ${labels.join(", ")}`);
@@ -124,6 +164,52 @@ function buildCvText(app, page) {
     });
   }
   return truncateText(lines.join("\n"), 2000);
+}
+
+function buildPreferenceQuestion({ locations, roles, lang }) {
+  const locationLabels = Array.isArray(locations)
+    ? locations.map((loc) => {
+      if (!loc) return "";
+      if (typeof loc === "string") return loc;
+      if (loc.label) {
+        if (typeof loc.label === "string") return loc.label;
+        return loc.label.es || loc.label.en || loc.key || "";
+      }
+      return loc.key || "";
+    }).filter(Boolean)
+    : [];
+  const roleLabels = Array.isArray(roles)
+    ? roles.map((role) => {
+      if (!role) return "";
+      if (typeof role === "string") return role;
+      if (role.label) {
+        if (typeof role.label === "string") return role.label;
+        return role.label.es || role.label.en || role.key || "";
+      }
+      return role.key || "";
+    }).filter(Boolean)
+    : [];
+  const needsLocation = locationLabels.length > 1;
+  const needsRole = roleLabels.length > 1;
+  if (!needsLocation && !needsRole) return "";
+  const locList = locationLabels.join(", ");
+  const roleList = roleLabels.join(", ");
+  if (lang === "en") {
+    if (needsLocation && needsRole) {
+      return `From the locations you selected (${locList}), which one works best for you? And from the positions (${roleList}), which do you prefer and have more experience in?`;
+    }
+    if (needsLocation) {
+      return `From the locations you selected (${locList}), which one works best for you?`;
+    }
+    return `You selected multiple positions (${roleList}). Which do you prefer and have more experience in?`;
+  }
+  if (needsLocation && needsRole) {
+    return `De las locaciones que elegiste (${locList}), ¿cuál te queda mejor? Y de los puestos (${roleList}), ¿cuál preferís y en cuál tenés más experiencia?`;
+  }
+  if (needsLocation) {
+    return `De las locaciones que elegiste (${locList}), ¿cuál te queda mejor?`;
+  }
+  return `Elegiste varios puestos (${roleList}). ¿Cuál preferís y en cuál tenés más experiencia?`;
 }
 
 function createPortalRouter(options = {}) {
@@ -199,7 +285,44 @@ function createPortalRouter(options = {}) {
       const email = String(body.email || "").trim();
       const phoneRaw = String(body.phone || "").trim();
       const phone = normalizePhone(phoneRaw);
-      const role = String(body.role || page.role || "").trim();
+      const roleField = page.fields?.role || {};
+      const roleByLocation = page.fields?.roleByLocation || {};
+      const roleOptions = Array.isArray(roleField.options) ? roleField.options : [];
+      const roleMap = new Map();
+      const addRoleOption = (opt) => {
+        if (!opt) return;
+        if (typeof opt === "string") {
+          roleMap.set(opt, opt);
+          return;
+        }
+        const key = opt.key || opt.value || "";
+        if (!key) return;
+        const labelObj = opt.label || opt;
+        const label = typeof labelObj === "string"
+          ? labelObj
+          : (labelObj.es || labelObj.en || "");
+        roleMap.set(String(key), label || String(key));
+      };
+      roleOptions.forEach(addRoleOption);
+      Object.values(roleByLocation || {}).forEach((list) => {
+        if (!Array.isArray(list)) return;
+        list.forEach(addRoleOption);
+      });
+      const rawRoles = Array.isArray(body.roles)
+        ? body.roles
+        : (body.roles ? [body.roles] : []);
+      const roleValues = rawRoles.length ? rawRoles : (body.role ? [body.role] : []);
+      const roles = [];
+      roleValues.forEach((val) => {
+        const key = String(val || "").trim();
+        if (!key) return;
+        if (roles.some((r) => r.key === key)) return;
+        const label = roleMap.get(key) || key;
+        roles.push({ key, label });
+      });
+      const role = roles.length
+        ? roles[0].key
+        : String(body.role || page.role || "").trim();
       const consent = body.consent === true || body.consent === "true" || body.consent === "on" || body.consent === 1;
       const locationField = page.fields?.locations || {};
       const rawLocations = Array.isArray(body.locations)
@@ -244,6 +367,9 @@ function createPortalRouter(options = {}) {
       if (locationField.required && locations.length === 0) {
         return res.status(400).json({ error: "missing_location" });
       }
+      if (roleField.required && !role) {
+        return res.status(400).json({ error: "missing_role" });
+      }
 
       for (const q of page.questions || []) {
         if (!q || !q.required) continue;
@@ -255,6 +381,12 @@ function createPortalRouter(options = {}) {
         const val = rawAnswers[q.id];
         answers[q.id] = typeof val === "string" ? val.trim() : String(val || "").trim();
       });
+      if (roles.length) {
+        answers.__roles = roles;
+      }
+      const langPref = body.lang === "en" ? "en" : "es";
+      const customQuestion = buildPreferenceQuestion({ locations, roles, lang: langPref });
+      const customQuestionMode = customQuestion ? "exact" : "";
 
       const appId = randomToken(10);
       const appDir = path.posix.join("portal-apps", slug, appId);
@@ -303,6 +435,7 @@ function createPortalRouter(options = {}) {
         slug,
         brand: page.brand || "",
         role,
+        roles,
         name,
         email,
         phone,
@@ -318,31 +451,22 @@ function createPortalRouter(options = {}) {
 
       if (saveCvEntry) {
         const cvText = buildCvText(application, page);
-        if (locations.length) {
-          for (const loc of locations) {
-            await saveCvEntry({
-              brand: loc.key || loc.label || page.brand || "",
-              role: role || "",
-              applicant: name,
-              phone,
-              cv_text: cvText,
-              cv_url: resumeUrl,
-              cv_photo_url: photoUrl,
-              source: `portal:${slug}`
-            });
-          }
-        } else {
-          await saveCvEntry({
-            brand: page.brand || "",
-            role: role || "",
-            applicant: name,
-            phone,
-            cv_text: cvText,
-            cv_url: resumeUrl,
-            cv_photo_url: photoUrl,
-            source: `portal:${slug}`
-          });
-        }
+        const primaryLocation = locations[0] || {};
+        const cvBrand = locations.length === 1
+          ? (primaryLocation.key || primaryLocation.label || page.brand || "")
+          : (page.brand || primaryLocation.key || primaryLocation.label || "");
+        await saveCvEntry({
+          brand: cvBrand,
+          role: role || "",
+          applicant: name,
+          phone,
+          cv_text: cvText,
+          cv_url: resumeUrl,
+          cv_photo_url: photoUrl,
+          source: `portal:${slug}`,
+          custom_question: customQuestion,
+          custom_question_mode: customQuestionMode
+        });
       }
 
       if (notifyOnApplication) {

@@ -1784,6 +1784,10 @@ function buildInstructions(ctx) {
   return [rendered, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
 }
 
+function getEnglishCheckQuestionEn() {
+  return getMandatoryCopy("en", "english_check_question", ENGLISH_CHECK_QUESTION);
+}
+
 function parseEnglishRequired(value) {
   if (value === null || value === undefined) return DEFAULT_ENGLISH_REQUIRED;
   const v = String(value).toLowerCase().trim();
@@ -11320,7 +11324,7 @@ app.get("/admin/ui", (req, res) => {
               <thead>
                 <tr>
                   <th>Email</th>
-                  <th>Rol</th>
+                  <th>Roles</th>
                   <th>Locales</th>
                   <th>Activo</th>
                   <th>Acción</th>
@@ -12201,6 +12205,10 @@ app.get("/admin/ui", (req, res) => {
                     <label>Opciones de rol (una por línea)</label>
                     <textarea id="portal-role-options"></textarea>
                   </div>
+                  <div class="check-row">
+                    <input id="portal-role-multiple" type="checkbox" />
+                    <span class="small">Permitir múltiples puestos</span>
+                  </div>
                 </div>
               </div>
 
@@ -12343,7 +12351,8 @@ app.get("/admin/ui", (req, res) => {
                   <th>Nombre</th>
                   <th>Email</th>
                   <th>Teléfono</th>
-                  <th>Rol</th>
+                  <th>Roles</th>
+                  <th>Fuente</th>
                   <th>CV</th>
                   <th>Foto</th>
                   <th>Respuestas</th>
@@ -12785,6 +12794,7 @@ app.get("/admin/ui", (req, res) => {
     const portalRoleEnEl = document.getElementById('portal-role-en');
     const portalRoleReqEl = document.getElementById('portal-role-required');
     const portalRoleOptionsEl = document.getElementById('portal-role-options');
+    const portalRoleMultiEl = document.getElementById('portal-role-multiple');
     const portalLocationEsEl = document.getElementById('portal-location-es');
     const portalLocationEnEl = document.getElementById('portal-location-en');
     const portalLocationReqEl = document.getElementById('portal-location-required');
@@ -15700,6 +15710,10 @@ app.get("/admin/ui", (req, res) => {
       portalSetVal(portalRoleEsEl, page.fields.role.label.es || '');
       portalSetVal(portalRoleEnEl, page.fields.role.label.en || '');
       portalSetChecked(portalRoleReqEl, !!page.fields.role.required);
+      if (portalRoleMultiEl) {
+        const multiFlag = page.fields.role.multiple;
+        portalRoleMultiEl.checked = typeof multiFlag === 'boolean' ? multiFlag : true;
+      }
       const roleOptions = (page.fields.role.options || []).map((opt) => {
         if (typeof opt === 'string') return opt;
         return opt.es || opt.en || opt.value || '';
@@ -16024,7 +16038,8 @@ app.get("/admin/ui", (req, res) => {
           en: (portalRoleEnEl && portalRoleEnEl.value || '').trim()
         },
         required: portalRoleReqEl ? portalRoleReqEl.checked : false,
-        options: roleOptions
+        options: roleOptions,
+        multiple: portalRoleMultiEl ? portalRoleMultiEl.checked : true
       };
 
       data.fields.locations = {
@@ -16267,6 +16282,33 @@ app.get("/admin/ui", (req, res) => {
         }
         return loc.key || '';
       }).filter(Boolean).join(', ');
+    }
+
+    function portalFormatRoleLabels(app) {
+      const list = Array.isArray(app.roles)
+        ? app.roles
+        : (app.answers && Array.isArray(app.answers.__roles) ? app.answers.__roles : []);
+      if (!list.length) return app.role || '';
+      return list.map((role) => {
+        if (!role) return '';
+        if (typeof role === 'string') return role;
+        if (role.label) {
+          if (typeof role.label === 'string') return role.label;
+          return role.label.es || role.label.en || role.key || '';
+        }
+        return role.key || '';
+      }).filter(Boolean).join(', ');
+    }
+
+    function portalFormatSourceLabel(app) {
+      const utm = app.answers && typeof app.answers === 'object' ? app.answers.__utm : null;
+      const raw = (utm && (utm.source || utm.utm_source || utm.ref)) || '';
+      const key = String(raw || '').trim();
+      if (!key) return 'direct';
+      const page = portalFindPageBySlug(app.slug);
+      const sources = page && Array.isArray(page.sources) ? page.sources : [];
+      const match = sources.find((src) => String(src.key || '').toLowerCase() === key.toLowerCase());
+      return (match && match.label) ? match.label : key;
     }
 
     function portalAddTextCell(row, text, className) {
@@ -16951,7 +16993,8 @@ app.get("/admin/ui", (req, res) => {
         portalAddTextCell(row, app.name || '');
         portalAddTextCell(row, app.email || '');
         portalAddTextCell(row, app.phone || '');
-        portalAddTextCell(row, app.role || '');
+        portalAddTextCell(row, portalFormatRoleLabels(app));
+        portalAddTextCell(row, portalFormatSourceLabel(app));
         portalAddLinkCell(row, app.resume_url || '', 'CV');
         portalAddLinkCell(row, app.photo_url || '', 'Foto');
         const answers = portalBuildAnswerText(app);
@@ -16971,7 +17014,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function portalBuildCsv(apps) {
-      const headers = ['Date', 'Page', 'Brand', 'Locations', 'Name', 'Email', 'Phone', 'Role', 'Resume', 'Photo', 'Answers'];
+      const headers = ['Date', 'Page', 'Brand', 'Locations', 'Name', 'Email', 'Phone', 'Roles', 'Source', 'Resume', 'Photo', 'Answers'];
       const rows = [headers.map(portalCsvEscape).join(',')];
       (apps || []).forEach((app) => {
         const page = portalFindPageBySlug(app.slug);
@@ -16987,7 +17030,8 @@ app.get("/admin/ui", (req, res) => {
           app.name || '',
           app.email || '',
           app.phone || '',
-          app.role || '',
+          portalFormatRoleLabels(app),
+          portalFormatSourceLabel(app),
           app.resume_url || '',
           app.photo_url || '',
           answers || ''
@@ -22774,6 +22818,7 @@ wss.on("connection", (twilioWs, req) => {
     heardSpeech: false,
     userSpoke: false,
     userTurns: 0,
+    englishQuestionInjected: false,
     customQuestionInjected: false,
     lastCommitId: null,
     transcript: [],
@@ -22970,7 +23015,23 @@ DECÍ ESTO Y CALLATE:
       call.lastCommitId = commitId;
       record("turn_committed", { commitId });
 
-      if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
+      if (call.englishRequired && !call.englishQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
+        const q = String(getEnglishCheckQuestionEn() || "").trim();
+        if (q) {
+          const forceLine = call.lang === "en"
+            ? `Ask this question now (exact wording) and wait for the answer: "${q}"`
+            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto) y esperá la respuesta: "${q}"`;
+          openaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine}` }]
+            }
+          }));
+          call.englishQuestionInjected = true;
+        }
+      } else if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
         const q = String(call.customQuestion || "").trim();
         if (q) {
           const aiMode = call.customQuestionMode === "ai";
@@ -23044,6 +23105,7 @@ DECÍ ESTO Y CALLATE:
         call.customQuestion = sp.custom_question || sp.customQuestion || call.customQuestion || "";
         call.customQuestionMode = (sp.custom_question_mode || sp.customQuestionMode || call.customQuestionMode || "").toString().trim() === "ai" ? "ai" : "exact";
         call.customQuestionInjected = false;
+        call.englishQuestionInjected = false;
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
       }
