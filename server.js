@@ -13033,14 +13033,14 @@ app.get("/admin/ui", (req, res) => {
         <div style="font-weight:700;">Pregunta personalizada</div>
         <button class="secondary" id="cv-question-close" type="button">Cerrar</button>
       </div>
-      <div class="small" style="margin:6px 0 8px;">Se integra de forma natural en la llamada (no al inicio).</div>
+      <div class="small" style="margin:6px 0 8px;">Se integra de forma natural en la llamada (no al inicio). Podés agregar más de una pregunta (una por línea).</div>
       <div class="inline" style="justify-content:flex-start; gap:8px; margin-bottom:6px;">
         <select id="cv-question-preset">
           <option value="">Pregunta preescrita…</option>
         </select>
         <button class="secondary btn-compact" id="cv-question-apply" type="button">Usar</button>
       </div>
-      <textarea id="cv-question-text" placeholder="Ej: ¿Tenés disponibilidad para turnos de cierre?"></textarea>
+      <textarea id="cv-question-text" placeholder="Ej: ¿Tenés disponibilidad para turnos de cierre?\nEj 2: ¿Qué experiencia tenés en este puesto?"></textarea>
       <label class="inline" style="gap:8px; align-items:center; margin-top:8px;">
         <input type="checkbox" id="cv-question-ai" />
         <span class="small">Reformular con IA (mantiene el sentido y el idioma).</span>
