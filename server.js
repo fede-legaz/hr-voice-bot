@@ -3060,6 +3060,7 @@ async function initDb() {
         call_sid TEXT,
         name TEXT,
         email TEXT,
+        photo_url TEXT,
         phone TEXT,
         brand TEXT,
         role TEXT,
@@ -3094,6 +3095,7 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS role_notes_en TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS policy_title_en TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS policy_text_en TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS photo_url TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_rate TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_unit TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS start_date DATE;`);
@@ -6180,6 +6182,20 @@ function renderOnboardingPageHtml(token) {
       .grid { display: grid; gap: 12px; }
       .grid.two { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
       .label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+      .email-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .email-row input { flex: 1; min-width: 200px; }
+      .photo-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .photo-preview {
+        width: 68px;
+        height: 68px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: #f5f1e8;
+        background-size: cover;
+        background-position: center;
+      }
+      .photo-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      .photo-actions input[type="file"] { font-size: 12px; }
       .pill {
         display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px;
         background: rgba(27, 122, 140, 0.12); color: var(--primary-dark); font-weight: 700; font-size: 12px;
@@ -6317,6 +6333,26 @@ function renderOnboardingPageHtml(token) {
           <div class="label" id="onboard-label-phone" data-i18n="labelPhone">Teléfono</div>
           <div id="onboard-phone"></div>
         </div>
+        <div>
+          <div class="label" id="onboard-label-email" data-i18n="labelEmail">Email</div>
+          <div class="email-row">
+            <input type="email" id="onboard-email-input" data-i18n-placeholder="placeholderEmail" placeholder="tu@email.com" />
+            <button class="secondary" id="onboard-email-save" type="button" data-i18n="saveEmail">Guardar</button>
+          </div>
+          <div class="status" id="onboard-email-status"></div>
+        </div>
+        <div>
+          <div class="label" id="onboard-label-photo" data-i18n="labelPhoto">Foto (opcional)</div>
+          <div class="photo-row">
+            <div class="photo-preview" id="onboard-photo-preview"></div>
+            <div class="photo-actions">
+              <input type="file" id="onboard-photo-input" accept="image/*" />
+              <button class="secondary" id="onboard-photo-upload" type="button" data-i18n="uploadPhoto">Subir foto</button>
+              <button class="secondary" id="onboard-photo-clear" type="button" data-i18n="removePhoto" style="display:none;">Quitar</button>
+              <span class="status" id="onboard-photo-status"></span>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="card grid" id="onboard-instructions" style="display:none;">
         <div>
@@ -6413,6 +6449,14 @@ function renderOnboardingPageHtml(token) {
       let onboardPin = '';
       const subEl = document.getElementById('onboard-sub');
       const summaryEl = document.getElementById('onboard-summary');
+      const emailInputEl = document.getElementById('onboard-email-input');
+      const emailSaveEl = document.getElementById('onboard-email-save');
+      const emailStatusEl = document.getElementById('onboard-email-status');
+      const photoPreviewEl = document.getElementById('onboard-photo-preview');
+      const photoInputEl = document.getElementById('onboard-photo-input');
+      const photoUploadEl = document.getElementById('onboard-photo-upload');
+      const photoClearEl = document.getElementById('onboard-photo-clear');
+      const photoStatusEl = document.getElementById('onboard-photo-status');
       const instructionsEl = document.getElementById('onboard-instructions');
       const docsCardEl = document.getElementById('onboard-docs-card');
       const docsEl = document.getElementById('onboard-docs');
@@ -6449,6 +6493,8 @@ function renderOnboardingPageHtml(token) {
           labelCandidate: 'Candidato',
           labelRole: 'Local / puesto',
           labelPhone: 'Teléfono',
+          labelEmail: 'Email',
+          labelPhoto: 'Foto (opcional)',
           labelDress: 'Vestimenta',
           labelInstructions: 'Instrucciones',
           labelRoleNotes: 'Notas del rol',
@@ -6457,6 +6503,7 @@ function renderOnboardingPageHtml(token) {
           viewPolicy: 'Ver política',
           clearSignature: 'Limpiar firma',
           placeholderFullName: 'Tu nombre y apellido',
+          placeholderEmail: 'tu@email.com',
           acceptPolicy: 'Aceptar política',
           footerHelp: 'Si necesitás ayuda, respondé este mensaje o contactá a RRHH.',
           formTitle: 'Formulario',
@@ -6486,6 +6533,9 @@ function renderOnboardingPageHtml(token) {
           docEditPdf: 'Editar PDF',
           docReplace: 'Reemplazar',
           docUploading: 'Subiendo…',
+          saveEmail: 'Guardar',
+          uploadPhoto: 'Subir foto',
+          removePhoto: 'Quitar',
           policyHint: 'Firmá la política más abajo.',
           pinInvalid: 'Clave incorrecta. Probá de nuevo.',
           pinRequired: 'Ingresá los últimos 4 dígitos de tu teléfono.',
@@ -6503,6 +6553,8 @@ function renderOnboardingPageHtml(token) {
           labelCandidate: 'Candidate',
           labelRole: 'Location / role',
           labelPhone: 'Phone',
+          labelEmail: 'Email',
+          labelPhoto: 'Photo (optional)',
           labelDress: 'Dress code',
           labelInstructions: 'Instructions',
           labelRoleNotes: 'Role notes',
@@ -6511,6 +6563,7 @@ function renderOnboardingPageHtml(token) {
           viewPolicy: 'View policy',
           clearSignature: 'Clear signature',
           placeholderFullName: 'Your full name',
+          placeholderEmail: 'you@email.com',
           acceptPolicy: 'Accept policy',
           footerHelp: 'If you need help, reply to this message or contact HR.',
           formTitle: 'Form',
@@ -6540,6 +6593,9 @@ function renderOnboardingPageHtml(token) {
           docEditPdf: 'Edit PDF',
           docReplace: 'Replace',
           docUploading: 'Uploading…',
+          saveEmail: 'Save',
+          uploadPhoto: 'Upload photo',
+          removePhoto: 'Remove',
           policyHint: 'Sign the policy below.',
           pinInvalid: 'Incorrect PIN. Try again.',
           pinRequired: 'Enter the last 4 digits of your phone.',
@@ -6644,6 +6700,48 @@ function renderOnboardingPageHtml(token) {
         const opts = options || {};
         const headers = Object.assign({}, opts.headers || {}, onboardAuthHeaders());
         return fetch(url, Object.assign({}, opts, { headers }));
+      }
+
+      function setPhotoPreview(url) {
+        if (!photoPreviewEl) return;
+        if (url) {
+          photoPreviewEl.style.backgroundImage = `url(${url})`;
+        } else {
+          photoPreviewEl.style.backgroundImage = 'none';
+        }
+        if (photoClearEl) photoClearEl.style.display = url ? '' : 'none';
+      }
+
+      function setStatusText(el, msg, isError) {
+        if (!el) return;
+        el.textContent = msg || '';
+        el.style.color = isError ? '#b42318' : 'var(--primary-dark)';
+      }
+
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('file_read_failed'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function saveOnboardProfile(payload) {
+        const resp = await onboardFetch('/onboard/' + encodeURIComponent(TOKEN) + '/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload || {})
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          if (data.error === 'pin_required' || data.error === 'pin_invalid') {
+            openPinModal(data.error === 'pin_invalid' ? t('pinInvalid') : t('pinRequired'));
+          }
+          throw new Error(data.detail || data.error || 'profile_failed');
+        }
+        if (data.profile) state.profile = data.profile;
+        return data.profile;
       }
 
       function openPinModal(message) {
@@ -7379,6 +7477,10 @@ function renderOnboardingPageHtml(token) {
         setText('onboard-name', p.name || '');
         setText('onboard-role', [p.brand, p.role].filter(Boolean).join(' • '));
         setText('onboard-phone', p.phone || '');
+        if (emailInputEl) emailInputEl.value = p.email || '';
+        setPhotoPreview(p.photo_url || '');
+        setStatusText(emailStatusEl, '');
+        setStatusText(photoStatusEl, '');
         setText('onboard-dress', pickLang(p.dress_code, p.dress_code_en));
         setText('onboard-instructions-text', pickLang(p.instructions, p.instructions_en));
         setText('onboard-role-notes', pickLang(p.role_notes, p.role_notes_en));
@@ -7575,6 +7677,62 @@ function renderOnboardingPageHtml(token) {
           } catch (err) {
             ackStatusEl.textContent = t('statusError') + ': ' + err.message;
             ackBtnEl.disabled = false;
+          }
+        });
+      }
+
+      if (emailSaveEl) {
+        emailSaveEl.addEventListener('click', async () => {
+          const email = (emailInputEl?.value || '').trim();
+          if (!email) {
+            setStatusText(emailStatusEl, t('statusError') + ': ' + (t('labelEmail') || 'Email'), true);
+            return;
+          }
+          emailSaveEl.disabled = true;
+          setStatusText(emailStatusEl, t('statusSaving'));
+          try {
+            await saveOnboardProfile({ email });
+            setStatusText(emailStatusEl, t('statusSaved'));
+          } catch (err) {
+            setStatusText(emailStatusEl, t('statusError') + ': ' + err.message, true);
+          } finally {
+            emailSaveEl.disabled = false;
+          }
+        });
+      }
+
+      if (photoUploadEl) {
+        photoUploadEl.addEventListener('click', async () => {
+          const file = photoInputEl?.files?.[0];
+          if (!file) return;
+          photoUploadEl.disabled = true;
+          setStatusText(photoStatusEl, t('docUploading'));
+          try {
+            const dataUrl = await readFileAsDataUrl(file);
+            await saveOnboardProfile({ photo_data_url: dataUrl, photo_file_name: file.name });
+            setStatusText(photoStatusEl, t('statusSaved'));
+            if (photoInputEl) photoInputEl.value = '';
+            setPhotoPreview(state.profile?.photo_url || '');
+          } catch (err) {
+            setStatusText(photoStatusEl, t('statusError') + ': ' + err.message, true);
+          } finally {
+            photoUploadEl.disabled = false;
+          }
+        });
+      }
+
+      if (photoClearEl) {
+        photoClearEl.addEventListener('click', async () => {
+          photoClearEl.disabled = true;
+          setStatusText(photoStatusEl, t('statusSaving'));
+          try {
+            await saveOnboardProfile({ photo_clear: true });
+            setPhotoPreview('');
+            setStatusText(photoStatusEl, t('statusSaved'));
+          } catch (err) {
+            setStatusText(photoStatusEl, t('statusError') + ': ' + err.message, true);
+          } finally {
+            photoClearEl.disabled = false;
           }
         });
       }
@@ -8073,6 +8231,44 @@ app.get("/onboard/:token/data", async (req, res) => {
   } catch (err) {
     console.error("[onboard] data failed", err);
     return res.status(400).json({ error: "onboard_failed", detail: err.message });
+  }
+});
+
+app.post("/onboard/:token/profile", async (req, res) => {
+  try {
+    const token = (req.params?.token || "").trim();
+    if (!token) return res.status(404).json({ error: "not_found" });
+    const profile = await fetchOnboardingProfileByToken(token);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const pinCheck = requireOnboardPin(req, profile);
+    if (!pinCheck.ok) {
+      return res.status(pinCheck.error === "pin_unavailable" ? 400 : 401).json({ error: pinCheck.error });
+    }
+    const email = String(req.body?.email || "").trim();
+    const photoDataUrl = String(req.body?.photo_data_url || req.body?.photoDataUrl || "").trim();
+    const photoFileName = String(req.body?.photo_file_name || req.body?.photoFileName || "photo").trim();
+    const clearPhoto = req.body?.photo_clear === true || req.body?.photo_clear === "true";
+    const patch = {};
+    if (email) patch.email = email;
+    if (clearPhoto) patch.photo_url = "";
+    if (photoDataUrl) {
+      const userKey = sanitizeFilename(`onboard-${profile.id}`);
+      const url = await saveProfilePhoto({
+        dataUrl: photoDataUrl,
+        fileName: photoFileName,
+        userKey,
+        uploadsDir: adminUploadsDir,
+        uploadToSpacesFn: portalUploadToSpaces,
+        publicUploadsBaseUrl: portalPublicUploadsBaseUrl
+      });
+      patch.photo_url = url;
+    }
+    if (!Object.keys(patch).length) return res.json({ ok: true, profile });
+    const updated = await updateOnboardingProfile(profile.id, patch);
+    return res.json({ ok: true, profile: updated });
+  } catch (err) {
+    console.error("[onboard] profile failed", err);
+    return res.status(400).json({ error: "onboard_profile_failed", detail: err.message });
   }
 });
 
@@ -24529,7 +24725,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
 async function fetchOnboardingProfile(profileId) {
   if (!dbPool || !profileId) return null;
   const result = await dbQuery(
-    `SELECT id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
+    `SELECT id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
             policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes,
             status, last_sms_phone, last_sms_sent_at,
             policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
@@ -24549,6 +24745,7 @@ async function fetchOnboardingProfile(profileId) {
     call_sid: row.call_sid || "",
     name: row.name || "",
     email: row.email || "",
+    photo_url: row.photo_url || "",
     phone: row.phone || "",
     brand: row.brand || "",
     role: row.role || "",
@@ -24624,6 +24821,7 @@ async function createOnboardingProfile(payload = {}) {
     call_sid: payload.call_sid || "",
     name: payload.name || "",
     email: payload.email || "",
+    photo_url: payload.photo_url || payload.photoUrl || "",
     phone: payload.phone || "",
     brand: payload.brand || "",
     role: payload.role || "",
@@ -24654,11 +24852,11 @@ async function createOnboardingProfile(payload = {}) {
   );
   await dbQuery(
     `INSERT INTO onboarding_profiles (
-        id, public_token, cv_id, call_sid, name, email, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
+        id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
         policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
      ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-        $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+        $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
      )`,
     [
       entry.id,
@@ -24667,6 +24865,7 @@ async function createOnboardingProfile(payload = {}) {
       entry.call_sid,
       entry.name,
       entry.email,
+      entry.photo_url,
       entry.phone,
       entry.brand,
       entry.role,
@@ -24712,6 +24911,7 @@ async function updateOnboardingProfile(profileId, patch = {}) {
     public_token: "public_token",
     name: "name",
     email: "email",
+    photo_url: "photo_url",
     phone: "phone",
     brand: "brand",
     role: "role",
