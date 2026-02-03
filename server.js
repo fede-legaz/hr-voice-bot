@@ -6705,7 +6705,7 @@ function renderOnboardingPageHtml(token) {
       function setPhotoPreview(url) {
         if (!photoPreviewEl) return;
         if (url) {
-          photoPreviewEl.style.backgroundImage = `url(${url})`;
+          photoPreviewEl.style.backgroundImage = 'url(' + url + ')';
         } else {
           photoPreviewEl.style.backgroundImage = 'none';
         }
