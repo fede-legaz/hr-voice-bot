@@ -23589,7 +23589,7 @@ DECÍ ESTO Y CALLATE:
           }));
           call.englishQuestionInjected = true;
         }
-      } else if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
+      } else if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight && (!call.englishRequired || call.englishQuestionInjected)) {
         const raw = String(call.customQuestion || "").trim();
         const questions = raw.split(/\n+/).map((q) => q.trim()).filter(Boolean);
         if (questions.length) {
