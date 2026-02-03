@@ -17752,15 +17752,15 @@ app.get("/admin/ui", (req, res) => {
       const raw = String(text || '');
       if (!raw) return result;
       const parseList = (value) => uniqueLabelList(String(value || '').split(','));
-      raw.split(/\r?\n/).forEach((line) => {
+      raw.split(/\\r?\\n/).forEach((line) => {
         const cleaned = String(line || '').trim();
         if (!cleaned) return;
-        let match = cleaned.match(/^(locations?|locaciones?|local(?:es)?|location)\s*:\s*(.+)$/i);
+        let match = cleaned.match(/^(locations?|locaciones?|local(?:es)?|location)\\s*:\\s*(.+)$/i);
         if (match) {
           result.locations = parseList(match[2]);
           return;
         }
-        match = cleaned.match(/^(roles?|role|positions?|posiciones?|puesto(?:s)?)\s*:\s*(.+)$/i);
+        match = cleaned.match(/^(roles?|role|positions?|posiciones?|puesto(?:s)?)\\s*:\\s*(.+)$/i);
         if (match) {
           result.roles = parseList(match[2]);
         }
