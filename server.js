@@ -23027,35 +23027,51 @@ DECÍ ESTO Y CALLATE:
         const q = String(getEnglishCheckQuestionEn() || "").trim();
         if (q) {
           const forceLine = call.lang === "en"
-            ? `Ask this question now (exact wording) and wait for the answer: "${q}"`
-            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto) y esperá la respuesta: "${q}"`;
+            ? `Ask this question now in English (exact wording), wait for the answer, then continue the interview: "${q}"`
+            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y luego continuá la entrevista: "${q}"`;
+          const guard = call.lang === "en"
+            ? "Do not schedule or confirm appointments. Follow all guardrails and the original instructions."
+            : "No coordines ni confirmes citas. Seguí todos los guardrails y las instrucciones originales.";
           openaiWs.send(JSON.stringify({
             type: "conversation.item.create",
             item: {
               type: "message",
               role: "user",
-              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine}` }]
+              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine} ${guard}` }]
             }
           }));
           call.englishQuestionInjected = true;
         }
       } else if (call.customQuestion && !call.customQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
-        const q = String(call.customQuestion || "").trim();
-        if (q) {
+        const raw = String(call.customQuestion || "").trim();
+        const questions = raw.split(/\n+/).map((q) => q.trim()).filter(Boolean);
+        if (questions.length) {
           const aiMode = call.customQuestionMode === "ai";
+          const list = questions.map((q, idx) => `${idx + 1}) ${q}`).join(" ");
+          const guard = call.lang === "en"
+            ? "Do not schedule or confirm appointments. Follow all guardrails and then continue the interview."
+            : "No coordines ni confirmes citas. Seguí todos los guardrails y luego continuá la entrevista.";
           const forceLine = call.lang === "en"
-            ? (aiMode
-              ? `Ask this question now, rephrased naturally but with the same meaning and language, and wait for the answer: "${q}"`
-              : `Ask this question now (exact wording) and wait for the answer: "${q}"`)
-            : (aiMode
-              ? `Preguntá ahora esta pregunta reformulándola natural, manteniendo sentido e idioma, y esperá la respuesta: "${q}"`
-              : `Preguntá ahora esta pregunta (texto exacto) y esperá la respuesta: "${q}"`);
+            ? (questions.length > 1
+              ? (aiMode
+                ? `Ask these questions one at a time, rephrased naturally but with the same meaning and language. Wait for the answer after each. Do not combine them. Questions: ${list}`
+                : `Ask these questions one at a time (exact wording). Wait for the answer after each. Do not combine them. Questions: ${list}`)
+              : (aiMode
+                ? `Ask this question now, rephrased naturally but with the same meaning and language, and wait for the answer: "${questions[0]}"`
+                : `Ask this question now (exact wording) and wait for the answer: "${questions[0]}"`))
+            : (questions.length > 1
+              ? (aiMode
+                ? `Preguntá estas preguntas de a una, reformulándolas natural y manteniendo sentido e idioma. Esperá la respuesta después de cada una. No las combines. Preguntas: ${list}`
+                : `Preguntá estas preguntas de a una (texto exacto). Esperá la respuesta después de cada una. No las combines. Preguntas: ${list}`)
+              : (aiMode
+                ? `Preguntá ahora esta pregunta reformulándola natural, manteniendo sentido e idioma, y esperá la respuesta: "${questions[0]}"`
+                : `Preguntá ahora esta pregunta (texto exacto) y esperá la respuesta: "${questions[0]}"`));
           openaiWs.send(JSON.stringify({
             type: "conversation.item.create",
             item: {
               type: "message",
               role: "user",
-              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine}` }]
+              content: [{ type: "input_text", text: `INSTRUCCIÓN (obligatoria, no la digas): ${forceLine} ${guard}` }]
             }
           }));
           call.customQuestionInjected = true;
