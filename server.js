@@ -4387,13 +4387,13 @@ async function fillPdfTemplate({
         const h = Math.max(1, rect.height - pad * 2);
         const scaleByH = (h / img.height) * 0.98;
         const scaleByW = (w / img.width) * 0.98;
-        const maxScale = isI9EmployeeSig ? 6.5 : 2.5;
+        const maxScale = isI9EmployeeSig ? 9.0 : 2.5;
         const baseScale = isI9EmployeeSig
           ? Math.min(scaleByH, scaleByW, maxScale)
           : Math.min(w / img.width, h / img.height, maxScale);
         let scale = baseScale;
         if (isI9EmployeeSig) {
-          scale = Math.min(baseScale * 2.7, maxScale);
+          scale = Math.min(baseScale * 4.0, maxScale);
         }
         const imgW = img.width * scale;
         const imgH = img.height * scale;
