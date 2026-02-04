@@ -2062,11 +2062,27 @@ function collectActiveCalls(allowedBrands) {
     const bKey = brandKey(call.brand || "");
     if (allowedSet && bKey && !allowedSet.has(bKey)) continue;
     const cvId = call.cvId || call.cv_id || "";
-    if (cvId) byCv.set(cvId, status);
+    const payload = {
+      status,
+      answeredBy: normalizeCallStatus(call.answeredBy || ""),
+      callSid: call.callSid || "",
+      roleKey: normalizeKey(call.role || ""),
+      applicant: (call.applicant || "").toLowerCase().trim(),
+      startedAt: call.startedAt || 0
+    };
+    if (cvId) {
+      const existing = byCv.get(cvId);
+      if (!existing || payload.startedAt >= (existing.startedAt || 0)) {
+        byCv.set(cvId, payload);
+      }
+    }
     const phone = normalizePhone(call.to || call.phone || "");
     if (phone && bKey) {
       const key = `${bKey}|${phone}`;
-      if (!byPhone.has(key)) byPhone.set(key, status);
+      const existing = byPhone.get(key);
+      if (!existing || payload.startedAt >= (existing.startedAt || 0)) {
+        byPhone.set(key, payload);
+      }
     }
   }
   return { byCv, byPhone };
@@ -2074,20 +2090,31 @@ function collectActiveCalls(allowedBrands) {
 
 function attachActiveCall(entry, activeIndex) {
   const result = { ...entry };
-  let status = "";
+  const normalizeNameKey = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  let match = null;
   if (entry?.id && activeIndex.byCv.has(entry.id)) {
-    status = activeIndex.byCv.get(entry.id);
+    match = activeIndex.byCv.get(entry.id);
   }
-  if (!status) {
+  if (!match) {
     const bKey = entry.brandKey || brandKey(entry.brand || "");
     const phone = normalizePhone(entry.phone || "");
     const key = bKey && phone ? `${bKey}|${phone}` : "";
     if (key && activeIndex.byPhone.has(key)) {
-      status = activeIndex.byPhone.get(key);
+      const candidate = activeIndex.byPhone.get(key);
+      const entryRoleKey = normalizeKey(entry.roleKey || entry.role || "");
+      const entryName = normalizeNameKey(entry.applicant || "");
+      const matchName = normalizeNameKey(candidate?.applicant || "");
+      const nameOk = !entryName || !matchName || entryName === matchName || entryName.includes(matchName) || matchName.includes(entryName);
+      if ((!entryRoleKey || !candidate?.roleKey || entryRoleKey === candidate.roleKey) && nameOk) {
+        match = candidate;
+      }
     }
   }
+  const status = match?.status || "";
   result.active_call = !!status;
   result.active_call_status = status || "";
+  result.active_call_answered_by = match?.answeredBy || "";
+  result.active_call_sid = match?.callSid || "";
   return result;
 }
 
@@ -19731,6 +19758,17 @@ app.get("/admin/ui", (req, res) => {
       return lines.join('\\n');
     }
 
+    function activeCallLabel(status, answeredBy) {
+      const st = String(status || '').toLowerCase();
+      const amd = String(answeredBy || '').toLowerCase();
+      if (amd.includes('human')) return 'Conectado (humano)';
+      if (amd.includes('machine')) return 'Contestó (máquina)';
+      if (st === 'ringing') return 'Llamando…';
+      if (st === 'queued' || st === 'initiated') return 'En cola';
+      if (st === 'in-progress' || st === 'in progress' || st === 'answered') return 'En llamada';
+      return st ? ('Llamada en curso (' + st + ')') : 'Llamada en curso';
+    }
+
     function cvStatusInfo(item) {
       const statusLabel = outcomeText(item.last_outcome, item.last_outcome_detail);
       const hasCalls = Number(item.call_count || 0) > 0 || !!statusLabel || !!item.last_call_at;
@@ -19740,7 +19778,7 @@ app.get("/admin/ui", (req, res) => {
       let statusClass = '';
       const inCall = !!item.active_call;
       if (inCall) {
-        statusText = 'Llamada en curso';
+        statusText = activeCallLabel(item.active_call_status, item.active_call_answered_by);
         statusClass = 'status-live';
       }
       if (!inCall && isNoAnswer && attempts > 1) {
@@ -19913,6 +19951,8 @@ app.get("/admin/ui", (req, res) => {
             call_count: Number(item.call_count || 0),
             active_call: !!item.active_call,
             active_call_status: item.active_call_status || '',
+            active_call_answered_by: item.active_call_answered_by || '',
+            active_call_sid: item.active_call_sid || '',
             _latestAt: createdAt,
             _lastCallAt: lastCallAt
           };
@@ -19971,6 +20011,8 @@ app.get("/admin/ui", (req, res) => {
         if (item.active_call) {
           entry.active_call = true;
           entry.active_call_status = item.active_call_status || entry.active_call_status;
+          entry.active_call_answered_by = item.active_call_answered_by || entry.active_call_answered_by;
+          entry.active_call_sid = item.active_call_sid || entry.active_call_sid;
         }
         if (lastCallAt && (!entry._lastCallAt || lastCallAt >= entry._lastCallAt)) {
           entry._lastCallAt = lastCallAt;
@@ -23166,13 +23208,13 @@ app.post("/consent", express.urlencoded({ extended: false }), async (req, res) =
 
 function resolveInboundBrandChoice(text = "", digits = "") {
   const d = String(digits || "").trim();
-  if (d === "1") return { slug: "yes", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
+  if (d === "1") return { slug: "yes-cafe", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
   if (d === "2") return { slug: "mexi", brand: "Mexi Cafe – Miami Beach" };
   if (d === "3") return { slug: "campo", brand: "New Campo Argentino" };
   const norm = normalizeKey(text || "");
   if (norm.includes("mexi")) return { slug: "mexi", brand: "Mexi Cafe – Miami Beach" };
   if (norm.includes("campo")) return { slug: "campo", brand: "New Campo Argentino" };
-  if (norm.includes("yes")) return { slug: "yes", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
+  if (norm.includes("yes")) return { slug: "yes-cafe", brand: "Yes! Cafe & Pizza (MiMo / 79th St)" };
   return null;
 }
 
