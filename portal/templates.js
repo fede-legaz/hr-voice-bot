@@ -403,6 +403,12 @@ function renderApplyPage(page, options = {}) {
       letter-spacing: 0.14em;
       color: var(--primary);
     }
+    .status-note .code-hint {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.4;
+    }
     .form-grid.is-complete {
       min-height: 320px;
       align-content: center;
@@ -667,6 +673,16 @@ function renderApplyPage(page, options = {}) {
         codeWrap.appendChild(codeLabel);
         codeWrap.appendChild(codeValue);
         els.statusNote.appendChild(codeWrap);
+        const hint = document.createElement('div');
+        hint.className = 'code-hint';
+        hint.textContent = t(
+          {
+            es: 'Si querés hacer la primera entrevista ahora, llamanos y compartí este código para conectarte.',
+            en: 'If you are ready for your first screening, call us and share this code to connect.'
+          },
+          'Call us and share this code to connect.'
+        );
+        els.statusNote.appendChild(hint);
       }
     }
 
