@@ -677,8 +677,8 @@ function renderApplyPage(page, options = {}) {
         hint.className = 'code-hint';
         hint.textContent = t(
           {
-            es: 'Si querés hacer la primera entrevista ahora, llamanos y compartí este código para conectarte.',
-            en: 'If you are ready for your first screening, call us and share this code to connect.'
+            es: 'Te vamos a llamar pronto. Si querés acelerar el proceso, podés llamar cuando quieras y dar este código para hacer tu primer screening.',
+            en: 'We will call you soon. If you want to speed things up, you can call us anytime and share this code to start your first screening.'
           },
           'Call us and share this code to connect.'
         );
