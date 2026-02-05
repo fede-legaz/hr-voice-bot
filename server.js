@@ -8534,11 +8534,10 @@ app.get("/admin/ui", (req, res) => {
       position: absolute;
       inset: -40px -20px -40px -20px;
       background-image:
-        radial-gradient(circle at 10% 15%, rgba(27, 122, 140, 0.18), transparent 45%),
-        radial-gradient(circle at 90% 10%, rgba(244, 162, 97, 0.2), transparent 55%),
-        linear-gradient(120deg, rgba(11, 52, 64, 0.18), rgba(255, 255, 255, 0)),
-        repeating-linear-gradient(90deg, rgba(27, 122, 140, 0.08) 0, rgba(27, 122, 140, 0.08) 1px, transparent 1px, transparent 120px);
-      opacity: 0.7;
+        radial-gradient(circle at 10% 15%, rgba(27, 122, 140, 0.12), transparent 50%),
+        radial-gradient(circle at 90% 10%, rgba(244, 162, 97, 0.12), transparent 60%),
+        linear-gradient(120deg, rgba(11, 52, 64, 0.08), rgba(255, 255, 255, 0));
+      opacity: 0.45;
       pointer-events: none;
       z-index: 0;
     }
@@ -8552,7 +8551,7 @@ app.get("/admin/ui", (req, res) => {
     .general-shell {
       display: grid;
       grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
-      gap: 24px;
+      gap: 32px;
       align-items: start;
     }
     .general-rail {
@@ -8560,31 +8559,32 @@ app.get("/admin/ui", (req, res) => {
       top: 24px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 18px;
     }
     .general-rail-card {
-      padding: 18px;
-      border-radius: 20px;
-      background: linear-gradient(155deg, #0b3440 0%, #1b5f74 55%, #2a8ca3 100%);
-      color: #f8f3ea;
-      box-shadow: 0 22px 40px rgba(9, 24, 32, 0.35);
+      padding: 18px 18px 16px;
+      border-radius: 18px;
+      background: #ffffff;
+      color: var(--ink);
+      border: 1px solid rgba(15, 55, 63, 0.12);
+      box-shadow: 0 12px 30px rgba(15, 25, 28, 0.06);
     }
     .rail-kicker {
-      font-size: 11px;
-      letter-spacing: 0.28em;
+      font-size: 10px;
+      letter-spacing: 0.32em;
       text-transform: uppercase;
-      opacity: 0.7;
+      color: var(--muted);
     }
     .rail-title {
       font-family: "Space Grotesk", sans-serif;
-      font-size: 22px;
+      font-size: 20px;
       font-weight: 700;
-      margin-top: 8px;
+      margin-top: 6px;
     }
     .rail-sub {
       font-size: 13px;
       line-height: 1.4;
-      color: rgba(248, 243, 234, 0.82);
+      color: var(--muted);
       margin-top: 8px;
     }
     .rail-metrics {
@@ -8596,8 +8596,8 @@ app.get("/admin/ui", (req, res) => {
     .rail-metric {
       padding: 8px 10px;
       border-radius: 12px;
-      background: rgba(255, 255, 255, 0.14);
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: #f6f6f4;
+      border: 1px solid rgba(15, 55, 63, 0.1);
     }
     .metric-label {
       font-size: 9px;
@@ -8613,9 +8613,18 @@ app.get("/admin/ui", (req, res) => {
     .general-content {
       display: flex;
       flex-direction: column;
-      gap: 20px;
+      gap: 28px;
       min-width: 0;
     }
+    #general-view .panel,
+    #general-view .panel-future {
+      background: #ffffff;
+      border: 1px solid rgba(15, 55, 63, 0.12);
+      box-shadow: 0 14px 30px rgba(15, 25, 28, 0.06);
+      border-radius: 20px;
+      padding: 24px;
+    }
+    #general-view .panel-future::after { display: none; }
     .panel-future {
       position: relative;
       background: linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(245, 240, 232, 0.92));
@@ -8662,19 +8671,19 @@ app.get("/admin/ui", (req, res) => {
       align-self: flex-start;
       padding: 6px 12px;
       border-radius: 999px;
-      background: rgba(27, 122, 140, 0.14);
-      color: var(--primary-dark);
+      background: #f6f6f4;
+      color: #4b5b5f;
       font-weight: 700;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
-      border: 1px solid rgba(27, 122, 140, 0.35);
-      box-shadow: 0 6px 14px rgba(27, 122, 140, 0.12);
+      border: 1px solid rgba(15, 55, 63, 0.14);
+      box-shadow: none;
     }
     .general-tabs {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 12px;
     }
     .general-tab {
       position: relative;
@@ -8685,14 +8694,14 @@ app.get("/admin/ui", (req, res) => {
       align-items: flex-start;
       gap: 4px;
       padding: 12px 14px 12px 52px;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.85);
+      border-radius: 14px;
+      background: #ffffff;
       color: var(--primary-dark);
-      border: 1px solid rgba(27, 122, 140, 0.2);
+      border: 1px solid rgba(15, 55, 63, 0.12);
       font-size: 13px;
       font-weight: 700;
       letter-spacing: 0.01em;
-      box-shadow: 0 12px 24px rgba(12, 30, 38, 0.06);
+      box-shadow: none;
     }
     .general-tab::before {
       content: attr(data-icon);
@@ -8703,7 +8712,7 @@ app.get("/admin/ui", (req, res) => {
       width: 28px;
       height: 28px;
       border-radius: 10px;
-      background: rgba(27, 122, 140, 0.12);
+      background: #f3f4f4;
       color: var(--primary-dark);
       display: flex;
       align-items: center;
@@ -8713,31 +8722,31 @@ app.get("/admin/ui", (req, res) => {
     }
     .general-tab .tab-label { font-size: 13px; font-weight: 700; }
     .general-tab .tab-sub { font-size: 11px; font-weight: 500; color: var(--muted); }
-    .general-tab:hover { box-shadow: 0 18px 30px rgba(12, 30, 38, 0.12); }
+    .general-tab:hover { border-color: rgba(27, 122, 140, 0.35); }
     .general-tab.active {
-      background: linear-gradient(135deg, #1b7a8c, #2f9bb4);
-      color: #fff;
-      border-color: transparent;
-      box-shadow: 0 18px 30px rgba(27, 122, 140, 0.28);
+      background: #ffffff;
+      color: var(--primary-dark);
+      border-color: rgba(27, 122, 140, 0.65);
+      box-shadow: none;
     }
     .general-tab.active::before {
-      background: rgba(255, 255, 255, 0.2);
+      background: #1b7a8c;
       color: #fff;
     }
-    .general-tab.active .tab-sub { color: rgba(255, 255, 255, 0.75); }
+    .general-tab.active .tab-sub { color: var(--muted); }
     .general-rail-note {
       padding: 12px 14px;
       border-radius: 14px;
-      border: 1px dashed rgba(27, 122, 140, 0.25);
-      background: rgba(255, 255, 255, 0.75);
+      border: 1px dashed rgba(15, 55, 63, 0.18);
+      background: #ffffff;
       font-size: 12px;
       color: var(--muted);
       line-height: 1.4;
     }
     .general-section {
       position: relative;
-      padding-left: 12px;
-      border-left: 2px solid rgba(27, 122, 140, 0.18);
+      padding-left: 0;
+      border-left: none;
     }
     .general-section.is-hidden { display: none; }
     .hero-panel {
@@ -8750,7 +8759,7 @@ app.get("/admin/ui", (req, res) => {
       background:
         radial-gradient(circle at 30% -10%, rgba(255, 255, 255, 0.7), transparent 55%),
         linear-gradient(120deg, rgba(27, 122, 140, 0.12), rgba(255, 255, 255, 0));
-      opacity: 0.9;
+      opacity: 0.35;
       pointer-events: none;
     }
     .hero-grid {
@@ -8788,17 +8797,18 @@ app.get("/admin/ui", (req, res) => {
     .hero-chip {
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.8);
-      border: 1px solid rgba(27, 122, 140, 0.22);
+      background: #f6f6f4;
+      border: 1px solid rgba(15, 55, 63, 0.14);
       font-size: 12px;
       font-weight: 700;
       color: var(--primary-dark);
-      box-shadow: 0 10px 20px rgba(12, 30, 38, 0.08);
+      box-shadow: none;
     }
     .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
     .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
     .divider { border-top: 1px solid var(--border); margin: 18px 0; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    #general-view .grid { gap: 18px; }
     .inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     .row { margin-top: 12px; }
     .muted { color: var(--muted); font-size: 13px; }
