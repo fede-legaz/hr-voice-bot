@@ -9144,11 +9144,134 @@ app.get("/admin/ui", (req, res) => {
       animation-delay: var(--delay, 0s);
     }
     #general-view {
+      position: relative;
       display: flex;
       flex-direction: column;
       gap: 20px;
     }
     #general-view .panel { margin-bottom: 0; }
+    #general-view::before {
+      content: "";
+      position: absolute;
+      inset: -40px -20px -40px -20px;
+      background-image:
+        radial-gradient(circle at 10% 15%, rgba(27, 122, 140, 0.16), transparent 45%),
+        radial-gradient(circle at 90% 10%, rgba(244, 162, 97, 0.18), transparent 50%),
+        linear-gradient(120deg, rgba(11, 52, 64, 0.16), rgba(255, 255, 255, 0));
+      opacity: 0.6;
+      pointer-events: none;
+      z-index: 0;
+    }
+    #general-view > .panel { position: relative; z-index: 1; }
+    .panel-future {
+      position: relative;
+      background: linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(245, 240, 232, 0.92));
+      border: 1px solid rgba(27, 122, 140, 0.22);
+      box-shadow: 0 20px 45px rgba(12, 30, 38, 0.12), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+      backdrop-filter: blur(6px);
+    }
+    .panel-future::after {
+      content: "";
+      position: absolute;
+      inset: 1px;
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.5);
+      pointer-events: none;
+      opacity: 0.65;
+    }
+    .panel-future .panel-title {
+      font-size: 19px;
+      letter-spacing: 0.01em;
+    }
+    .panel-future .panel-sub { color: #5f6a6f; }
+    .panel-future input,
+    .panel-future textarea,
+    .panel-future select {
+      background: rgba(255, 255, 255, 0.9);
+      border-color: rgba(27, 122, 140, 0.2);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    }
+    .panel-future input:focus,
+    .panel-future textarea:focus,
+    .panel-future select:focus {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.2);
+      border-color: rgba(27, 122, 140, 0.5);
+    }
+    .section-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .section-pill {
+      align-self: flex-start;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(27, 122, 140, 0.14);
+      color: var(--primary-dark);
+      font-weight: 700;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid rgba(27, 122, 140, 0.35);
+      box-shadow: 0 6px 14px rgba(27, 122, 140, 0.12);
+    }
+    .hero-panel {
+      overflow: hidden;
+    }
+    .hero-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(circle at 30% -10%, rgba(255, 255, 255, 0.7), transparent 55%),
+        linear-gradient(120deg, rgba(27, 122, 140, 0.12), rgba(255, 255, 255, 0));
+      opacity: 0.9;
+      pointer-events: none;
+    }
+    .hero-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(220px, 1.4fr) minmax(180px, 1fr);
+      gap: 16px;
+      align-items: center;
+    }
+    .hero-kicker {
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--primary-dark);
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .hero-title {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--ink);
+      margin-bottom: 6px;
+    }
+    .hero-sub {
+      font-size: 13px;
+      color: var(--muted);
+      max-width: 540px;
+    }
+    .hero-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .hero-chip {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(11, 52, 64, 0.08);
+      border: 1px solid rgba(27, 122, 140, 0.28);
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--primary-dark);
+    }
     .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
     .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
     .divider { border-top: 1px solid var(--border); margin: 18px 0; }
@@ -11246,6 +11369,9 @@ app.get("/admin/ui", (req, res) => {
       .view-switch button { flex: 1; text-align: center; }
       .swipe-row { grid-template-columns: 96px minmax(0, 1fr); }
       .table-wrapper { max-height: none; }
+      .hero-grid { grid-template-columns: 1fr; }
+      .hero-chips { justify-content: flex-start; }
+      .section-head { flex-direction: column; align-items: flex-start; }
     }
     @media (max-width: 760px) {
       .table-wrapper { overflow: visible; }
@@ -11679,9 +11805,29 @@ app.get("/admin/ui", (req, res) => {
       <div class="status-line"><span id="status"></span></div>
 
       <section id="general-view" class="view">
-        <div class="panel" style="--delay:.05s;">
-          <div class="panel-title" id="section-messages">Mensajes base</div>
-          <div class="panel-sub">Personalizá los openers y reglas globales (podés usar {name}, {brand}, {role}).</div>
+        <div class="panel panel-future hero-panel" style="--delay:.03s;">
+          <div class="hero-grid">
+            <div>
+              <div class="hero-kicker">HRBOT CONTROL CENTER</div>
+              <div class="hero-title">Ajustá el tono, la voz y las reglas en minutos.</div>
+              <div class="hero-sub">Configuración global del bot con enfoque operativo y calidad consistente.</div>
+            </div>
+            <div class="hero-chips">
+              <span class="hero-chip">Realtime</span>
+              <span class="hero-chip">Multilenguaje</span>
+              <span class="hero-chip">Calidad controlada</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.05s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-messages">Mensajes base</div>
+              <div class="panel-sub">Personalizá los openers y reglas globales (podés usar {name}, {brand}, {role}).</div>
+            </div>
+            <span class="section-pill">Base</span>
+          </div>
           <div class="grid">
             <div>
               <label>Mensaje inicial ES</label>
@@ -11700,9 +11846,16 @@ app.get("/admin/ui", (req, res) => {
               <textarea id="must-ask" placeholder="Ej: zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica."></textarea>
             </div>
           </div>
-          <div class="divider"></div>
-          <div class="panel-title" id="section-system-prompt">System prompt</div>
-          <div class="panel-sub">Solo editable con clave ADMIN.</div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.06s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-system-prompt">System prompt</div>
+              <div class="panel-sub">Solo editable con clave ADMIN.</div>
+            </div>
+            <span class="section-pill">Core</span>
+          </div>
           <div class="prompt-split">
             <div class="prompt-col">
               <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
@@ -11768,9 +11921,16 @@ app.get("/admin/ui", (req, res) => {
               </div>
             </div>
           </div>
-          <div class="divider"></div>
-          <div class="panel-title" id="section-mandatory">Bloque obligatorio (editable)</div>
-          <div class="panel-sub">Estos textos se usan cuando corresponde (inglés requerido / cierre tarde). Podés dejar el default o personalizar.</div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.065s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-mandatory">Bloque obligatorio (editable)</div>
+              <div class="panel-sub">Estos textos se usan cuando corresponde (inglés requerido / cierre tarde). Podés dejar el default o personalizar.</div>
+            </div>
+            <span class="section-pill">Obligatorio</span>
+          </div>
           <div class="grid">
             <div>
               <label>Inglés - nivel (ES)</label>
@@ -11797,14 +11957,28 @@ app.get("/admin/ui", (req, res) => {
               <textarea id="late-closing-en"></textarea>
             </div>
           </div>
-          <div class="divider"></div>
-          <div class="panel-title" id="section-runtime">Runtime (se inyecta al ejecutar)</div>
-          <div class="panel-sub">Este bloque se agrega automáticamente a cada llamada, además del checklist obligatorio. Úsalo para reglas operativas del momento.</div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.075s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-runtime">Runtime (se inyecta al ejecutar)</div>
+              <div class="panel-sub">Este bloque se agrega automáticamente a cada llamada, además del checklist obligatorio. Úsalo para reglas operativas del momento.</div>
+            </div>
+            <span class="section-pill">Runtime</span>
+          </div>
           <textarea id="runtime-instructions" placeholder="Ej: preguntá si puede cubrir turnos de cierre o si maneja café manual."></textarea>
           <div class="small">Placeholders útiles: {brand}, {spoken_role}, {address}, {name}.</div>
-          <div class="divider"></div>
-          <div class="panel-title" id="section-consent">Grabación / Consentimiento</div>
-          <div class="panel-sub">Texto leído antes de iniciar la entrevista y para confirmar grabación. Podés usar {opener}, {brand}, {spoken_role}, {name}.</div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.085s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-consent">Grabación / Consentimiento</div>
+              <div class="panel-sub">Texto leído antes de iniciar la entrevista y para confirmar grabación. Podés usar {opener}, {brand}, {spoken_role}, {name}.</div>
+            </div>
+            <span class="section-pill">Legal</span>
+          </div>
           <div class="grid">
             <div>
               <label>Intro grabación (ES)</label>
@@ -11847,9 +12021,16 @@ app.get("/admin/ui", (req, res) => {
               <textarea id="recording-decline-en"></textarea>
             </div>
           </div>
-          <div class="divider"></div>
-          <div class="panel-title" id="section-permissions">Permisos por rol</div>
-          <div class="panel-sub">Definí hasta dónde llega el acceso de Interviewer y Viewer.</div>
+        </div>
+
+        <div class="panel panel-future" style="--delay:.095s;">
+          <div class="section-head">
+            <div>
+              <div class="panel-title" id="section-permissions">Permisos por rol</div>
+              <div class="panel-sub">Definí hasta dónde llega el acceso de Interviewer y Viewer.</div>
+            </div>
+            <span class="section-pill">Access</span>
+          </div>
           <div class="permissions-grid" id="permissions-grid">
             <div class="perm-row perm-head">
               <span>Acción</span>
@@ -11886,24 +12067,25 @@ app.get("/admin/ui", (req, res) => {
               <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
               <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
             </div>
-          <div class="perm-row" data-perm="calls_delete">
-            <span class="perm-name">Eliminar entrevistas</span>
-            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
-            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
-          </div>
-          <div class="perm-row" data-perm="onboarding_manage">
-            <span class="perm-name">Onboarding / documentación</span>
-            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
-            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
-          </div>
-          <div class="perm-row" data-perm="analytics_view">
-            <span class="perm-name">Ver analytics</span>
-            <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
-            <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            <div class="perm-row" data-perm="calls_delete">
+              <span class="perm-name">Eliminar entrevistas</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="onboarding_manage">
+              <span class="perm-name">Onboarding / documentación</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
+            <div class="perm-row" data-perm="analytics_view">
+              <span class="perm-name">Ver analytics</span>
+              <label class="perm-toggle"><input type="checkbox" data-role="interviewer"></label>
+              <label class="perm-toggle"><input type="checkbox" data-role="viewer"></label>
+            </div>
           </div>
         </div>
-        </div>
-        <div class="panel onboarding-panel" id="onboarding-panel" style="--delay:.065s;">
+
+        <div class="panel panel-future onboarding-panel" id="onboarding-panel" style="--delay:.105s;">
           <div class="panel-title">Onboarding de ingreso</div>
           <div class="panel-sub">Configurá el portal seguro donde el empleado sube documentación y firma la política.</div>
           <div class="grid">
@@ -11954,7 +12136,7 @@ app.get("/admin/ui", (req, res) => {
             <span class="small" id="onboarding-status"></span>
           </div>
         </div>
-        <div class="panel user-panel" id="users-panel" style="--delay:.07s;">
+        <div class="panel panel-future user-panel" id="users-panel" style="--delay:.115s;">
           <div class="user-hero">
             <div>
               <div class="user-kicker">Control de acceso</div>
@@ -12035,7 +12217,7 @@ app.get("/admin/ui", (req, res) => {
             </table>
           </div>
         </div>
-        <div class="panel" style="--delay:.08s;">
+        <div class="panel panel-future" style="--delay:.125s;">
           <div class="panel-title">FAQ / Ayuda</div>
           <div class="panel-sub">Guía rápida y definiciones de cada sección y botón.</div>
           <div class="faq-list">
