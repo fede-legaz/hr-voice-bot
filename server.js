@@ -8543,7 +8543,12 @@ app.get("/admin/ui", (req, res) => {
       pointer-events: none;
       z-index: 0;
     }
-    #general-view > .panel { position: relative; z-index: 1; }
+    #general-view > .panel,
+    #general-view > .general-toolbar,
+    #general-view .general-section {
+      position: relative;
+      z-index: 1;
+    }
     .panel-future {
       position: relative;
       background: linear-gradient(160deg, rgba(255, 255, 255, 0.96), rgba(245, 240, 232, 0.92));
@@ -8599,6 +8604,47 @@ app.get("/admin/ui", (req, res) => {
       border: 1px solid rgba(27, 122, 140, 0.35);
       box-shadow: 0 6px 14px rgba(27, 122, 140, 0.12);
     }
+    .general-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(27, 122, 140, 0.22);
+      background: rgba(255, 255, 255, 0.75);
+      box-shadow: 0 12px 24px rgba(12, 30, 38, 0.08);
+    }
+    .general-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .general-tab {
+      background: rgba(11, 52, 64, 0.08);
+      color: var(--primary-dark);
+      border: 1px solid rgba(27, 122, 140, 0.25);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      box-shadow: none;
+    }
+    .general-tab:hover { box-shadow: var(--glow); }
+    .general-tab.active {
+      background: linear-gradient(120deg, #1b7a8c, #2a8ca3);
+      color: #fff;
+      border-color: transparent;
+      box-shadow: 0 10px 20px rgba(27, 122, 140, 0.22);
+    }
+    .general-toolbar-note {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .general-section { position: relative; }
+    .general-section.is-hidden { display: none; }
     .hero-panel {
       overflow: hidden;
     }
@@ -10753,6 +10799,9 @@ app.get("/admin/ui", (req, res) => {
       .hero-grid { grid-template-columns: 1fr; }
       .hero-chips { justify-content: flex-start; }
       .section-head { flex-direction: column; align-items: flex-start; }
+      .general-toolbar { align-items: flex-start; }
+      .general-tabs { width: 100%; }
+      .general-toolbar-note { width: 100%; }
     }
     @media (max-width: 760px) {
       .table-wrapper { overflow: visible; }
@@ -11201,7 +11250,25 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.05s;">
+        <div class="general-toolbar">
+          <div class="general-tabs" id="general-tabs">
+            <button class="general-tab active" data-target="all" type="button">Todo</button>
+            <button class="general-tab" data-target="messages" type="button">Mensajes</button>
+            <button class="general-tab" data-target="prompt" type="button">Prompt</button>
+            <button class="general-tab" data-target="mandatory" type="button">Obligatorio</button>
+            <button class="general-tab" data-target="runtime" type="button">Runtime</button>
+            <button class="general-tab" data-target="consent" type="button">Consentimiento</button>
+            <button class="general-tab" data-target="permissions" type="button">Permisos</button>
+            <button class="general-tab" data-target="onboarding" type="button">Onboarding</button>
+            <button class="general-tab" data-target="users" type="button">Usuarios</button>
+            <button class="general-tab" data-target="assistant" type="button">Asistente</button>
+            <button class="general-tab" data-target="faq" type="button">FAQ</button>
+          </div>
+          <div class="general-toolbar-note">Tip: seleccioná una sección para enfocarte.</div>
+        </div>
+
+        <div class="general-section" data-section="messages">
+          <div class="panel panel-future" style="--delay:.05s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-messages">Mensajes base</div>
@@ -11229,7 +11296,10 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.06s;">
+        </div>
+
+        <div class="general-section" data-section="prompt">
+          <div class="panel panel-future" style="--delay:.06s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-system-prompt">System prompt</div>
@@ -11304,7 +11374,10 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.065s;">
+        </div>
+
+        <div class="general-section" data-section="mandatory">
+          <div class="panel panel-future" style="--delay:.065s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-mandatory">Bloque obligatorio (editable)</div>
@@ -11340,7 +11413,10 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.075s;">
+        </div>
+
+        <div class="general-section" data-section="runtime">
+          <div class="panel panel-future" style="--delay:.075s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-runtime">Runtime (se inyecta al ejecutar)</div>
@@ -11352,7 +11428,10 @@ app.get("/admin/ui", (req, res) => {
           <div class="small">Placeholders útiles: {brand}, {spoken_role}, {address}, {name}.</div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.085s;">
+        </div>
+
+        <div class="general-section" data-section="consent">
+          <div class="panel panel-future" style="--delay:.085s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-consent">Grabación / Consentimiento</div>
@@ -11404,7 +11483,10 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future" style="--delay:.095s;">
+        </div>
+
+        <div class="general-section" data-section="permissions">
+          <div class="panel panel-future" style="--delay:.095s;">
           <div class="section-head">
             <div>
               <div class="panel-title" id="section-permissions">Permisos por rol</div>
@@ -11466,8 +11548,11 @@ app.get("/admin/ui", (req, res) => {
           </div>
         </div>
 
-        <div class="panel panel-future onboarding-panel" id="onboarding-panel" style="--delay:.105s;">
-          <div class="panel-title">Onboarding de ingreso</div>
+        </div>
+
+        <div class="general-section" data-section="onboarding">
+          <div class="panel panel-future onboarding-panel" id="onboarding-panel" style="--delay:.105s;">
+          <div class="panel-title" id="section-onboarding">Onboarding de ingreso</div>
           <div class="panel-sub">Configurá el portal seguro donde el empleado sube documentación y firma la política.</div>
           <div class="grid">
             <div>
@@ -11497,11 +11582,14 @@ app.get("/admin/ui", (req, res) => {
             <span class="small" id="onboarding-status"></span>
           </div>
         </div>
-        <div class="panel panel-future user-panel" id="users-panel" style="--delay:.115s;">
+        </div>
+
+        <div class="general-section" data-section="users">
+          <div class="panel panel-future user-panel" id="users-panel" style="--delay:.115s;">
           <div class="user-hero">
             <div>
               <div class="user-kicker">Control de acceso</div>
-              <div class="user-title">Usuarios</div>
+              <div class="user-title" id="section-users">Usuarios</div>
               <div class="user-sub">Administrá accesos por rol y locales. Creá cuentas seguras para que cada persona vea solo lo que necesita.</div>
             </div>
             <div class="user-roles">
@@ -11578,8 +11666,11 @@ app.get("/admin/ui", (req, res) => {
             </table>
           </div>
         </div>
-        <div class="panel panel-future" style="--delay:.125s;">
-          <div class="panel-title">FAQ / Ayuda</div>
+        </div>
+
+        <div class="general-section" data-section="faq">
+          <div class="panel panel-future" style="--delay:.125s;">
+          <div class="panel-title" id="section-faq">FAQ / Ayuda</div>
           <div class="panel-sub">Guía rápida y definiciones de cada sección y botón.</div>
           <div class="faq-list">
             <details class="faq-item">
@@ -11693,14 +11784,18 @@ app.get("/admin/ui", (req, res) => {
             </details>
           </div>
         </div>
-        <div class="panel" style="--delay:.09s;">
-          <div class="panel-title">Asistente IA · Base de conocimiento</div>
+        </div>
+
+        <div class="general-section" data-section="assistant">
+          <div class="panel panel-future" style="--delay:.135s;">
+          <div class="panel-title" id="section-assistant">Asistente IA · Base de conocimiento</div>
           <div class="panel-sub">Texto base que el asistente usa para explicar procesos, definiciones y cómo cambiar cosas.</div>
           <textarea id="assistant-kb" placeholder="Escribí acá la guía interna del proceso."></textarea>
           <div class="inline" style="justify-content:flex-end;">
             <button class="secondary btn-compact" id="assistant-kb-reset" type="button">Restaurar default</button>
           </div>
           <div class="small">Se guarda en la base de datos y el asistente la usa al responder.</div>
+          </div>
         </div>
       </section>
 
@@ -12954,6 +13049,8 @@ app.get("/admin/ui", (req, res) => {
     const viewTitleEl = document.getElementById('view-title');
     const viewLabelEl = document.getElementById('view-label');
     const generalViewEl = document.getElementById('general-view');
+    const generalTabsEl = document.getElementById('general-tabs');
+    const generalSectionEls = Array.from(document.querySelectorAll('#general-view .general-section'));
     const callsViewEl = document.getElementById('calls-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const calendarViewEl = document.getElementById('calendar-view');
@@ -17678,6 +17775,86 @@ app.get("/admin/ui", (req, res) => {
       }
       if (window.matchMedia && window.matchMedia('(max-width: 980px)').matches) {
         setSidebarCollapsed(true);
+      }
+    }
+
+    let suppressGeneralHash = false;
+    const generalSectionAnchors = {
+      messages: ['section-messages'],
+      prompt: ['section-system-prompt', 'section-prompt-templates'],
+      mandatory: ['section-mandatory'],
+      runtime: ['section-runtime'],
+      consent: ['section-consent'],
+      permissions: ['section-permissions'],
+      onboarding: ['section-onboarding'],
+      users: ['section-users', 'users-panel'],
+      assistant: ['section-assistant'],
+      faq: ['section-faq']
+    };
+    const generalAnchorToSection = new Map();
+    Object.entries(generalSectionAnchors).forEach(([section, anchors]) => {
+      (anchors || []).forEach((anchor) => {
+        if (anchor) generalAnchorToSection.set(anchor, section);
+      });
+    });
+
+    function setGeneralSection(sectionKey, opts = {}) {
+      if (!generalSectionEls.length) return;
+      const target = sectionKey || 'all';
+      generalSectionEls.forEach((section) => {
+        const isMatch = target === 'all' || section.dataset.section === target;
+        section.classList.toggle('is-hidden', !isMatch);
+      });
+      if (generalTabsEl) {
+        generalTabsEl.querySelectorAll('.general-tab').forEach((btn) => {
+          btn.classList.toggle('active', btn.dataset.target === target);
+        });
+      }
+      if (opts.updateHash) {
+        if (target === 'all') {
+          if (window.location.hash) {
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+          }
+        } else {
+          const anchorId = (generalSectionAnchors[target] || [])[0];
+          if (anchorId) {
+            const nextHash = '#' + anchorId;
+            if (window.location.hash !== nextHash) {
+              suppressGeneralHash = true;
+              window.location.hash = anchorId;
+            }
+          }
+        }
+      }
+      if (opts.scroll) {
+        const anchorId = opts.anchorId || (generalSectionAnchors[target] || [])[0];
+        const anchorEl = anchorId ? document.getElementById(anchorId) : null;
+        if (anchorEl && anchorEl.scrollIntoView) {
+          anchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else if (generalViewEl && generalViewEl.scrollIntoView) {
+          generalViewEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+    }
+
+    function applyGeneralSectionFromHash() {
+      if (!generalSectionEls.length) return;
+      if (suppressGeneralHash) {
+        suppressGeneralHash = false;
+        return;
+      }
+      const hash = window.location.hash ? window.location.hash.slice(1) : '';
+      if (!hash) {
+        setGeneralSection('all', { scroll: false, updateHash: false });
+        return;
+      }
+      const sectionKey =
+        generalAnchorToSection.get(hash) ||
+        (generalSectionEls.find((section) => section.dataset.section === hash)?.dataset.section || '');
+      if (sectionKey) {
+        setGeneralSection(sectionKey, { scroll: true, updateHash: false, anchorId: hash });
+      } else {
+        setGeneralSection('all', { scroll: false, updateHash: false });
       }
     }
 
@@ -22412,6 +22589,16 @@ app.get("/admin/ui", (req, res) => {
         if (assistantKbEl) assistantKbEl.value = defaults.assistant_kb || '';
       };
     }
+    if (generalTabsEl) {
+      generalTabsEl.addEventListener('click', (event) => {
+        const btn = event.target.closest('.general-tab');
+        if (!btn) return;
+        const target = btn.dataset.target || 'all';
+        setGeneralSection(target, { updateHash: true, scroll: true });
+      });
+    }
+    window.addEventListener('hashchange', applyGeneralSectionFromHash);
+    applyGeneralSectionFromHash();
     let urlParams = null;
     try {
       urlParams = new URLSearchParams(window.location.search);
