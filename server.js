@@ -1092,6 +1092,8 @@ async function assistantConfigSummary(role) {
       opener_en: meta.opener_en || "",
       lang_rules: meta.lang_rules || "",
       must_ask: meta.must_ask || "",
+      speech_tone: meta.speech_tone || "",
+      speech_voice: meta.speech_voice || "",
       system_prompt: meta.system_prompt || "",
       runtime_instructions: meta.runtime_instructions || "",
       prompt_templates_count: Array.isArray(store.templates) ? store.templates.length : 0,
@@ -1685,6 +1687,15 @@ function buildMetaOpener({ brand, role, applicant, lang }) {
   return rendered || fallback;
 }
 
+function resolveSpeechTone(metaCfg) {
+  return (metaCfg?.speech_tone || "").toString().trim();
+}
+
+function resolveSpeechVoice(metaCfg) {
+  const voice = (metaCfg?.speech_voice || "").toString().trim();
+  return voice || VOICE;
+}
+
 function buildInstructions(ctx) {
   const metaCfg = roleConfig?.meta || {};
   const brandDisplay = resolveBrandDisplay(ctx.brand);
@@ -1725,6 +1736,9 @@ function buildInstructions(ctx) {
   const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
   const customQuestion = (ctx.customQuestion || ctx.custom_question || "").toString().trim();
   const customQuestionMode = (ctx.customQuestionMode || ctx.custom_question_mode || "").toString().trim() === "ai" ? "ai" : "exact";
+  const speechTone = resolveSpeechTone(metaCfg);
+  const hasSpeechToneSlot = /\{speech_tone(?:_line)?\}/.test(promptTemplate);
+  const speechToneLine = speechTone && !hasSpeechToneSlot ? `Tono solicitado: ${speechTone}` : "";
   const promptVars = {
     name: firstName,
     first_name: firstName,
@@ -1764,6 +1778,8 @@ function buildInstructions(ctx) {
     specific_questions_inline: specificQs.join("; "),
     custom_question: customQuestion,
     custom_question_mode: customQuestionMode,
+    speech_tone: speechTone,
+    speech_tone_line: speechToneLine,
     runtime_instructions: metaCfg.runtime_instructions || ""
   };
   const rendered = renderPromptTemplate(promptTemplate, promptVars).trim();
@@ -1781,7 +1797,7 @@ function buildInstructions(ctx) {
   });
   const runtimeExtraRaw = (metaCfg.runtime_instructions || "").trim();
   const runtimeExtra = runtimeExtraRaw ? renderPromptTemplate(runtimeExtraRaw, promptVars).trim() : "";
-  return [rendered, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
+  return [rendered, speechToneLine, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
 }
 
 function getEnglishCheckQuestionEn() {
@@ -8508,6 +8524,12 @@ app.get("/admin/ui", (req, res) => {
       animation: fadeUp 0.4s ease both;
       animation-delay: var(--delay, 0s);
     }
+    #general-view {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    #general-view .panel { margin-bottom: 0; }
     .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
     .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
     .divider { border-top: 1px solid var(--border); margin: 18px 0; }
@@ -8772,20 +8794,38 @@ app.get("/admin/ui", (req, res) => {
     .system-prompt { min-height: 260px; }
     .prompt-split {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
       gap: 16px;
       align-items: start;
     }
     .prompt-col { min-width: 0; }
+    .prompt-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .prompt-card {
+      border-radius: 16px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      display: grid;
+      gap: 8px;
+    }
+    .prompt-card .panel-title { font-size: 15px; margin-bottom: 0; }
+    .prompt-card .panel-sub { margin-bottom: 4px; }
+    .prompt-settings-grid { gap: 10px; }
+    .prompt-settings-grid input { font-size: 13px; }
     .prompt-tools {
       display: flex;
       flex-direction: column;
       gap: 10px;
-      margin-top: 10px;
+      margin-top: 0;
       padding: 12px;
       border-radius: 14px;
-      border: 1px dashed rgba(178, 164, 132, 0.6);
-      background: #fcfaf6;
+      border: 1px solid var(--border);
+      background: #fff;
     }
     .prompt-tools.compact { gap: 6px; padding: 10px; }
     .prompt-tools-row {
@@ -11047,33 +11087,65 @@ app.get("/admin/ui", (req, res) => {
           <div class="prompt-split">
             <div class="prompt-col">
               <textarea id="system-prompt" class="system-prompt" placeholder="Dejá vacío para usar el prompt por defecto."></textarea>
-              <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {opener}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {first_name_or_blank}.</div>
-          <div class="prompt-tools compact" id="prompt-tools">
-            <div class="small">Templates y versiones</div>
-            <div id="section-prompt-templates"></div>
-            <div class="prompt-tools-row">
-              <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
-              <button class="secondary btn-compact" id="prompt-template-save" type="button">Guardar</button>
-            </div>
-            <div class="prompt-tools-row">
-              <select id="prompt-template-select"></select>
-              <button class="secondary btn-compact" id="prompt-template-restore" type="button">Restaurar</button>
-              <button class="secondary btn-compact" id="prompt-template-delete" type="button">Eliminar</button>
-              <select id="prompt-history-select"></select>
-              <button class="secondary btn-compact" id="prompt-history-restore" type="button">Restaurar versión</button>
-            </div>
-          </div>
+              <div class="small">Placeholders: {name}, {brand}, {spoken_role}, {address}, {english_required}, {lang_name}, {opener_es}, {opener_en}, {opener}, {specific_questions}, {cv_hint}, {brand_notes}, {role_notes}, {must_ask_line}, {lang_rules_line}, {late_closing_rule_line}, {custom_question}, {speech_tone}, {first_name_or_blank}.</div>
             </div>
             <div class="prompt-col prompt-side">
-              <div class="prompt-assistant-card">
-                <div class="panel-title">Asistente IA</div>
-                <div class="panel-sub">Pedile cambios al prompt y se aplican automáticamente.</div>
-                <textarea id="prompt-assistant-input" placeholder="Ej: agregá una pregunta sobre papeles, sin ser invasivo."></textarea>
-                <div class="inline">
-                  <button class="secondary" id="prompt-assistant-run" type="button">Aplicar sugerencia</button>
-                  <span class="small" id="prompt-assistant-status"></span>
+              <div class="prompt-stack">
+                <div class="prompt-card">
+                  <div class="panel-title">Tono y voz</div>
+                  <div class="panel-sub">Ajustes para cómo suena el bot.</div>
+                  <div class="grid prompt-settings-grid">
+                    <div>
+                      <label>Tono del speech</label>
+                      <input type="text" id="speech-tone" placeholder="Ej: cálido, profesional y directo." />
+                      <div class="small">Se agrega al prompt en cada llamada.</div>
+                    </div>
+                    <div>
+                      <label>Voz entrevista (AI)</label>
+                      <input type="text" id="speech-voice" placeholder="Ej: marin" />
+                      <div class="small">ID de voz del proveedor. Si queda vacío, usa la voz default.</div>
+                    </div>
+                  </div>
                 </div>
-                <div class="prompt-preview" id="prompt-assistant-preview" style="display:none;"></div>
+                <div class="prompt-card">
+                  <div class="panel-title">Control ADMIN</div>
+                  <div class="panel-sub">Desbloqueá la edición del System prompt.</div>
+                  <div class="grid">
+                    <div>
+                      <label>Clave ADMIN</label>
+                      <input type="password" id="admin-token" placeholder="ADMIN" />
+                    </div>
+                  </div>
+                  <div class="inline" style="justify-content:flex-start;">
+                    <button class="secondary" id="admin-unlock" type="button">Unlock</button>
+                    <span class="small" id="admin-status"></span>
+                  </div>
+                </div>
+                <div class="prompt-tools compact" id="prompt-tools">
+                  <div class="small">Templates y versiones</div>
+                  <div id="section-prompt-templates"></div>
+                  <div class="prompt-tools-row">
+                    <input type="text" id="prompt-template-name" placeholder="Nombre del template" />
+                    <button class="secondary btn-compact" id="prompt-template-save" type="button">Guardar</button>
+                  </div>
+                  <div class="prompt-tools-row">
+                    <select id="prompt-template-select"></select>
+                    <button class="secondary btn-compact" id="prompt-template-restore" type="button">Restaurar</button>
+                    <button class="secondary btn-compact" id="prompt-template-delete" type="button">Eliminar</button>
+                    <select id="prompt-history-select"></select>
+                    <button class="secondary btn-compact" id="prompt-history-restore" type="button">Restaurar versión</button>
+                  </div>
+                </div>
+                <div class="prompt-assistant-card">
+                  <div class="panel-title">Asistente IA</div>
+                  <div class="panel-sub">Pedile cambios al prompt y se aplican automáticamente.</div>
+                  <textarea id="prompt-assistant-input" placeholder="Ej: agregá una pregunta sobre papeles, sin ser invasivo."></textarea>
+                  <div class="inline">
+                    <button class="secondary" id="prompt-assistant-run" type="button">Aplicar sugerencia</button>
+                    <span class="small" id="prompt-assistant-status"></span>
+                  </div>
+                  <div class="prompt-preview" id="prompt-assistant-preview" style="display:none;"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -11155,16 +11227,6 @@ app.get("/admin/ui", (req, res) => {
               <label>Rechazo a grabación (EN)</label>
               <textarea id="recording-decline-en"></textarea>
             </div>
-          </div>
-          <div class="inline" style="margin-top:12px;">
-            <div style="flex:1; min-width:220px;">
-              <label>Clave ADMIN</label>
-              <input type="password" id="admin-token" placeholder="ADMIN" />
-            </div>
-            <div style="margin-top:20px;">
-              <button class="secondary" id="admin-unlock" type="button">Unlock</button>
-            </div>
-            <span class="small" id="admin-status"></span>
           </div>
           <div class="divider"></div>
           <div class="panel-title" id="section-permissions">Permisos por rol</div>
@@ -12845,6 +12907,8 @@ app.get("/admin/ui", (req, res) => {
     const langRulesEl = document.getElementById('lang-rules');
     const mustAskEl = document.getElementById('must-ask');
     const systemPromptEl = document.getElementById('system-prompt');
+    const speechToneEl = document.getElementById('speech-tone');
+    const speechVoiceEl = document.getElementById('speech-voice');
     const englishLevelEsEl = document.getElementById('english-level-es');
     const englishLevelEnEl = document.getElementById('english-level-en');
     const englishCheckEsEl = document.getElementById('english-check-es');
@@ -13187,11 +13251,14 @@ app.get("/admin/ui", (req, res) => {
     const defaultRecordingDeclineEs = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_ES)};
     const defaultRecordingDeclineEn = ${JSON.stringify(DEFAULT_RECORDING_DECLINE_EN)};
     const defaultAssistantKb = ${JSON.stringify(DEFAULT_ASSISTANT_KB_TEMPLATE)};
+    const defaultSpeechVoice = ${JSON.stringify(VOICE)};
     const defaults = {
       opener_es: "Hola {name}, te llamo por una entrevista de trabajo en {brand} para {role}. ¿Tenés un minuto para hablar?",
       opener_en: "Hi {name}, I'm calling about your application for {role} at {brand}. Do you have a minute to talk?",
       lang_rules: "Si responde en inglés, mantener toda la entrevista en inglés.",
       must_ask: "Zona/logística, disponibilidad, salario, prueba, permanencia en Miami, inglés si aplica.",
+      speech_tone: "",
+      speech_voice: defaultSpeechVoice,
       system_prompt: defaultSystemPrompt,
       runtime_instructions: "",
       english_level_question_es: defaultEnglishLevelQuestionEs,
@@ -17537,6 +17604,14 @@ app.get("/admin/ui", (req, res) => {
       langRulesEl.value = typeof meta.lang_rules === "string" && meta.lang_rules.trim() ? meta.lang_rules : defaults.lang_rules;
       mustAskEl.value = typeof meta.must_ask === "string" && meta.must_ask.trim() ? meta.must_ask : defaults.must_ask;
       systemPromptEl.value = typeof meta.system_prompt === "string" && meta.system_prompt.trim() ? meta.system_prompt : defaults.system_prompt;
+      if (speechToneEl) {
+        speechToneEl.value = typeof meta.speech_tone === "string" ? meta.speech_tone : defaults.speech_tone;
+      }
+      if (speechVoiceEl) {
+        speechVoiceEl.value = typeof meta.speech_voice === "string" && meta.speech_voice.trim()
+          ? meta.speech_voice
+          : defaults.speech_voice;
+      }
       if (runtimeInstructionsEl) {
         runtimeInstructionsEl.value = typeof meta.runtime_instructions === "string"
           ? meta.runtime_instructions
@@ -17682,6 +17757,8 @@ app.get("/admin/ui", (req, res) => {
           opener_en: openerEnEl.value || '',
           lang_rules: langRulesEl.value || '',
           must_ask: mustAskEl.value || '',
+          speech_tone: speechToneEl?.value || '',
+          speech_voice: speechVoiceEl?.value || '',
           system_prompt: systemPromptUnlocked ? (systemPromptEl.value || '') : preservedPrompt,
           runtime_instructions: runtimeInstructionsEl?.value || '',
           english_level_question_es: englishLevelEsEl?.value || '',
@@ -22837,6 +22914,9 @@ wss.on("connection", (twilioWs, req) => {
   let cvId = url.searchParams.get("cv_id") || "";
   let resumeUrl = url.searchParams.get("resume_url") || "";
   let spokenRole = displayRole(role, brand);
+  const metaCfg = roleConfig?.meta || {};
+  const speechVoice = resolveSpeechVoice(metaCfg);
+  const speechTone = resolveSpeechTone(metaCfg);
 
   console.log("[media-stream] connect", {
     brand,
@@ -22860,6 +22940,8 @@ wss.on("connection", (twilioWs, req) => {
     cvSummary,
     cvText: cvSummary,
     cvId,
+    speechVoice,
+    speechTone,
     customQuestion: "",
     customQuestionMode: "exact",
     resumeUrl,
@@ -22959,7 +23041,7 @@ const openaiWs = new WebSocket(
           },
           output: {
             format: { type: "audio/pcmu" },
-            voice: VOICE
+            voice: call.speechVoice || VOICE
           }
         }
       }
