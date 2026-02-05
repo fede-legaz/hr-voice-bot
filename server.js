@@ -8526,9 +8526,7 @@ app.get("/admin/ui", (req, res) => {
     }
     #general-view {
       position: relative;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
+      padding: 8px 0 24px;
     }
     #general-view .panel { margin-bottom: 0; }
     #general-view::before {
@@ -8536,18 +8534,87 @@ app.get("/admin/ui", (req, res) => {
       position: absolute;
       inset: -40px -20px -40px -20px;
       background-image:
-        radial-gradient(circle at 10% 15%, rgba(27, 122, 140, 0.16), transparent 45%),
-        radial-gradient(circle at 90% 10%, rgba(244, 162, 97, 0.18), transparent 50%),
-        linear-gradient(120deg, rgba(11, 52, 64, 0.16), rgba(255, 255, 255, 0));
-      opacity: 0.6;
+        radial-gradient(circle at 10% 15%, rgba(27, 122, 140, 0.18), transparent 45%),
+        radial-gradient(circle at 90% 10%, rgba(244, 162, 97, 0.2), transparent 55%),
+        linear-gradient(120deg, rgba(11, 52, 64, 0.18), rgba(255, 255, 255, 0)),
+        repeating-linear-gradient(90deg, rgba(27, 122, 140, 0.08) 0, rgba(27, 122, 140, 0.08) 1px, transparent 1px, transparent 120px);
+      opacity: 0.7;
       pointer-events: none;
       z-index: 0;
     }
-    #general-view > .panel,
-    #general-view > .general-toolbar,
+    #general-view .general-shell,
+    #general-view .general-rail,
+    #general-view .general-content,
     #general-view .general-section {
       position: relative;
       z-index: 1;
+    }
+    .general-shell {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .general-rail {
+      position: sticky;
+      top: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .general-rail-card {
+      padding: 18px;
+      border-radius: 20px;
+      background: linear-gradient(155deg, #0b3440 0%, #1b5f74 55%, #2a8ca3 100%);
+      color: #f8f3ea;
+      box-shadow: 0 22px 40px rgba(9, 24, 32, 0.35);
+    }
+    .rail-kicker {
+      font-size: 11px;
+      letter-spacing: 0.28em;
+      text-transform: uppercase;
+      opacity: 0.7;
+    }
+    .rail-title {
+      font-family: "Space Grotesk", sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      margin-top: 8px;
+    }
+    .rail-sub {
+      font-size: 13px;
+      line-height: 1.4;
+      color: rgba(248, 243, 234, 0.82);
+      margin-top: 8px;
+    }
+    .rail-metrics {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .rail-metric {
+      padding: 8px 10px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.14);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    .metric-label {
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      opacity: 0.7;
+    }
+    .metric-value {
+      font-size: 13px;
+      font-weight: 600;
+      margin-top: 4px;
+    }
+    .general-content {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      min-width: 0;
     }
     .panel-future {
       position: relative;
@@ -8604,46 +8671,74 @@ app.get("/admin/ui", (req, res) => {
       border: 1px solid rgba(27, 122, 140, 0.35);
       box-shadow: 0 6px 14px rgba(27, 122, 140, 0.12);
     }
-    .general-toolbar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-      padding: 10px 12px;
-      border-radius: 16px;
-      border: 1px solid rgba(27, 122, 140, 0.22);
-      background: rgba(255, 255, 255, 0.75);
-      box-shadow: 0 12px 24px rgba(12, 30, 38, 0.08);
-    }
     .general-tabs {
       display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+      flex-direction: column;
+      gap: 10px;
     }
     .general-tab {
-      background: rgba(11, 52, 64, 0.08);
+      position: relative;
+      width: 100%;
+      text-align: left;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      padding: 12px 14px 12px 52px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.85);
       color: var(--primary-dark);
-      border: 1px solid rgba(27, 122, 140, 0.25);
-      border-radius: 999px;
-      padding: 8px 12px;
-      font-size: 12px;
+      border: 1px solid rgba(27, 122, 140, 0.2);
+      font-size: 13px;
       font-weight: 700;
-      letter-spacing: 0.02em;
-      box-shadow: none;
+      letter-spacing: 0.01em;
+      box-shadow: 0 12px 24px rgba(12, 30, 38, 0.06);
     }
-    .general-tab:hover { box-shadow: var(--glow); }
+    .general-tab::before {
+      content: attr(data-icon);
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      background: rgba(27, 122, 140, 0.12);
+      color: var(--primary-dark);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .general-tab .tab-label { font-size: 13px; font-weight: 700; }
+    .general-tab .tab-sub { font-size: 11px; font-weight: 500; color: var(--muted); }
+    .general-tab:hover { box-shadow: 0 18px 30px rgba(12, 30, 38, 0.12); }
     .general-tab.active {
-      background: linear-gradient(120deg, #1b7a8c, #2a8ca3);
+      background: linear-gradient(135deg, #1b7a8c, #2f9bb4);
       color: #fff;
       border-color: transparent;
-      box-shadow: 0 10px 20px rgba(27, 122, 140, 0.22);
+      box-shadow: 0 18px 30px rgba(27, 122, 140, 0.28);
     }
-    .general-toolbar-note {
+    .general-tab.active::before {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+    }
+    .general-tab.active .tab-sub { color: rgba(255, 255, 255, 0.75); }
+    .general-rail-note {
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px dashed rgba(27, 122, 140, 0.25);
+      background: rgba(255, 255, 255, 0.75);
       font-size: 12px;
       color: var(--muted);
+      line-height: 1.4;
     }
-    .general-section { position: relative; }
+    .general-section {
+      position: relative;
+      padding-left: 12px;
+      border-left: 2px solid rgba(27, 122, 140, 0.18);
+    }
     .general-section.is-hidden { display: none; }
     .hero-panel {
       overflow: hidden;
@@ -8674,13 +8769,13 @@ app.get("/admin/ui", (req, res) => {
       margin-bottom: 8px;
     }
     .hero-title {
-      font-size: 22px;
+      font-size: 24px;
       font-weight: 800;
       color: var(--ink);
       margin-bottom: 6px;
     }
     .hero-sub {
-      font-size: 13px;
+      font-size: 14px;
       color: var(--muted);
       max-width: 540px;
     }
@@ -8693,11 +8788,12 @@ app.get("/admin/ui", (req, res) => {
     .hero-chip {
       padding: 8px 12px;
       border-radius: 999px;
-      background: rgba(11, 52, 64, 0.08);
-      border: 1px solid rgba(27, 122, 140, 0.28);
+      background: rgba(255, 255, 255, 0.8);
+      border: 1px solid rgba(27, 122, 140, 0.22);
       font-size: 12px;
       font-weight: 700;
       color: var(--primary-dark);
+      box-shadow: 0 10px 20px rgba(12, 30, 38, 0.08);
     }
     .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
     .panel-sub { font-size: 13px; color: var(--muted); margin-bottom: 16px; }
@@ -10783,6 +10879,11 @@ app.get("/admin/ui", (req, res) => {
       .user-form-grid { grid-template-columns: 1fr; }
       .user-hero { flex-direction: column; align-items: flex-start; }
       .user-roles { justify-content: flex-start; }
+      .general-shell { grid-template-columns: 1fr; }
+      .general-rail { position: static; }
+      .general-tabs { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; }
+      .general-tab { min-width: 170px; width: auto; flex: 0 0 auto; }
+      .general-rail-note { width: 100%; }
     }
     @media (max-width: 820px) {
       .sidebar { padding: 20px; }
@@ -10799,9 +10900,7 @@ app.get("/admin/ui", (req, res) => {
       .hero-grid { grid-template-columns: 1fr; }
       .hero-chips { justify-content: flex-start; }
       .section-head { flex-direction: column; align-items: flex-start; }
-      .general-toolbar { align-items: flex-start; }
-      .general-tabs { width: 100%; }
-      .general-toolbar-note { width: 100%; }
+      .general-section { padding-left: 0; border-left: none; }
     }
     @media (max-width: 760px) {
       .table-wrapper { overflow: visible; }
@@ -11235,37 +11334,88 @@ app.get("/admin/ui", (req, res) => {
       <div class="status-line"><span id="status"></span></div>
 
       <section id="general-view" class="view">
-        <div class="panel panel-future hero-panel" style="--delay:.03s;">
-          <div class="hero-grid">
-            <div>
-              <div class="hero-kicker">HRBOT CONTROL CENTER</div>
-              <div class="hero-title">Ajustá el tono, la voz y las reglas en minutos.</div>
-              <div class="hero-sub">Configuración global del bot con enfoque operativo y calidad consistente.</div>
+        <div class="general-shell">
+          <aside class="general-rail">
+            <div class="general-rail-card">
+              <div class="rail-kicker">HRBOT CONTROL</div>
+              <div class="rail-title">General Studio</div>
+              <div class="rail-sub">Tu cockpit para prompts, compliance y onboarding con foco operativo.</div>
+              <div class="rail-metrics">
+                <div class="rail-metric">
+                  <div class="metric-label">Modo</div>
+                  <div class="metric-value">Realtime</div>
+                </div>
+                <div class="rail-metric">
+                  <div class="metric-label">Idioma</div>
+                  <div class="metric-value">Auto</div>
+                </div>
+              </div>
             </div>
-            <div class="hero-chips">
-              <span class="hero-chip">Realtime</span>
-              <span class="hero-chip">Multilenguaje</span>
-              <span class="hero-chip">Calidad controlada</span>
-            </div>
-          </div>
-        </div>
 
-        <div class="general-toolbar">
-          <div class="general-tabs" id="general-tabs">
-            <button class="general-tab active" data-target="all" type="button">Todo</button>
-            <button class="general-tab" data-target="messages" type="button">Mensajes</button>
-            <button class="general-tab" data-target="prompt" type="button">Prompt</button>
-            <button class="general-tab" data-target="mandatory" type="button">Obligatorio</button>
-            <button class="general-tab" data-target="runtime" type="button">Runtime</button>
-            <button class="general-tab" data-target="consent" type="button">Consentimiento</button>
-            <button class="general-tab" data-target="permissions" type="button">Permisos</button>
-            <button class="general-tab" data-target="onboarding" type="button">Onboarding</button>
-            <button class="general-tab" data-target="users" type="button">Usuarios</button>
-            <button class="general-tab" data-target="assistant" type="button">Asistente</button>
-            <button class="general-tab" data-target="faq" type="button">FAQ</button>
-          </div>
-          <div class="general-toolbar-note">Tip: seleccioná una sección para enfocarte.</div>
-        </div>
+            <div class="general-tabs" id="general-tabs">
+              <button class="general-tab active" data-target="all" data-icon="AL" type="button">
+                <span class="tab-label">Todo</span>
+                <span class="tab-sub">Vista completa</span>
+              </button>
+              <button class="general-tab" data-target="messages" data-icon="MS" type="button">
+                <span class="tab-label">Mensajes</span>
+                <span class="tab-sub">Openers + idioma</span>
+              </button>
+              <button class="general-tab" data-target="prompt" data-icon="PR" type="button">
+                <span class="tab-label">Prompt</span>
+                <span class="tab-sub">Core + tono/voz</span>
+              </button>
+              <button class="general-tab" data-target="mandatory" data-icon="OB" type="button">
+                <span class="tab-label">Obligatorio</span>
+                <span class="tab-sub">Inglés + cierre tarde</span>
+              </button>
+              <button class="general-tab" data-target="runtime" data-icon="RT" type="button">
+                <span class="tab-label">Runtime</span>
+                <span class="tab-sub">Reglas en vivo</span>
+              </button>
+              <button class="general-tab" data-target="consent" data-icon="CN" type="button">
+                <span class="tab-label">Consentimiento</span>
+                <span class="tab-sub">Legal + grabación</span>
+              </button>
+              <button class="general-tab" data-target="permissions" data-icon="PM" type="button">
+                <span class="tab-label">Permisos</span>
+                <span class="tab-sub">Roles y accesos</span>
+              </button>
+              <button class="general-tab" data-target="onboarding" data-icon="ON" type="button">
+                <span class="tab-label">Onboarding</span>
+                <span class="tab-sub">Ingreso seguro</span>
+              </button>
+              <button class="general-tab" data-target="users" data-icon="US" type="button">
+                <span class="tab-label">Usuarios</span>
+                <span class="tab-sub">Cuentas internas</span>
+              </button>
+              <button class="general-tab" data-target="assistant" data-icon="AI" type="button">
+                <span class="tab-label">Asistente</span>
+                <span class="tab-sub">Base IA</span>
+              </button>
+              <button class="general-tab" data-target="faq" data-icon="FQ" type="button">
+                <span class="tab-label">FAQ</span>
+                <span class="tab-sub">Ayuda rápida</span>
+              </button>
+            </div>
+            <div class="general-rail-note">Tip: elegí una sección y guardá cambios con Save.</div>
+          </aside>
+
+          <div class="general-content">
+            <div class="panel panel-future hero-panel" style="--delay:.03s;">
+              <div class="hero-grid">
+                <div>
+                  <div class="hero-kicker">HRBOT CONTROL CENTER</div>
+                  <div class="hero-title">Ajustá el tono, la voz y las reglas en minutos.</div>
+                  <div class="hero-sub">Configuración global del bot con enfoque operativo y calidad consistente.</div>
+                </div>
+                <div class="hero-chips">
+                  <span class="hero-chip">Realtime</span>
+                  <span class="hero-chip">Multilenguaje</span>
+                  <span class="hero-chip">Calidad controlada</span>
+                </div>
+              </div>
+            </div>
 
         <div class="general-section" data-section="messages">
           <div class="panel panel-future" style="--delay:.05s;">
@@ -11795,6 +11945,8 @@ app.get("/admin/ui", (req, res) => {
             <button class="secondary btn-compact" id="assistant-kb-reset" type="button">Restaurar default</button>
           </div>
           <div class="small">Se guarda en la base de datos y el asistente la usa al responder.</div>
+          </div>
+        </div>
           </div>
         </div>
       </section>
