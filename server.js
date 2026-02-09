@@ -1614,6 +1614,139 @@ async function fetchSmsMessagesByPhone(phone, limit = SMS_CHAT_FETCH_LIMIT) {
   return rows;
 }
 
+function compactSmsPreview(text, maxLen = 180) {
+  const oneLine = String(text || "").replace(/\s+/g, " ").trim();
+  if (!oneLine) return "";
+  if (oneLine.length <= maxLen) return oneLine;
+  return oneLine.slice(0, Math.max(1, maxLen - 3)).trim() + "...";
+}
+
+function buildSmsConversationItem(row, meta) {
+  const phone = normalizePhone(row?.phone || "");
+  if (!phone) return null;
+  const brandValue = String(meta?.brand || row?.cv_brand || row?.brand || "").trim();
+  const brandKeyValue = String(meta?.brand_key || row?.cv_brand_key || "").trim() || brandKey(brandValue);
+  const roleValue = String(meta?.role || row?.cv_role || row?.role || "").trim();
+  const candidateNameValue = String(meta?.applicant || row?.cv_applicant || row?.candidate_name || "").trim();
+  const cvId = String(meta?.id || row?.cv_id_latest || row?.cv_id || "").trim();
+  const body = String(row?.body || "").trim();
+  const preview = compactSmsPreview(body, 180);
+  return {
+    key: "p:" + normalizePhoneKey(phone),
+    phone,
+    candidate_name: candidateNameValue,
+    brand: brandValue,
+    brand_key: brandKeyValue,
+    role: roleValue,
+    cv_id: cvId,
+    last_message: body,
+    last_preview: preview,
+    last_direction: normalizeSmsDirection(row?.direction),
+    last_channel: normalizeSmsChannel(row?.channel),
+    last_status: String(row?.status || row?.provider_status || "").trim(),
+    last_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    opted_out: isSmsOptedOut(phone)
+  };
+}
+
+function matchesSmsConversationQuery(item, query) {
+  const q = normalizeKey(query || "");
+  if (!q) return true;
+  const haystack = [
+    item?.phone || "",
+    item?.candidate_name || "",
+    item?.brand || "",
+    item?.role || "",
+    item?.last_preview || ""
+  ].join(" ");
+  return normalizeKey(haystack).includes(q);
+}
+
+async function fetchSmsConversations({ limit = 120, query = "", brand = "", allowedBrands = [] } = {}) {
+  const max = Math.max(1, Math.min(Number(limit) || 120, 300));
+  const scopedAllowed = Array.isArray(allowedBrands) ? normalizeAllowedBrands(allowedBrands) : [];
+  const brandFilterKey = brand ? brandKey(brand) : "";
+  const items = [];
+
+  if (dbPool) {
+    const scanLimit = Math.max(80, Math.min(max * 6, 700));
+    const result = await dbQuery(
+      `WITH latest AS (
+         SELECT DISTINCT ON (m.phone)
+           m.id,
+           m.created_at,
+           m.phone,
+           m.direction,
+           m.channel,
+           m.body,
+           m.status,
+           m.provider_status,
+           m.cv_id,
+           m.brand,
+           m.role,
+           m.candidate_name
+         FROM sms_messages m
+         ORDER BY m.phone, m.created_at DESC
+       )
+       SELECT
+         l.id,
+         l.created_at,
+         l.phone,
+         l.direction,
+         l.channel,
+         l.body,
+         l.status,
+         l.provider_status,
+         l.cv_id,
+         l.brand,
+         l.role,
+         l.candidate_name,
+         c.id AS cv_id_latest,
+         c.brand AS cv_brand,
+         c.brand_key AS cv_brand_key,
+         c.role AS cv_role,
+         c.role_key AS cv_role_key,
+         c.applicant AS cv_applicant
+       FROM latest l
+       LEFT JOIN LATERAL (
+         SELECT id, brand, brand_key, role, role_key, applicant
+         FROM cvs
+         WHERE phone = l.phone
+         ORDER BY created_at DESC
+         LIMIT 1
+       ) c ON TRUE
+       ORDER BY l.created_at DESC
+       LIMIT $1`,
+      [scanLimit]
+    );
+    for (const row of result?.rows || []) {
+      const item = buildSmsConversationItem(row, null);
+      if (!item) continue;
+      if (scopedAllowed.length && (!item.brand_key || !scopedAllowed.includes(item.brand_key))) continue;
+      if (brandFilterKey && item.brand_key !== brandFilterKey) continue;
+      if (!matchesSmsConversationQuery(item, query)) continue;
+      items.push(item);
+      if (items.length >= max) break;
+    }
+    return items;
+  }
+
+  for (const [phone, list] of smsMessagesByPhone.entries()) {
+    if (!phone || !Array.isArray(list) || !list.length) continue;
+    const latest = list[list.length - 1] || null;
+    if (!latest) continue;
+    const cvMeta = await fetchLatestCvMetaByPhone(phone, scopedAllowed.length ? scopedAllowed : null);
+    const item = buildSmsConversationItem(latest, cvMeta);
+    if (!item) continue;
+    if (scopedAllowed.length && (!item.brand_key || !scopedAllowed.includes(item.brand_key))) continue;
+    if (brandFilterKey && item.brand_key !== brandFilterKey) continue;
+    if (!matchesSmsConversationQuery(item, query)) continue;
+    items.push(item);
+  }
+  items.sort((a, b) => new Date(b.last_at || 0) - new Date(a.last_at || 0));
+  return items.slice(0, max);
+}
+
 async function fetchSmsRecentForGuard(phone, limit = 40) {
   const norm = normalizePhone(phone);
   if (!norm) return [];
@@ -6640,6 +6773,28 @@ app.get("/admin/messages/thread", requireConfigOrViewer, async (req, res) => {
   }
 });
 
+app.get("/admin/messages/conversations", requireConfigOrViewer, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query?.limit) || 120, 300));
+    const query = String(req.query?.q || req.query?.search || "").trim();
+    const brand = String(req.query?.brand || "").trim();
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (brand && allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const items = await fetchSmsConversations({
+      limit,
+      query,
+      brand,
+      allowedBrands
+    });
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[admin/messages] conversations failed", err);
+    return res.status(400).json({ error: "messages_conversations_failed", detail: err.message });
+  }
+});
+
 app.post("/admin/messages/send", requirePermission("cvs_write"), async (req, res) => {
   try {
     const body = req.body || {};
@@ -11297,6 +11452,46 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1.35;
       cursor: help;
     }
+    .messages-last {
+      max-width: 260px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.35;
+    }
+    .messages-dir {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 22px;
+      height: 20px;
+      border-radius: 999px;
+      padding: 0 7px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      border: 1px solid var(--border);
+      background: #f8f4ec;
+      color: #5d6058;
+    }
+    .messages-dir.inbound {
+      background: rgba(27, 122, 140, 0.12);
+      border-color: rgba(27, 122, 140, 0.32);
+      color: var(--primary-dark);
+    }
+    .messages-dir.outbound {
+      background: rgba(20, 116, 69, 0.12);
+      border-color: rgba(20, 116, 69, 0.32);
+      color: #11623c;
+    }
+    .messages-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
     .notes-cell { max-width: 180px; }
     .summary-tooltip {
       position: fixed;
@@ -12249,10 +12444,10 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 760px) {
       .table-wrapper { overflow: visible; }
-      .cv-table, .results-table { border-collapse: separate; }
-      .cv-table thead, .results-table thead { display: none; }
-      .cv-table tbody, .results-table tbody { display: block; }
-      .cv-table tbody tr, .results-table tbody tr {
+      .cv-table, .results-table, .messages-table { border-collapse: separate; }
+      .cv-table thead, .results-table thead, .messages-table thead { display: none; }
+      .cv-table tbody, .results-table tbody, .messages-table tbody { display: block; }
+      .cv-table tbody tr, .results-table tbody tr, .messages-table tbody tr {
         display: block;
         background: var(--panel);
         border: 1px solid var(--border);
@@ -12261,11 +12456,11 @@ app.get("/admin/ui", (req, res) => {
         margin-bottom: 12px;
         box-shadow: var(--shadow);
       }
-      .cv-table tbody tr.is-new, .results-table tbody tr.is-new {
+      .cv-table tbody tr.is-new, .results-table tbody tr.is-new, .messages-table tbody tr.is-new {
         border-color: rgba(27, 122, 140, 0.55);
         box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.18), var(--shadow);
       }
-      .cv-table tbody tr td, .results-table tbody tr td {
+      .cv-table tbody tr td, .results-table tbody tr td, .messages-table tbody tr td {
         display: grid;
         grid-template-columns: 112px minmax(0, 1fr);
         gap: 8px;
@@ -12274,8 +12469,8 @@ app.get("/admin/ui", (req, res) => {
         background: transparent !important;
         align-items: center;
       }
-      .cv-table tbody tr td:last-child, .results-table tbody tr td:last-child { border-bottom: none; }
-      .cv-table tbody tr td::before, .results-table tbody tr td::before {
+      .cv-table tbody tr td:last-child, .results-table tbody tr td:last-child, .messages-table tbody tr td:last-child { border-bottom: none; }
+      .cv-table tbody tr td::before, .results-table tbody tr td::before, .messages-table tbody tr td::before {
         content: attr(data-label);
         font-size: 10.5px;
         text-transform: uppercase;
@@ -12284,9 +12479,11 @@ app.get("/admin/ui", (req, res) => {
         font-weight: 700;
       }
       .cv-table tbody tr td[data-label=""]::before,
-      .results-table tbody tr td[data-label=""]::before { content: ""; }
+      .results-table tbody tr td[data-label=""]::before,
+      .messages-table tbody tr td[data-label=""]::before { content: ""; }
       .cv-table tbody tr:nth-child(even) td,
-      .results-table tbody tr:nth-child(even) td { background: transparent !important; }
+      .results-table tbody tr:nth-child(even) td,
+      .messages-table tbody tr:nth-child(even) td { background: transparent !important; }
       .candidate-wrap { gap: 8px; }
       .candidate-name {
         font-size: 15px;
@@ -12421,6 +12618,7 @@ app.get("/admin/ui", (req, res) => {
       .results-table tbody tr td[data-label="Decisión"],
       .cv-table tbody tr td[data-label="Acción"],
       .results-table tbody tr td[data-label="Acción"],
+      .messages-table tbody tr td[data-label="Accion"],
       .results-table tbody tr td[data-label="Audio"],
       .cv-table tbody tr td[data-label="CV"],
       .results-table tbody tr td[data-label="CV"] {
@@ -12628,6 +12826,10 @@ app.get("/admin/ui", (req, res) => {
           <span class="nav-icon">C</span>
           <span class="nav-label">Candidates</span>
           <span class="nav-badge" id="nav-calls-badge"></span>
+        </button>
+        <button class="nav-item" id="nav-messages" type="button" title="Mensajes">
+          <span class="nav-icon">M</span>
+          <span class="nav-label">Mensajes</span>
         </button>
         <button class="nav-item" id="nav-interviews" type="button" title="Interviews">
           <span class="nav-icon">I</span>
@@ -13426,6 +13628,48 @@ app.get("/admin/ui", (req, res) => {
             </div>
           </div>
           <div class="small" id="cv-list-count" style="margin-top:8px;"></div>
+        </div>
+      </section>
+
+      <section id="messages-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.06s;">
+          <div class="panel-title">Mensajes</div>
+          <div class="panel-sub">Inbox de conversaciones SMS por candidato.</div>
+          <div class="panel-filters">
+            <div class="grid">
+              <div>
+                <label>Local</label>
+                <select id="messages-brand">
+                  <option value="">Todos</option>
+                </select>
+              </div>
+              <div>
+                <label>Buscar</label>
+                <input type="text" id="messages-search" placeholder="Nombre, telefono, local o texto" />
+              </div>
+              <div style="display:flex; align-items:flex-end;">
+                <button class="secondary" id="messages-refresh" type="button">Refresh</button>
+              </div>
+            </div>
+          </div>
+          <div class="table-wrapper" style="margin-top:12px;">
+            <table class="cv-table messages-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Candidato</th>
+                  <th>Telefono</th>
+                  <th>Local</th>
+                  <th>Posicion</th>
+                  <th>Ultimo</th>
+                  <th>Estado</th>
+                  <th>Accion</th>
+                </tr>
+              </thead>
+              <tbody id="messages-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="messages-count" style="margin-top:8px;"></div>
         </div>
       </section>
 
@@ -14583,6 +14827,7 @@ app.get("/admin/ui", (req, res) => {
     const tokenEl = document.getElementById('token');
     const navGeneralEl = document.getElementById('nav-general');
     const navCallsEl = document.getElementById('nav-calls');
+    const navMessagesEl = document.getElementById('nav-messages');
     const navInterviewsEl = document.getElementById('nav-interviews');
     const navCalendarEl = document.getElementById('nav-calendar');
     const navOnboardingEl = document.getElementById('nav-onboarding');
@@ -14598,6 +14843,7 @@ app.get("/admin/ui", (req, res) => {
     const generalTabsEl = document.getElementById('general-tabs');
     const generalSectionEls = Array.from(document.querySelectorAll('#general-view .general-section'));
     const callsViewEl = document.getElementById('calls-view');
+    const messagesViewEl = document.getElementById('messages-view');
     const interviewsViewEl = document.getElementById('interviews-view');
     const calendarViewEl = document.getElementById('calendar-view');
     const onboardingViewEl = document.getElementById('onboarding-view');
@@ -14958,6 +15204,11 @@ app.get("/admin/ui", (req, res) => {
     const onboardingTabsEl = document.getElementById('onboarding-tabs');
     const onboardingBodyEl = document.getElementById('onboarding-body');
     const onboardingCountEl = document.getElementById('onboarding-count');
+    const messagesBrandEl = document.getElementById('messages-brand');
+    const messagesSearchEl = document.getElementById('messages-search');
+    const messagesRefreshEl = document.getElementById('messages-refresh');
+    const messagesBodyEl = document.getElementById('messages-body');
+    const messagesCountEl = document.getElementById('messages-count');
     let state = { config: {} };
     let loginMode = 'admin';
     let authRole = 'admin';
@@ -14987,6 +15238,8 @@ app.get("/admin/ui", (req, res) => {
     }
     let resultsTimer = null;
     let cvTimer = null;
+    let messagesTimer = null;
+    let messagesPollTimer = null;
     let cvActiveTimer = null;
     let badgeTimer = null;
     let trialReviewTimer = null;
@@ -15038,6 +15291,7 @@ app.get("/admin/ui", (req, res) => {
     let pendingOnboardingDocType = '';
     let analyticsCache = null;
     let onboardingList = [];
+    let messagesList = [];
     let onboardingFilterMode = 'all';
     let pendingUserPhotoDataUrl = '';
     let pendingUserPhotoName = '';
@@ -15145,6 +15399,7 @@ app.get("/admin/ui", (req, res) => {
       TRANSCRIPTION_FAILED: "No se pudo transcribir el audio"
     };
     const VIEW_CALLS = '__calls__';
+    const VIEW_MESSAGES = '__messages__';
     const VIEW_INTERVIEWS = '__interviews__';
     const VIEW_CALENDAR = '__calendar__';
     const VIEW_ONBOARDING = '__onboarding__';
@@ -15192,6 +15447,14 @@ app.get("/admin/ui", (req, res) => {
       if (cvTimer) {
         clearTimeout(cvTimer);
         cvTimer = null;
+      }
+      if (messagesTimer) {
+        clearTimeout(messagesTimer);
+        messagesTimer = null;
+      }
+      if (messagesPollTimer) {
+        clearInterval(messagesPollTimer);
+        messagesPollTimer = null;
       }
       if (cvActiveTimer) {
         clearTimeout(cvActiveTimer);
@@ -15544,12 +15807,15 @@ app.get("/admin/ui", (req, res) => {
       lastResultsRaw = [];
       lastResults = [];
       lastResultsFiltered = [];
+      messagesList = [];
       cvSwipeIndex = 0;
       resultsSwipeIndex = 0;
       if (cvListBodyEl) cvListBodyEl.innerHTML = '';
       if (resultsBodyEl) resultsBodyEl.innerHTML = '';
+      if (messagesBodyEl) messagesBodyEl.innerHTML = '';
       setCvListCount('');
       setResultsCount('');
+      setMessagesCount('');
       cvViewMode = 'table';
       resultsViewMode = 'table';
       applyCvViewMode('table', { persist: false });
@@ -15786,6 +16052,7 @@ app.get("/admin/ui", (req, res) => {
       const canWrite = canPermission('cvs_write');
       const canCall = canPermission('cvs_call');
       if (navGeneralEl) navGeneralEl.style.display = isAdmin ? '' : 'none';
+      if (navMessagesEl) navMessagesEl.style.display = canWrite ? '' : 'none';
       if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
       if (navAnalyticsEl) navAnalyticsEl.style.display = canPermission('analytics_view') ? '' : 'none';
       if (navOnboardingEl) navOnboardingEl.style.display = canPermission('onboarding_manage') ? '' : 'none';
@@ -15801,6 +16068,9 @@ app.get("/admin/ui", (req, res) => {
       if (callClearEl) callClearEl.disabled = !(canWrite || canCall);
       if (cvFileEl) cvFileEl.disabled = !canWrite;
       if (!isAdmin && activeView === 'general') {
+        setActiveView(VIEW_CALLS);
+      }
+      if (!canWrite && activeView === 'messages') {
         setActiveView(VIEW_CALLS);
       }
       assistantUpdateScope();
@@ -19704,6 +19974,7 @@ app.get("/admin/ui", (req, res) => {
     function updateNavActive() {
       navGeneralEl.classList.toggle('active', activeView === 'general');
       navCallsEl.classList.toggle('active', activeView === 'calls');
+      if (navMessagesEl) navMessagesEl.classList.toggle('active', activeView === 'messages');
       navInterviewsEl.classList.toggle('active', activeView === 'interviews');
       if (navCalendarEl) navCalendarEl.classList.toggle('active', activeView === 'calendar');
       if (navOnboardingEl) navOnboardingEl.classList.toggle('active', activeView === 'onboarding');
@@ -19717,9 +19988,11 @@ app.get("/admin/ui", (req, res) => {
     function setActiveView(key) {
       const canAnalytics = canPermission('analytics_view');
       const canOnboarding = canPermission('onboarding_manage');
+      const canWrite = canPermission('cvs_write');
       if (
         authRole !== 'admin' &&
         key !== VIEW_CALLS &&
+        key !== VIEW_MESSAGES &&
         key !== VIEW_INTERVIEWS &&
         key !== VIEW_CALENDAR &&
         key !== VIEW_ANALYTICS &&
@@ -19729,6 +20002,9 @@ app.get("/admin/ui", (req, res) => {
       }
       if (key === VIEW_CALLS) {
         activeView = 'calls';
+        activeBrandKey = '';
+      } else if (key === VIEW_MESSAGES) {
+        activeView = canWrite ? 'messages' : 'calls';
         activeBrandKey = '';
       } else if (key === VIEW_INTERVIEWS) {
         activeView = 'interviews';
@@ -19754,6 +20030,7 @@ app.get("/admin/ui", (req, res) => {
       }
       generalViewEl.style.display = activeView === 'general' ? 'block' : 'none';
       callsViewEl.style.display = activeView === 'calls' ? 'block' : 'none';
+      if (messagesViewEl) messagesViewEl.style.display = activeView === 'messages' ? 'block' : 'none';
       interviewsViewEl.style.display = activeView === 'interviews' ? 'block' : 'none';
       if (calendarViewEl) calendarViewEl.style.display = activeView === 'calendar' ? 'block' : 'none';
       if (onboardingViewEl) onboardingViewEl.style.display = activeView === 'onboarding' ? 'block' : 'none';
@@ -19770,6 +20047,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'calls') {
         viewTitleEl.textContent = 'Candidates';
         viewLabelEl.textContent = 'Llamadas';
+      } else if (activeView === 'messages') {
+        viewTitleEl.textContent = 'Mensajes';
+        viewLabelEl.textContent = 'Inbox';
       } else if (activeView === 'interviews') {
         viewTitleEl.textContent = 'Interviews';
         viewLabelEl.textContent = 'Listado';
@@ -19809,6 +20089,12 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'calls') {
         scheduleCvLoad();
+      }
+      if (activeView === 'messages') {
+        scheduleMessagesLoad();
+        startMessagesPolling();
+      } else {
+        stopMessagesPolling();
       }
       if (activeView === 'calls' && lastCvRaw.length) {
         markCandidatesSeen(lastCvRaw);
@@ -19966,6 +20252,21 @@ app.get("/admin/ui", (req, res) => {
       } else {
         cvFilterBrandEl.value = '';
       }
+      if (messagesBrandEl) {
+        const msgPrev = messagesBrandEl.value;
+        messagesBrandEl.innerHTML = '<option value="">Todos</option>';
+        options.forEach((opt) => {
+          const option = document.createElement('option');
+          option.value = opt.key;
+          option.textContent = opt.display;
+          messagesBrandEl.appendChild(option);
+        });
+        if (msgPrev && options.some((opt) => opt.key === msgPrev)) {
+          messagesBrandEl.value = msgPrev;
+        } else {
+          messagesBrandEl.value = '';
+        }
+      }
     }
 
     function updateResultsRoleOptions() {
@@ -20085,6 +20386,8 @@ app.get("/admin/ui", (req, res) => {
         setActiveView(activeBrandKey);
       } else if (activeView === 'calls') {
         setActiveView(VIEW_CALLS);
+      } else if (activeView === 'messages') {
+        setActiveView(VIEW_MESSAGES);
       } else if (activeView === 'interviews') {
         setActiveView(VIEW_INTERVIEWS);
       } else if (activeView === 'calendar') {
@@ -22805,6 +23108,157 @@ app.get("/admin/ui", (req, res) => {
       cvTimer = setTimeout(loadCvList, 300);
     }
 
+    function stopMessagesPolling() {
+      if (messagesTimer) {
+        clearTimeout(messagesTimer);
+        messagesTimer = null;
+      }
+      if (messagesPollTimer) {
+        clearInterval(messagesPollTimer);
+        messagesPollTimer = null;
+      }
+    }
+
+    function startMessagesPolling() {
+      stopMessagesPolling();
+      if (activeView !== 'messages') return;
+      messagesPollTimer = setInterval(() => {
+        if (activeView !== 'messages') return;
+        loadMessagesConversations(true).catch(() => {});
+      }, 15000);
+    }
+
+    function setMessagesCount(msg) {
+      if (!messagesCountEl) return;
+      messagesCountEl.textContent = msg || '';
+    }
+
+    function formatMessagesLastAt(value) {
+      if (!value) return '—';
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return '—';
+      return dt.toLocaleString();
+    }
+
+    function renderMessagesConversations(items) {
+      if (!messagesBodyEl) return;
+      const list = Array.isArray(items) ? items : [];
+      messagesList = list.slice();
+      messagesBodyEl.innerHTML = '';
+      if (!list.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.textContent = 'Sin conversaciones todavía.';
+        tr.appendChild(td);
+        messagesBodyEl.appendChild(tr);
+        setMessagesCount('0 conversaciones');
+        return;
+      }
+      list.forEach((item) => {
+        const tr = document.createElement('tr');
+        const addCell = (value, label, className, title) => {
+          const td = document.createElement('td');
+          td.dataset.label = label || '';
+          td.textContent = value || '—';
+          if (className) td.className = className;
+          if (title) td.title = title;
+          tr.appendChild(td);
+        };
+        addCell(formatMessagesLastAt(item.last_at), 'Fecha', 'cell-compact', formatMessagesLastAt(item.last_at));
+        addCell(item.candidate_name || 'Sin nombre', 'Candidato', 'cell-compact', item.candidate_name || item.phone || '');
+        addCell(item.phone || '', 'Telefono', 'cell-compact');
+        addCell(item.brand || '—', 'Local', 'cell-compact', item.brand || '');
+        addCell(item.role || '—', 'Posicion', 'cell-compact', item.role || '');
+
+        const lastTd = document.createElement('td');
+        lastTd.dataset.label = 'Ultimo';
+        const lastWrap = document.createElement('div');
+        lastWrap.className = 'messages-state';
+        const dir = document.createElement('span');
+        const direction = String(item.last_direction || '').toLowerCase();
+        dir.className = 'messages-dir ' + (direction === 'inbound' ? 'inbound' : (direction === 'outbound' ? 'outbound' : ''));
+        dir.textContent = direction === 'inbound' ? 'IN' : (direction === 'outbound' ? 'OUT' : 'SYS');
+        lastWrap.appendChild(dir);
+        const text = document.createElement('span');
+        text.className = 'messages-last';
+        text.textContent = item.last_preview || '—';
+        if (item.last_message) text.title = item.last_message;
+        lastWrap.appendChild(text);
+        lastTd.appendChild(lastWrap);
+        tr.appendChild(lastTd);
+
+        const statusTd = document.createElement('td');
+        statusTd.dataset.label = 'Estado';
+        const statusBits = [];
+        if (item.opted_out) statusBits.push('STOP');
+        if (item.last_status) statusBits.push(item.last_status);
+        statusTd.textContent = statusBits.length ? statusBits.join(' · ') : '—';
+        tr.appendChild(statusTd);
+
+        const actionTd = document.createElement('td');
+        actionTd.dataset.label = 'Accion';
+        const actionWrap = document.createElement('div');
+        actionWrap.className = 'action-stack';
+        const openBtn = document.createElement('button');
+        openBtn.type = 'button';
+        openBtn.className = 'secondary btn-compact';
+        openBtn.textContent = 'Abrir chat';
+        openBtn.onclick = () => {
+          openCandidateChat({
+            id: item.cv_id || '',
+            cv_id: item.cv_id || '',
+            phone: item.phone || '',
+            applicant: item.candidate_name || '',
+            brand: item.brand || '',
+            role: item.role || ''
+          }, { trigger: 'messages' });
+        };
+        actionWrap.appendChild(openBtn);
+        actionTd.appendChild(actionWrap);
+        tr.appendChild(actionTd);
+        messagesBodyEl.appendChild(tr);
+      });
+      setMessagesCount(String(list.length) + ' conversaciones');
+    }
+
+    async function loadMessagesConversations(silent = false) {
+      if (activeView !== 'messages' && !silent) return;
+      if (!messagesBodyEl) return;
+      if (!silent) setMessagesCount('Cargando...');
+      try {
+        const params = new URLSearchParams();
+        params.set('limit', '120');
+        if (messagesBrandEl && messagesBrandEl.value) params.set('brand', messagesBrandEl.value);
+        if (messagesSearchEl && messagesSearchEl.value) params.set('q', messagesSearchEl.value);
+        const resp = await fetch('/admin/messages/conversations?' + params.toString(), {
+          headers: portalAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'messages_conversations_failed');
+        renderMessagesConversations(Array.isArray(data.items) ? data.items : []);
+      } catch (err) {
+        setMessagesCount('Error: ' + err.message);
+        if (!silent && messagesBodyEl) {
+          messagesBodyEl.innerHTML = '';
+          const tr = document.createElement('tr');
+          const td = document.createElement('td');
+          td.colSpan = 8;
+          td.textContent = 'Error: ' + err.message;
+          tr.appendChild(td);
+          messagesBodyEl.appendChild(tr);
+        }
+      }
+    }
+
+    function scheduleMessagesLoad() {
+      if (activeView !== 'messages') return;
+      if (messagesTimer) clearTimeout(messagesTimer);
+      messagesTimer = setTimeout(() => {
+        loadMessagesConversations().catch(() => {});
+      }, 260);
+    }
+
     function goToInterviewFromCv(item) {
       setActiveView(VIEW_INTERVIEWS);
       if (item.brandKey) {
@@ -24292,6 +24746,7 @@ app.get("/admin/ui", (req, res) => {
     }
     navGeneralEl.onclick = () => setActiveView('');
     navCallsEl.onclick = () => setActiveView(VIEW_CALLS);
+    if (navMessagesEl) navMessagesEl.onclick = () => setActiveView(VIEW_MESSAGES);
     navInterviewsEl.onclick = () => setActiveView(VIEW_INTERVIEWS);
     if (navCalendarEl) navCalendarEl.onclick = () => setActiveView(VIEW_CALENDAR);
     if (navOnboardingEl) navOnboardingEl.onclick = () => setActiveView(VIEW_ONBOARDING);
@@ -24510,6 +24965,9 @@ app.get("/admin/ui", (req, res) => {
     cvRefreshEl.onclick = loadCvList;
     cvFilterBrandEl.addEventListener('change', scheduleCvLoad);
     cvFilterSearchEl.addEventListener('input', scheduleCvLoad);
+    if (messagesRefreshEl) messagesRefreshEl.onclick = () => loadMessagesConversations().catch(() => {});
+    if (messagesBrandEl) messagesBrandEl.addEventListener('change', scheduleMessagesLoad);
+    if (messagesSearchEl) messagesSearchEl.addEventListener('input', scheduleMessagesLoad);
     if (cvTabsEl) {
       cvTabsEl.querySelectorAll('button').forEach((btn) => {
         btn.onclick = () => {
@@ -24733,6 +25191,8 @@ app.get("/admin/ui", (req, res) => {
       if (viewParam === 'portal') {
         pendingPortalView = VIEW_PORTAL;
         pendingView = VIEW_PORTAL;
+      } else if (viewParam === 'messages') {
+        pendingView = VIEW_MESSAGES;
       } else if (viewParam === 'interviews') {
         pendingView = VIEW_INTERVIEWS;
       } else if (viewParam === 'calendar') {
