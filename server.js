@@ -10451,51 +10451,51 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-chat-dock {
       position: fixed;
-      left: 18px;
+      right: 18px;
       bottom: 18px;
       z-index: 78;
       display: none;
       flex-direction: column;
-      align-items: flex-start;
+      align-items: flex-end;
       gap: 8px;
-      max-width: min(540px, calc(100vw - 150px));
+      max-width: min(420px, calc(100vw - 24px));
     }
     .candidate-chat-tabs {
-      display: flex;
+      display: none;
       gap: 6px;
-      flex-wrap: wrap;
-      max-width: 100%;
+      align-items: center;
+      justify-content: flex-end;
+      width: 100%;
     }
     .candidate-chat-tab {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 8px;
       border-radius: 12px;
-      border: 1px solid var(--border);
-      background: #fff;
-      color: var(--ink);
-      box-shadow: 0 8px 16px rgba(15, 33, 39, 0.12);
-      padding: 6px 10px;
+      border: 1px solid rgba(18, 21, 24, 0.78);
+      background: #2d2b2c;
+      color: #fff;
+      box-shadow: 0 12px 24px rgba(10, 12, 14, 0.35);
+      padding: 8px 10px;
       font-size: 12px;
       font-weight: 700;
-      max-width: 210px;
+      max-width: 260px;
       cursor: pointer;
     }
     .candidate-chat-tab.active {
-      border-color: rgba(27, 122, 140, 0.6);
-      box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.14);
-      color: var(--primary-dark);
+      border-color: rgba(255, 255, 255, 0.34);
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 12px 24px rgba(10, 12, 14, 0.35);
     }
     .candidate-chat-tab-name {
-      max-width: 140px;
+      max-width: 180px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     .candidate-chat-tab-close {
       border: none;
-      background: transparent;
-      color: var(--muted);
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.9);
       padding: 0;
       width: 18px;
       height: 18px;
@@ -10505,60 +10505,114 @@ app.get("/admin/ui", (req, res) => {
       line-height: 1;
     }
     .candidate-chat-tab-close:hover {
-      background: rgba(27, 122, 140, 0.12);
-      color: var(--primary-dark);
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
     }
     .candidate-chat-window {
-      width: min(440px, calc(100vw - 32px));
-      max-height: min(70vh, 560px);
-      background: #f7f2e8;
-      border: 1px solid var(--border);
+      width: min(390px, calc(100vw - 24px));
+      height: min(62vh, 520px);
+      max-height: min(62vh, 520px);
+      background: #fff;
+      border: 1px solid #d7d2c7;
       border-radius: 16px;
-      box-shadow: var(--shadow);
+      box-shadow: 0 24px 44px rgba(18, 21, 24, 0.32);
       display: none;
       flex-direction: column;
       overflow: hidden;
     }
     .candidate-chat-head {
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       justify-content: space-between;
       gap: 10px;
-      padding: 12px;
-      border-bottom: 1px solid var(--border);
-      background: linear-gradient(135deg, rgba(27, 122, 140, 0.15), rgba(244, 162, 97, 0.16));
+      padding: 10px 12px;
+      border-bottom: 1px solid #353334;
+      background: #2d2b2c;
+      color: #fff;
+    }
+    .candidate-chat-head-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1;
+    }
+    .candidate-chat-head-text {
+      min-width: 0;
+      flex: 1;
+    }
+    .candidate-chat-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      background: #9f6435;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 800;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 30px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
     }
     .candidate-chat-title {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 800;
+      color: #fff;
+      max-width: 220px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .candidate-chat-meta {
       font-size: 11px;
-      color: var(--muted);
-      margin-top: 2px;
-      max-width: 240px;
+      color: rgba(255, 255, 255, 0.78);
+      margin-top: 1px;
+      max-width: 260px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
     .candidate-chat-actions {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      justify-content: flex-end;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .candidate-chat-action-btn {
+      border: none;
+      background: transparent;
+      color: rgba(255, 255, 255, 0.9);
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      padding: 0;
+      box-shadow: none;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .candidate-chat-action-btn:hover {
+      background: rgba(255, 255, 255, 0.14);
     }
     .candidate-chat-status {
-      padding: 8px 12px 0;
+      padding: 6px 10px 0;
       min-height: 18px;
       color: var(--muted);
+      background: #fff;
     }
     .candidate-chat-body {
-      padding: 10px 12px;
+      flex: 1;
+      padding: 10px;
       overflow: auto;
       display: flex;
       flex-direction: column;
       gap: 8px;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(250, 248, 243, 0.98));
+      background: #fff;
     }
     .candidate-chat-empty {
       font-size: 12px;
@@ -10567,20 +10621,21 @@ app.get("/admin/ui", (req, res) => {
       padding: 12px 8px;
     }
     .candidate-chat-msg {
-      max-width: 92%;
-      border-radius: 14px;
+      max-width: 88%;
+      border-radius: 12px;
       padding: 8px 10px;
       font-size: 12px;
-      line-height: 1.4;
+      line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
-      box-shadow: 0 6px 14px rgba(15, 33, 39, 0.1);
+      box-shadow: none;
     }
     .candidate-chat-msg.inbound {
       align-self: flex-start;
-      background: #fff;
-      border: 1px solid var(--border);
+      background: #f3f4f7;
+      border: 1px solid #e2e5ea;
       border-bottom-left-radius: 6px;
+      color: #1d2128;
     }
     .candidate-chat-msg.outbound {
       align-self: flex-end;
@@ -10594,24 +10649,24 @@ app.get("/admin/ui", (req, res) => {
       background: #f3efe6;
       border: 1px dashed var(--border);
       color: var(--muted);
-      box-shadow: none;
     }
     .candidate-chat-msg-meta {
       margin-top: 4px;
       font-size: 10px;
-      opacity: 0.75;
+      opacity: 0.78;
     }
     .candidate-chat-compose {
-      padding: 10px 12px 12px;
-      border-top: 1px solid var(--border);
-      background: #f7f2e8;
+      padding: 10px;
+      border-top: 1px solid #ece7de;
+      background: #fff;
       display: grid;
       gap: 8px;
     }
     .candidate-chat-compose textarea {
-      min-height: 62px;
+      min-height: 68px;
       max-height: 130px;
       resize: vertical;
+      border-radius: 10px;
     }
     .candidate-chat-compose-row {
       display: flex;
@@ -10628,10 +10683,15 @@ app.get("/admin/ui", (req, res) => {
       }
       .candidate-chat-window {
         width: 100%;
-        max-height: 65vh;
+        height: min(58vh, 480px);
+        max-height: min(58vh, 480px);
       }
-      .candidate-chat-tab { max-width: 100%; }
-      .candidate-chat-tab-name { max-width: 200px; }
+      .candidate-chat-tab {
+        max-width: 100%;
+      }
+      .candidate-chat-tab-name {
+        max-width: 220px;
+      }
     }
     .table-wrapper {
       border: 1px solid var(--border);
@@ -11012,6 +11072,15 @@ app.get("/admin/ui", (req, res) => {
       border: 0;
       padding: 0;
       margin: 0;
+    }
+    .candidate-name.can-chat {
+      cursor: pointer;
+      transition: color 0.15s ease;
+    }
+    .candidate-name.can-chat:hover {
+      color: var(--primary-dark);
+      text-decoration: underline;
+      text-underline-offset: 2px;
     }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
@@ -14465,14 +14534,17 @@ app.get("/admin/ui", (req, res) => {
     <div id="candidate-chat-tabs" class="candidate-chat-tabs"></div>
     <div id="candidate-chat-window" class="candidate-chat-window" style="display:none;">
       <div class="candidate-chat-head">
-        <div>
-          <div class="candidate-chat-title" id="candidate-chat-title">SMS</div>
-          <div class="candidate-chat-meta" id="candidate-chat-meta"></div>
+        <div class="candidate-chat-head-main">
+          <div id="candidate-chat-avatar" class="candidate-chat-avatar">SMS</div>
+          <div class="candidate-chat-head-text">
+            <div class="candidate-chat-title" id="candidate-chat-title">SMS</div>
+            <div class="candidate-chat-meta" id="candidate-chat-meta"></div>
+          </div>
         </div>
         <div class="candidate-chat-actions">
-          <button class="secondary btn-compact" id="candidate-chat-refresh" type="button">Refresh</button>
-          <button class="secondary btn-compact" id="candidate-chat-min" type="button">Min</button>
-          <button class="secondary btn-compact" id="candidate-chat-close" type="button">Cerrar</button>
+          <button class="candidate-chat-action-btn" id="candidate-chat-refresh" type="button" title="Refresh">...</button>
+          <button class="candidate-chat-action-btn" id="candidate-chat-min" type="button" title="Minimizar">-</button>
+          <button class="candidate-chat-action-btn" id="candidate-chat-close" type="button" title="Cerrar">x</button>
         </div>
       </div>
       <div id="candidate-chat-status" class="candidate-chat-status small"></div>
@@ -14480,7 +14552,7 @@ app.get("/admin/ui", (req, res) => {
       <div class="candidate-chat-compose">
         <textarea id="candidate-chat-input" placeholder="Escribí un SMS..."></textarea>
         <div class="candidate-chat-compose-row">
-          <div class="small">Incluí marca y contexto. Evitá enviar spam.</div>
+          <div class="small">SMS directo al candidato</div>
           <button id="candidate-chat-send" type="button">Enviar SMS</button>
         </div>
       </div>
@@ -14831,6 +14903,7 @@ app.get("/admin/ui", (req, res) => {
     const candidateChatDockEl = document.getElementById('candidate-chat-dock');
     const candidateChatTabsEl = document.getElementById('candidate-chat-tabs');
     const candidateChatWindowEl = document.getElementById('candidate-chat-window');
+    const candidateChatAvatarEl = document.getElementById('candidate-chat-avatar');
     const candidateChatTitleEl = document.getElementById('candidate-chat-title');
     const candidateChatMetaEl = document.getElementById('candidate-chat-meta');
     const candidateChatStatusEl = document.getElementById('candidate-chat-status');
@@ -14976,11 +15049,14 @@ app.get("/admin/ui", (req, res) => {
     let candidateChatTimer = null;
     let candidateChatLoading = false;
     let candidateChatMinimized = false;
+    let candidateChatHoverTimer = null;
+    let candidateChatHoverKey = '';
     const CV_CHAR_LIMIT = 4000;
     const SMS_CHAT_MAX_BODY = ${JSON.stringify(SMS_CHAT_MAX_BODY)};
     const SMS_CHAT_FETCH_LIMIT = ${JSON.stringify(SMS_CHAT_FETCH_LIMIT)};
-    const CANDIDATE_CHAT_MAX_TABS = 6;
     const CANDIDATE_CHAT_POLL_MS = 10000;
+    const CANDIDATE_CHAT_HOVER_OPEN_MS = 220;
+    const CANDIDATE_CHAT_FRESH_MS = 12000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
     const OCR_TEXT_THRESHOLD = 180;
@@ -16985,13 +17061,89 @@ app.get("/admin/ui", (req, res) => {
       return thread.phone || 'SMS';
     }
 
+    function candidateChatAvatarLabel(thread) {
+      const label = candidateChatThreadLabel(thread).trim();
+      if (!label) return 'SMS';
+      const parts = label.split(/\s+/).filter(Boolean);
+      if (!parts.length) return label.slice(0, 3).toUpperCase();
+      if (parts.length === 1) return parts[0].slice(0, 3).toUpperCase();
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+
+    function updateCandidateChatComposerState() {
+      const thread = getActiveCandidateChatThread();
+      const hasBody = !!(candidateChatInputEl && candidateChatInputEl.value && candidateChatInputEl.value.trim());
+      const blocked = !thread || !canUseCandidateChat() || !!thread.opted_out;
+      if (candidateChatInputEl) {
+        candidateChatInputEl.disabled = blocked;
+      }
+      if (candidateChatSendEl) {
+        candidateChatSendEl.disabled = blocked || !hasBody;
+      }
+    }
+
+    function buildCandidateChatTarget(item) {
+      if (!item) return null;
+      return {
+        id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+        cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+        phone: item.phone || '',
+        applicant: item.applicant || item.name || '',
+        brand: item.brand || item.brandKey || item.brandName || '',
+        role: item.role || item.roleKey || item.roleName || ''
+      };
+    }
+
+    function clearCandidateChatHoverTimer() {
+      if (candidateChatHoverTimer) {
+        clearTimeout(candidateChatHoverTimer);
+        candidateChatHoverTimer = null;
+      }
+      candidateChatHoverKey = '';
+    }
+
+    function scheduleCandidateChatOpenOnHover(target) {
+      if (!canUseCandidateChat()) return;
+      if (!window.matchMedia || !window.matchMedia('(hover: hover)').matches) return;
+      const hasDraft = !!(candidateChatInputEl && candidateChatInputEl.value && candidateChatInputEl.value.trim());
+      const inputFocused = candidateChatInputEl && document.activeElement === candidateChatInputEl;
+      if ((hasDraft || inputFocused) && candidateChatActiveKey) return;
+      const phone = normalizePhoneForChat(target && target.phone ? target.phone : '');
+      const key = candidateChatThreadKey(phone);
+      if (!key) return;
+      if (key === candidateChatActiveKey && !candidateChatMinimized) return;
+      clearCandidateChatHoverTimer();
+      candidateChatHoverKey = key;
+      candidateChatHoverTimer = setTimeout(() => {
+        const nextKey = candidateChatHoverKey;
+        clearCandidateChatHoverTimer();
+        if (!nextKey || nextKey !== key) return;
+        openCandidateChat(target, {
+          focusInput: false,
+          silent: true,
+          noisy: false,
+          trigger: 'hover'
+        });
+      }, CANDIDATE_CHAT_HOVER_OPEN_MS);
+    }
+
+    function attachCandidateChatHoverTrigger(el, target) {
+      if (!el || !target || !target.phone || !canUseCandidateChat()) return;
+      el.addEventListener('mouseenter', () => scheduleCandidateChatOpenOnHover(target));
+      el.addEventListener('mouseleave', clearCandidateChatHoverTimer);
+    }
+
     function ensureCandidateChatStateVisible() {
       if (!candidateChatDockEl) return;
       const shouldShow = canUseCandidateChat() && candidateChatThreads.length > 0;
       candidateChatDockEl.style.display = shouldShow ? 'flex' : 'none';
       if (!shouldShow) {
+        if (candidateChatTabsEl) candidateChatTabsEl.style.display = 'none';
         if (candidateChatWindowEl) candidateChatWindowEl.style.display = 'none';
         return;
+      }
+      if (candidateChatTabsEl) {
+        candidateChatTabsEl.style.display = candidateChatMinimized ? 'flex' : 'none';
       }
       if (candidateChatWindowEl) {
         candidateChatWindowEl.style.display = candidateChatMinimized ? 'none' : 'flex';
@@ -17023,7 +17175,7 @@ app.get("/admin/ui", (req, res) => {
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'candidate-chat-tab-close';
-        closeBtn.textContent = '×';
+        closeBtn.textContent = 'x';
         closeBtn.title = 'Cerrar';
         closeBtn.setAttribute('aria-label', 'Cerrar');
         closeBtn.onclick = (event) => {
@@ -17071,9 +17223,12 @@ app.get("/admin/ui", (req, res) => {
         candidateChatActiveKey = candidateChatThreads[0].key;
       }
       const thread = getActiveCandidateChatThread();
-      if (candidateChatMinEl) candidateChatMinEl.textContent = candidateChatMinimized ? 'Max' : 'Min';
+      if (candidateChatMinEl) {
+        candidateChatMinEl.textContent = candidateChatMinimized ? '[]' : '-';
+        candidateChatMinEl.title = candidateChatMinimized ? 'Abrir' : 'Minimizar';
+      }
       renderCandidateChatTabs();
-      if (candidateChatTitleEl) candidateChatTitleEl.textContent = thread ? ('SMS · ' + candidateChatThreadLabel(thread)) : 'SMS';
+      if (candidateChatTitleEl) candidateChatTitleEl.textContent = thread ? candidateChatThreadLabel(thread) : 'SMS';
       if (candidateChatMetaEl) {
         if (!thread) {
           candidateChatMetaEl.textContent = '';
@@ -17085,12 +17240,10 @@ app.get("/admin/ui", (req, res) => {
           candidateChatMetaEl.textContent = parts.join(' · ');
         }
       }
-      if (candidateChatInputEl) {
-        candidateChatInputEl.disabled = !thread || !canUseCandidateChat() || !!thread.opted_out;
+      if (candidateChatAvatarEl) {
+        candidateChatAvatarEl.textContent = thread ? candidateChatAvatarLabel(thread) : 'SMS';
       }
-      if (candidateChatSendEl) {
-        candidateChatSendEl.disabled = !thread || !canUseCandidateChat() || !!thread.opted_out;
-      }
+      updateCandidateChatComposerState();
       if (!thread) {
         if (candidateChatBodyEl) candidateChatBodyEl.innerHTML = '<div class="candidate-chat-empty">Seleccioná un candidato para abrir el chat.</div>';
       } else {
@@ -17132,6 +17285,7 @@ app.get("/admin/ui", (req, res) => {
 
     function clearCandidateChatState() {
       stopCandidateChatPolling();
+      clearCandidateChatHoverTimer();
       candidateChatThreads = [];
       candidateChatActiveKey = '';
       candidateChatLoading = false;
@@ -17216,19 +17370,23 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
-    function openCandidateChat(target) {
+    function openCandidateChat(target, opts) {
+      const options = opts || {};
+      const noisy = options.noisy !== false;
+      const focusInput = options.focusInput !== false;
+      const silent = !!options.silent;
       if (!canUseCandidateChat()) {
-        setStatus('Sin permisos para enviar SMS.');
+        if (noisy) setStatus('Sin permisos para enviar SMS.');
         return;
       }
       const phone = normalizePhoneForChat(target && target.phone ? target.phone : '');
       if (!phone) {
-        alert('Este candidato no tiene teléfono válido.');
+        if (noisy) alert('Este candidato no tiene teléfono válido.');
         return;
       }
       const key = candidateChatThreadKey(phone);
       if (!key) {
-        alert('Este candidato no tiene teléfono válido.');
+        if (noisy) alert('Este candidato no tiene teléfono válido.');
         return;
       }
       let thread = findCandidateChatThread(key);
@@ -17246,10 +17404,6 @@ app.get("/admin/ui", (req, res) => {
           guard: null,
           last_loaded_at: 0
         };
-        candidateChatThreads.unshift(thread);
-        if (candidateChatThreads.length > CANDIDATE_CHAT_MAX_TABS) {
-          candidateChatThreads = candidateChatThreads.slice(0, CANDIDATE_CHAT_MAX_TABS);
-        }
       } else {
         if (!thread.cv_id && target && (target.cv_id || target.cvId || target.id)) {
           thread.cv_id = String(target.cv_id || target.cvId || target.id);
@@ -17257,14 +17411,24 @@ app.get("/admin/ui", (req, res) => {
         if (!thread.candidate_name && target && (target.applicant || target.name)) {
           thread.candidate_name = String(target.applicant || target.name);
         }
+        if (!thread.brand && target && (target.brand || target.brandName || target.brandLabel)) {
+          thread.brand = String(target.brand || target.brandName || target.brandLabel);
+        }
+        if (!thread.role && target && (target.role || target.roleName || target.roleLabel)) {
+          thread.role = String(target.role || target.roleName || target.roleLabel);
+        }
       }
+      candidateChatThreads = [thread];
       candidateChatActiveKey = thread.key;
       thread.unread = 0;
       candidateChatMinimized = false;
       renderCandidateChatDock();
       startCandidateChatPolling();
-      fetchCandidateChatThread(thread, { silent: false }).catch(() => {});
-      if (candidateChatInputEl) candidateChatInputEl.focus();
+      const needsRefresh = !thread.last_loaded_at || !thread.messages?.length || (Date.now() - thread.last_loaded_at) > CANDIDATE_CHAT_FRESH_MS;
+      if (needsRefresh) {
+        fetchCandidateChatThread(thread, { silent: silent }).catch(() => {});
+      }
+      if (focusInput && candidateChatInputEl) candidateChatInputEl.focus();
     }
 
     async function sendCandidateChatMessage() {
@@ -17297,9 +17461,7 @@ app.get("/admin/ui", (req, res) => {
       } catch (err) {
         setCandidateChatStatus('Error: ' + err.message, true);
       } finally {
-        if (candidateChatSendEl) {
-          candidateChatSendEl.disabled = !canUseCandidateChat() || !!thread.opted_out;
-        }
+        updateCandidateChatComposerState();
       }
     }
 
@@ -18883,14 +19045,7 @@ app.get("/admin/ui", (req, res) => {
         smsBtn.type = 'button';
         smsBtn.className = 'secondary btn-compact';
         smsBtn.textContent = 'SMS';
-        smsBtn.onclick = () => openCandidateChat({
-          id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-          cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-          phone: item.phone || '',
-          applicant: item.applicant || '',
-          brand: item.brand || item.brandKey || '',
-          role: item.role || item.roleKey || ''
-        });
+        smsBtn.onclick = () => openCandidateChat(buildCandidateChatTarget(item), { trigger: 'click' });
         cvActions.appendChild(smsBtn);
       }
       if (canWrite) {
@@ -22752,18 +22907,13 @@ app.get("/admin/ui", (req, res) => {
         nameSpan.textContent = item.applicant || '—';
         if (item.applicant) nameSpan.title = item.applicant;
         if (item.phone && canUseCandidateChat()) {
-          nameSpan.style.cursor = 'pointer';
+          const chatTarget = buildCandidateChatTarget(item);
+          nameSpan.classList.add('can-chat');
           nameSpan.onclick = (event) => {
             event.stopPropagation();
-            openCandidateChat({
-              id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-              cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-              phone: item.phone || '',
-              applicant: item.applicant || '',
-              brand: item.brand || item.brandKey || '',
-              role: item.role || item.roleKey || ''
-            });
+            openCandidateChat(chatTarget, { trigger: 'click' });
           };
+          attachCandidateChatHoverTrigger(candidateTd, chatTarget);
         }
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
@@ -22934,14 +23084,7 @@ app.get("/admin/ui", (req, res) => {
           smsBtn.textContent = 'SMS';
           smsBtn.onclick = (event) => {
             event.stopPropagation();
-            openCandidateChat({
-              id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-              cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
-              phone: item.phone || '',
-              applicant: item.applicant || '',
-              brand: item.brand || item.brandKey || '',
-              role: item.role || item.roleKey || ''
-            });
+            openCandidateChat(buildCandidateChatTarget(item), { trigger: 'click' });
           };
           actionWrap.appendChild(smsBtn);
         }
@@ -24549,6 +24692,7 @@ app.get("/admin/ui", (req, res) => {
           sendCandidateChatMessage();
         }
       });
+      candidateChatInputEl.addEventListener('input', updateCandidateChatComposerState);
     }
     if (candidateChatRefreshEl) {
       candidateChatRefreshEl.onclick = () => {
