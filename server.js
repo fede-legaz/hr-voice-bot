@@ -72,6 +72,11 @@ const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT || PUBLIC_BASE_URL;
 const INBOUND_LOOKBACK_DAYS = Number(process.env.INBOUND_LOOKBACK_DAYS) || 90;
 const INBOUND_CODE_LENGTH = Number(process.env.INBOUND_CODE_LENGTH) || 6;
+const SMS_CHAT_MAX_BODY = Number(process.env.SMS_CHAT_MAX_BODY) || 1000;
+const SMS_CHAT_FETCH_LIMIT = Math.min(Number(process.env.SMS_CHAT_FETCH_LIMIT) || 120, 500);
+const SMS_CHAT_COOLDOWN_MS = Math.max(0, Number(process.env.SMS_CHAT_COOLDOWN_MS) || 60 * 1000);
+const SMS_CHAT_MAX_PENDING_WITHOUT_REPLY = Math.max(1, Number(process.env.SMS_CHAT_MAX_PENDING_WITHOUT_REPLY) || 3);
+const SMS_CHAT_MEMORY_MAX_PER_PHONE = Number(process.env.SMS_CHAT_MEMORY_MAX_PER_PHONE) || 200;
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -1478,6 +1483,301 @@ async function setSmsOptOut(phone, optedOut = true) {
   }
 }
 
+function normalizeSmsDirection(direction) {
+  const value = String(direction || "").trim().toLowerCase();
+  if (value === "inbound" || value === "outbound" || value === "system") return value;
+  return "system";
+}
+
+function normalizeSmsChannel(channel) {
+  const value = String(channel || "").trim().toLowerCase();
+  if (!value) return "sms";
+  return value;
+}
+
+function mapSmsMessageRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id || "",
+    created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+    phone: normalizePhone(row.phone || ""),
+    direction: normalizeSmsDirection(row.direction),
+    channel: normalizeSmsChannel(row.channel),
+    body: String(row.body || ""),
+    status: String(row.status || ""),
+    provider_sid: String(row.provider_sid || ""),
+    provider_status: String(row.provider_status || ""),
+    cv_id: String(row.cv_id || ""),
+    call_sid: String(row.call_sid || ""),
+    brand: String(row.brand || ""),
+    role: String(row.role || ""),
+    candidate_name: String(row.candidate_name || ""),
+    metadata: row.metadata && typeof row.metadata === "object" ? row.metadata : {}
+  };
+}
+
+function rememberSmsMessage(entry) {
+  const phone = normalizePhone(entry?.phone || "");
+  if (!phone) return null;
+  const mapped = mapSmsMessageRow({ ...entry, phone, created_at: entry?.created_at || new Date().toISOString() });
+  if (!mapped) return null;
+  const current = smsMessagesByPhone.get(phone) || [];
+  current.push(mapped);
+  if (current.length > SMS_CHAT_MEMORY_MAX_PER_PHONE) {
+    current.splice(0, current.length - SMS_CHAT_MEMORY_MAX_PER_PHONE);
+  }
+  smsMessagesByPhone.set(phone, current);
+  return mapped;
+}
+
+function readSmsMessagesFromMemory(phone, limit = SMS_CHAT_FETCH_LIMIT) {
+  const norm = normalizePhone(phone);
+  if (!norm) return [];
+  const max = Math.max(1, Math.min(Number(limit) || SMS_CHAT_FETCH_LIMIT, 500));
+  const list = smsMessagesByPhone.get(norm) || [];
+  return list.slice(Math.max(0, list.length - max));
+}
+
+async function recordSmsMessage(payload = {}) {
+  const phone = normalizePhone(payload.phone || payload.to || payload.from || "");
+  const body = String(payload.body || "").trim();
+  if (!phone || !body) return null;
+  const entry = {
+    id: payload.id || randomToken(),
+    created_at: payload.created_at || new Date().toISOString(),
+    phone,
+    direction: normalizeSmsDirection(payload.direction),
+    channel: normalizeSmsChannel(payload.channel || "sms"),
+    body,
+    status: payload.status ? String(payload.status) : "",
+    provider_sid: payload.provider_sid ? String(payload.provider_sid) : "",
+    provider_status: payload.provider_status ? String(payload.provider_status) : "",
+    cv_id: payload.cv_id ? String(payload.cv_id) : "",
+    call_sid: payload.call_sid ? String(payload.call_sid) : "",
+    brand: payload.brand ? String(payload.brand) : "",
+    role: payload.role ? String(payload.role) : "",
+    candidate_name: payload.candidate_name ? String(payload.candidate_name) : "",
+    metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}
+  };
+  const mapped = mapSmsMessageRow(entry);
+  if (!mapped) return null;
+  if (!dbPool) {
+    return rememberSmsMessage(mapped);
+  }
+  await dbQuery(
+    `INSERT INTO sms_messages (
+      id, created_at, phone, direction, channel, body, status, provider_sid, provider_status,
+      cv_id, call_sid, brand, role, candidate_name, metadata
+    ) VALUES (
+      $1, $2, $3, $4, $5, $6, $7, $8, $9,
+      $10, $11, $12, $13, $14, $15
+    )`,
+    [
+      mapped.id,
+      mapped.created_at,
+      mapped.phone,
+      mapped.direction,
+      mapped.channel,
+      mapped.body,
+      mapped.status || null,
+      mapped.provider_sid || null,
+      mapped.provider_status || null,
+      mapped.cv_id || null,
+      mapped.call_sid || null,
+      mapped.brand || null,
+      mapped.role || null,
+      mapped.candidate_name || null,
+      mapped.metadata || {}
+    ]
+  );
+  return mapped;
+}
+
+async function fetchSmsMessagesByPhone(phone, limit = SMS_CHAT_FETCH_LIMIT) {
+  const norm = normalizePhone(phone);
+  if (!norm) return [];
+  const max = Math.max(1, Math.min(Number(limit) || SMS_CHAT_FETCH_LIMIT, 500));
+  if (!dbPool) {
+    return readSmsMessagesFromMemory(norm, max);
+  }
+  const result = await dbQuery(
+    `SELECT id, created_at, phone, direction, channel, body, status, provider_sid, provider_status,
+            cv_id, call_sid, brand, role, candidate_name, metadata
+     FROM sms_messages
+     WHERE phone = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [norm, max]
+  );
+  const rows = (result?.rows || []).map(mapSmsMessageRow).filter(Boolean);
+  rows.reverse();
+  return rows;
+}
+
+async function fetchSmsRecentForGuard(phone, limit = 40) {
+  const norm = normalizePhone(phone);
+  if (!norm) return [];
+  const max = Math.max(1, Math.min(Number(limit) || 40, 200));
+  if (!dbPool) {
+    const list = readSmsMessagesFromMemory(norm, max);
+    return list.slice().reverse();
+  }
+  const result = await dbQuery(
+    `SELECT id, created_at, phone, direction
+     FROM sms_messages
+     WHERE phone = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [norm, max]
+  );
+  return (result?.rows || []).map(mapSmsMessageRow).filter(Boolean);
+}
+
+function computeSmsSendGuard(recentMessages = []) {
+  const now = Date.now();
+  let pendingWithoutReply = 0;
+  let lastOutboundAt = 0;
+  for (const msg of recentMessages) {
+    const direction = normalizeSmsDirection(msg?.direction);
+    if (direction === "inbound") {
+      break;
+    }
+    if (direction === "outbound") {
+      pendingWithoutReply += 1;
+      if (!lastOutboundAt) {
+        const t = msg?.created_at ? new Date(msg.created_at).getTime() : 0;
+        if (t && Number.isFinite(t)) lastOutboundAt = t;
+      }
+    }
+  }
+  const cooldownRemainingMs = lastOutboundAt ? Math.max(0, SMS_CHAT_COOLDOWN_MS - (now - lastOutboundAt)) : 0;
+  return {
+    cooldown_ms: SMS_CHAT_COOLDOWN_MS,
+    max_pending_without_reply: SMS_CHAT_MAX_PENDING_WITHOUT_REPLY,
+    pending_without_reply: pendingWithoutReply,
+    cooldown_remaining_ms: cooldownRemainingMs,
+    blocked_cooldown: cooldownRemainingMs > 0,
+    blocked_pending: pendingWithoutReply >= SMS_CHAT_MAX_PENDING_WITHOUT_REPLY
+  };
+}
+
+async function getSmsSendGuard(phone) {
+  const recent = await fetchSmsRecentForGuard(phone, 40);
+  return computeSmsSendGuard(recent);
+}
+
+async function fetchCvMetaById(cvId) {
+  const id = String(cvId || "").trim();
+  if (!id) return null;
+  if (dbPool) {
+    const result = await dbQuery(
+      `SELECT id, brand, brand_key, role, role_key, applicant, phone
+       FROM cvs
+       WHERE id = $1
+       LIMIT 1`,
+      [id]
+    );
+    const row = result?.rows?.[0];
+    if (!row) return null;
+    return {
+      id: row.id || "",
+      brand: row.brand || "",
+      brand_key: row.brand_key || "",
+      role: row.role || "",
+      role_key: row.role_key || "",
+      applicant: row.applicant || "",
+      phone: normalizePhone(row.phone || "")
+    };
+  }
+  const entry = cvStoreById.get(id);
+  if (!entry) return null;
+  return {
+    id: entry.id || "",
+    brand: entry.brand || "",
+    brand_key: entry.brandKey || brandKey(entry.brand || ""),
+    role: entry.role || "",
+    role_key: entry.roleKey || normalizeKey(entry.role || ""),
+    applicant: entry.applicant || "",
+    phone: normalizePhone(entry.phone || "")
+  };
+}
+
+async function fetchLatestCvMetaByPhone(phone, allowedBrands = null) {
+  const norm = normalizePhone(phone);
+  if (!norm) return null;
+  const scopedAllowed = Array.isArray(allowedBrands) && allowedBrands.length ? allowedBrands : null;
+  if (dbPool) {
+    const values = [norm];
+    let where = "WHERE phone = $1";
+    if (scopedAllowed) {
+      values.push(scopedAllowed);
+      where += ` AND brand_key = ANY($${values.length})`;
+    }
+    const result = await dbQuery(
+      `SELECT id, brand, brand_key, role, role_key, applicant, phone
+       FROM cvs
+       ${where}
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      values
+    );
+    const row = result?.rows?.[0];
+    if (!row) return null;
+    return {
+      id: row.id || "",
+      brand: row.brand || "",
+      brand_key: row.brand_key || "",
+      role: row.role || "",
+      role_key: row.role_key || "",
+      applicant: row.applicant || "",
+      phone: normalizePhone(row.phone || "")
+    };
+  }
+  const list = cvStore
+    .filter((entry) => normalizePhone(entry?.phone || "") === norm)
+    .filter((entry) => {
+      if (!scopedAllowed) return true;
+      const bKey = entry?.brandKey || brandKey(entry?.brand || "");
+      return scopedAllowed.includes(bKey);
+    })
+    .sort((a, b) => new Date(b?.created_at || 0) - new Date(a?.created_at || 0));
+  const latest = list[0];
+  if (!latest) return null;
+  return {
+    id: latest.id || "",
+    brand: latest.brand || "",
+    brand_key: latest.brandKey || brandKey(latest.brand || ""),
+    role: latest.role || "",
+    role_key: latest.roleKey || normalizeKey(latest.role || ""),
+    applicant: latest.applicant || "",
+    phone: normalizePhone(latest.phone || "")
+  };
+}
+
+async function resolveSmsContactMeta({ phone, cvId, allowedBrands }) {
+  const normPhone = normalizePhone(phone || "");
+  const scopedAllowed = Array.isArray(allowedBrands) && allowedBrands.length ? allowedBrands : null;
+  let fromCvId = null;
+  if (cvId) {
+    fromCvId = await fetchCvMetaById(cvId);
+  }
+  let fromPhone = null;
+  if (normPhone) {
+    fromPhone = await fetchLatestCvMetaByPhone(normPhone, scopedAllowed);
+  }
+  const source = fromCvId || fromPhone || null;
+  const phoneResolved = normPhone || source?.phone || "";
+  return {
+    phone: phoneResolved,
+    cv_id: source?.id || (cvId ? String(cvId) : ""),
+    brand: source?.brand || "",
+    brand_key: source?.brand_key || "",
+    role: source?.role || "",
+    role_key: source?.role_key || "",
+    candidate_name: source?.applicant || ""
+  };
+}
+
 function buildNoAnswerPayload(call) {
   if (!call) return null;
   const brand = call.brand || DEFAULT_BRAND;
@@ -2146,6 +2446,7 @@ const lastCallbackByNumber = new Map(); // toNumber -> timestamp
 const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const smsOptOutSet = new Set();
+const smsMessagesByPhone = new Map(); // phone -> message[]
 const tokens = new Map(); // token -> { path?, callSid?, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const userSessions = new Map(); // token -> { email, role, allowedBrands, expiresAt }
@@ -3077,6 +3378,21 @@ async function notifyInterviewCompleted({ call, scoring }) {
   return sendPushToAll(payload, brand);
 }
 
+async function notifyInboundSmsMessage({ phone, body, brand, candidateName }) {
+  if (!pushEnabled) return 0;
+  const text = String(body || "").trim();
+  if (!text) return 0;
+  const preview = text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  const identity = candidateName || phone || "Candidato";
+  const payload = {
+    title: "Nuevo SMS",
+    body: `${identity}: ${preview}`,
+    url: "/admin/ui?view=candidates",
+    icon: "/admin/icon.svg"
+  };
+  return sendPushToAll(payload, brand || "");
+}
+
 async function initDb() {
   if (!dbPool) return;
   try {
@@ -3278,6 +3594,27 @@ async function initDb() {
         opted_out_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS sms_messages (
+        id TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        phone TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'sms',
+        body TEXT NOT NULL,
+        status TEXT,
+        provider_sid TEXT,
+        provider_status TEXT,
+        cv_id TEXT,
+        call_sid TEXT,
+        brand TEXT,
+        role TEXT,
+        candidate_name TEXT,
+        metadata JSONB
+      );
+    `);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_phone_created ON sms_messages (phone, created_at DESC);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_cv_id ON sms_messages (cv_id);`);
     try {
       const { rows } = await dbPool.query("SELECT phone FROM sms_opt_out");
       for (const row of rows) {
@@ -6270,6 +6607,117 @@ app.post("/admin/cv/question", requirePermission("cvs_write"), async (req, res) 
   }
 });
 
+app.get("/admin/messages/thread", requireConfigOrViewer, async (req, res) => {
+  try {
+    const cvId = String(req.query?.cv_id || req.query?.cvId || "").trim();
+    const queryPhone = String(req.query?.phone || req.query?.to || "").trim();
+    const limit = Math.max(1, Math.min(Number(req.query?.limit) || SMS_CHAT_FETCH_LIMIT, 500));
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const contact = await resolveSmsContactMeta({ phone: queryPhone, cvId, allowedBrands });
+    const phone = normalizePhone(contact.phone || queryPhone || "");
+    if (!phone) {
+      return res.status(400).json({ error: "missing_phone" });
+    }
+    if (allowedBrands.length) {
+      const brandRef = contact.brand_key || contact.brand || "";
+      if (!brandRef || !isBrandAllowed(allowedBrands, brandRef)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+    }
+    const messages = await fetchSmsMessagesByPhone(phone, limit);
+    const guard = await getSmsSendGuard(phone);
+    return res.json({
+      ok: true,
+      phone,
+      opted_out: isSmsOptedOut(phone),
+      contact,
+      guard,
+      messages
+    });
+  } catch (err) {
+    console.error("[admin/messages] thread failed", err);
+    return res.status(400).json({ error: "messages_thread_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/messages/send", requirePermission("cvs_write"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const cvId = String(body.cv_id || body.cvId || "").trim();
+    const message = String(body.body || body.message || "").trim();
+    const toRaw = String(body.to || body.phone || "").trim();
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+
+    if (!message) return res.status(400).json({ error: "missing_message" });
+    if (message.length > SMS_CHAT_MAX_BODY) {
+      return res.status(400).json({ error: "message_too_long", limit: SMS_CHAT_MAX_BODY });
+    }
+
+    const contact = await resolveSmsContactMeta({ phone: toRaw, cvId, allowedBrands });
+    const to = normalizePhone(contact.phone || toRaw || "");
+    if (!to) return res.status(400).json({ error: "missing_phone" });
+
+    if (allowedBrands.length) {
+      const brandRef = contact.brand_key || contact.brand || "";
+      if (!brandRef || !isBrandAllowed(allowedBrands, brandRef)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+    }
+
+    if (isSmsOptedOut(to)) {
+      return res.status(409).json({ error: "sms_opted_out" });
+    }
+
+    const guard = await getSmsSendGuard(to);
+    if (guard.blocked_cooldown) {
+      return res.status(429).json({
+        error: "sms_cooldown",
+        retry_after_ms: guard.cooldown_remaining_ms,
+        guard
+      });
+    }
+    if (guard.blocked_pending) {
+      return res.status(429).json({
+        error: "sms_pending_limit",
+        detail: "too_many_unanswered_messages",
+        guard
+      });
+    }
+
+    const twilioData = await sendSms(to, message);
+    const saved = await recordSmsMessage({
+      phone: to,
+      direction: "outbound",
+      channel: "sms",
+      body: message,
+      status: twilioData?.status || "queued",
+      provider_sid: twilioData?.sid || "",
+      provider_status: twilioData?.status || "",
+      cv_id: contact.cv_id || cvId || "",
+      brand: contact.brand || "",
+      role: contact.role || "",
+      candidate_name: contact.candidate_name || "",
+      metadata: {
+        source: "admin_chat",
+        user_email: req.userEmail || "",
+        user_role: req.userRole || ""
+      }
+    });
+    const nextGuard = await getSmsSendGuard(to);
+    return res.json({
+      ok: true,
+      phone: to,
+      opted_out: false,
+      contact,
+      guard: nextGuard,
+      message: saved
+    });
+  } catch (err) {
+    console.error("[admin/messages] send failed", err);
+    return res.status(400).json({ error: "messages_send_failed", detail: err.message });
+  }
+});
+
 function renderOnboardingPageHtml(token) {
   return `<!doctype html>
 <html lang="es">
@@ -8109,7 +8557,22 @@ app.post("/admin/onboarding/:id/send-sms", requirePermission("onboarding_manage"
     const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
     if (!url) return res.status(400).json({ error: "missing_link" });
     const message = `Yes Restaurants: tu link de onboarding: ${url} Clave: ${pin}`;
-    await sendOnboardingSms(normalized, message);
+    const smsData = await sendOnboardingSms(normalized, message);
+    await recordSmsMessage({
+      phone: normalized,
+      direction: "outbound",
+      channel: "sms",
+      body: message,
+      status: smsData?.status || "queued",
+      provider_sid: smsData?.sid || "",
+      provider_status: smsData?.status || "",
+      cv_id: profile.cv_id || "",
+      call_sid: profile.call_sid || "",
+      brand: profile.brand || "",
+      role: profile.role || "",
+      candidate_name: profile.name || "",
+      metadata: { source: "onboarding" }
+    });
     const patch = {
       last_sms_phone: normalized,
       last_sms_sent_at: new Date().toISOString()
@@ -9985,6 +10448,190 @@ app.get("/admin/ui", (req, res) => {
         z-index: 2;
       }
       .assistant-fab { align-self: flex-end; width: 52px; height: 52px; }
+    }
+    .candidate-chat-dock {
+      position: fixed;
+      left: 18px;
+      bottom: 18px;
+      z-index: 78;
+      display: none;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      max-width: min(540px, calc(100vw - 150px));
+    }
+    .candidate-chat-tabs {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      max-width: 100%;
+    }
+    .candidate-chat-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 0 8px 16px rgba(15, 33, 39, 0.12);
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      max-width: 210px;
+      cursor: pointer;
+    }
+    .candidate-chat-tab.active {
+      border-color: rgba(27, 122, 140, 0.6);
+      box-shadow: 0 0 0 2px rgba(27, 122, 140, 0.14);
+      color: var(--primary-dark);
+    }
+    .candidate-chat-tab-name {
+      max-width: 140px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .candidate-chat-tab-close {
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      padding: 0;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      box-shadow: none;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .candidate-chat-tab-close:hover {
+      background: rgba(27, 122, 140, 0.12);
+      color: var(--primary-dark);
+    }
+    .candidate-chat-window {
+      width: min(440px, calc(100vw - 32px));
+      max-height: min(70vh, 560px);
+      background: #f7f2e8;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .candidate-chat-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(27, 122, 140, 0.15), rgba(244, 162, 97, 0.16));
+    }
+    .candidate-chat-title {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .candidate-chat-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+      max-width: 240px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .candidate-chat-actions {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .candidate-chat-status {
+      padding: 8px 12px 0;
+      min-height: 18px;
+      color: var(--muted);
+    }
+    .candidate-chat-body {
+      padding: 10px 12px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(250, 248, 243, 0.98));
+    }
+    .candidate-chat-empty {
+      font-size: 12px;
+      color: var(--muted);
+      text-align: center;
+      padding: 12px 8px;
+    }
+    .candidate-chat-msg {
+      max-width: 92%;
+      border-radius: 14px;
+      padding: 8px 10px;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: 0 6px 14px rgba(15, 33, 39, 0.1);
+    }
+    .candidate-chat-msg.inbound {
+      align-self: flex-start;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 6px;
+    }
+    .candidate-chat-msg.outbound {
+      align-self: flex-end;
+      background: #1b7a8c;
+      color: #fff;
+      border: none;
+      border-bottom-right-radius: 6px;
+    }
+    .candidate-chat-msg.system {
+      align-self: center;
+      background: #f3efe6;
+      border: 1px dashed var(--border);
+      color: var(--muted);
+      box-shadow: none;
+    }
+    .candidate-chat-msg-meta {
+      margin-top: 4px;
+      font-size: 10px;
+      opacity: 0.75;
+    }
+    .candidate-chat-compose {
+      padding: 10px 12px 12px;
+      border-top: 1px solid var(--border);
+      background: #f7f2e8;
+      display: grid;
+      gap: 8px;
+    }
+    .candidate-chat-compose textarea {
+      min-height: 62px;
+      max-height: 130px;
+      resize: vertical;
+    }
+    .candidate-chat-compose-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    @media (max-width: 720px) {
+      .candidate-chat-dock {
+        left: 10px;
+        right: 10px;
+        bottom: 80px;
+        max-width: none;
+      }
+      .candidate-chat-window {
+        width: 100%;
+        max-height: 65vh;
+      }
+      .candidate-chat-tab { max-width: 100%; }
+      .candidate-chat-tab-name { max-width: 200px; }
     }
     .table-wrapper {
       border: 1px solid var(--border);
@@ -13814,6 +14461,31 @@ app.get("/admin/ui", (req, res) => {
       <div class="assistant-footer small" id="assistant-status"></div>
     </div>
   </div>
+  <div id="candidate-chat-dock" class="candidate-chat-dock" style="display:none;">
+    <div id="candidate-chat-tabs" class="candidate-chat-tabs"></div>
+    <div id="candidate-chat-window" class="candidate-chat-window" style="display:none;">
+      <div class="candidate-chat-head">
+        <div>
+          <div class="candidate-chat-title" id="candidate-chat-title">SMS</div>
+          <div class="candidate-chat-meta" id="candidate-chat-meta"></div>
+        </div>
+        <div class="candidate-chat-actions">
+          <button class="secondary btn-compact" id="candidate-chat-refresh" type="button">Refresh</button>
+          <button class="secondary btn-compact" id="candidate-chat-min" type="button">Min</button>
+          <button class="secondary btn-compact" id="candidate-chat-close" type="button">Cerrar</button>
+        </div>
+      </div>
+      <div id="candidate-chat-status" class="candidate-chat-status small"></div>
+      <div id="candidate-chat-body" class="candidate-chat-body"></div>
+      <div class="candidate-chat-compose">
+        <textarea id="candidate-chat-input" placeholder="Escribí un SMS..."></textarea>
+        <div class="candidate-chat-compose-row">
+          <div class="small">Incluí marca y contexto. Evitá enviar spam.</div>
+          <button id="candidate-chat-send" type="button">Enviar SMS</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="toast-container" class="toast-container"></div>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script>
@@ -14156,6 +14828,18 @@ app.get("/admin/ui", (req, res) => {
     const assistantLinkConsentEl = document.getElementById('assistant-link-consent');
     const assistantLinkMandatoryEl = document.getElementById('assistant-link-mandatory');
     const assistantLinkUsersEl = document.getElementById('assistant-link-users');
+    const candidateChatDockEl = document.getElementById('candidate-chat-dock');
+    const candidateChatTabsEl = document.getElementById('candidate-chat-tabs');
+    const candidateChatWindowEl = document.getElementById('candidate-chat-window');
+    const candidateChatTitleEl = document.getElementById('candidate-chat-title');
+    const candidateChatMetaEl = document.getElementById('candidate-chat-meta');
+    const candidateChatStatusEl = document.getElementById('candidate-chat-status');
+    const candidateChatBodyEl = document.getElementById('candidate-chat-body');
+    const candidateChatInputEl = document.getElementById('candidate-chat-input');
+    const candidateChatSendEl = document.getElementById('candidate-chat-send');
+    const candidateChatRefreshEl = document.getElementById('candidate-chat-refresh');
+    const candidateChatMinEl = document.getElementById('candidate-chat-min');
+    const candidateChatCloseEl = document.getElementById('candidate-chat-close');
     const resultsBrandEl = document.getElementById('results-brand');
     const resultsRoleEl = document.getElementById('results-role');
     const resultsRecEl = document.getElementById('results-rec');
@@ -14287,7 +14971,16 @@ app.get("/admin/ui", (req, res) => {
     let pendingUserPhotoClear = false;
     let candidatesBadgeItems = [];
     let interviewsBadgeItems = [];
+    let candidateChatThreads = [];
+    let candidateChatActiveKey = '';
+    let candidateChatTimer = null;
+    let candidateChatLoading = false;
+    let candidateChatMinimized = false;
     const CV_CHAR_LIMIT = 4000;
+    const SMS_CHAT_MAX_BODY = ${JSON.stringify(SMS_CHAT_MAX_BODY)};
+    const SMS_CHAT_FETCH_LIMIT = ${JSON.stringify(SMS_CHAT_FETCH_LIMIT)};
+    const CANDIDATE_CHAT_MAX_TABS = 6;
+    const CANDIDATE_CHAT_POLL_MS = 10000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
     const OCR_TEXT_THRESHOLD = 180;
@@ -14415,6 +15108,7 @@ app.get("/admin/ui", (req, res) => {
     const RESULTS_VIEW_MODE_KEY = 'hrbot_results_view_mode';
 
     function stopPolling() {
+      stopCandidateChatPolling();
       if (resultsTimer) {
         clearTimeout(resultsTimer);
         resultsTimer = null;
@@ -14440,6 +15134,9 @@ app.get("/admin/ui", (req, res) => {
       if (logoutBtnEl) logoutBtnEl.style.display = isLoggedIn ? '' : 'none';
       if (userPanelToggleEl) userPanelToggleEl.style.display = isLoggedIn ? '' : 'none';
       if (assistantWidgetEl) assistantWidgetEl.style.display = isLoggedIn ? '' : 'none';
+      if (!isLoggedIn) {
+        clearCandidateChatState();
+      }
       if (!isLoggedIn) {
         assistantSetOpen(false);
         assistantClearMessages();
@@ -15032,6 +15729,12 @@ app.get("/admin/ui", (req, res) => {
       }
       assistantUpdateScope();
       assistantSetQuickLinks();
+      if (canUseCandidateChat()) {
+        renderCandidateChatDock();
+        startCandidateChatPolling();
+      } else {
+        clearCandidateChatState();
+      }
     }
 
     function initialsFromEmail(email) {
@@ -16229,6 +16932,375 @@ app.get("/admin/ui", (req, res) => {
       if (!token) return '';
       if (token.startsWith('Bearer ')) token = token.slice(7);
       return '?token=' + encodeURIComponent(token);
+    }
+
+    function normalizePhoneForChat(value) {
+      const raw = String(value || '').trim();
+      if (!raw) return '';
+      if (raw.startsWith('+')) {
+        const cleaned = '+' + raw.slice(1).replace(/[^0-9]/g, '');
+        return cleaned.length > 1 ? cleaned : '';
+      }
+      const digits = raw.replace(/[^0-9]/g, '');
+      if (!digits) return '';
+      if (digits.length === 10) return '+1' + digits;
+      if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;
+      return '+' + digits;
+    }
+
+    function canUseCandidateChat() {
+      return !!(tokenEl && tokenEl.value && canPermission('cvs_write'));
+    }
+
+    function candidateChatThreadKey(phone) {
+      const norm = normalizePhoneKey(normalizePhoneForChat(phone));
+      return norm ? ('p:' + norm) : '';
+    }
+
+    function findCandidateChatThread(key) {
+      return candidateChatThreads.find((thread) => thread.key === key) || null;
+    }
+
+    function getActiveCandidateChatThread() {
+      return findCandidateChatThread(candidateChatActiveKey);
+    }
+
+    function setCandidateChatStatus(msg, isError) {
+      if (!candidateChatStatusEl) return;
+      candidateChatStatusEl.textContent = msg || '';
+      candidateChatStatusEl.style.color = isError ? '#b42318' : 'var(--muted)';
+    }
+
+    function formatCandidateChatTime(value) {
+      if (!value) return '';
+      const dt = new Date(value);
+      if (Number.isNaN(dt.getTime())) return '';
+      return dt.toLocaleString();
+    }
+
+    function candidateChatThreadLabel(thread) {
+      if (!thread) return 'SMS';
+      const name = (thread.candidate_name || '').trim();
+      if (name) return name;
+      return thread.phone || 'SMS';
+    }
+
+    function ensureCandidateChatStateVisible() {
+      if (!candidateChatDockEl) return;
+      const shouldShow = canUseCandidateChat() && candidateChatThreads.length > 0;
+      candidateChatDockEl.style.display = shouldShow ? 'flex' : 'none';
+      if (!shouldShow) {
+        if (candidateChatWindowEl) candidateChatWindowEl.style.display = 'none';
+        return;
+      }
+      if (candidateChatWindowEl) {
+        candidateChatWindowEl.style.display = candidateChatMinimized ? 'none' : 'flex';
+      }
+    }
+
+    function renderCandidateChatTabs() {
+      if (!candidateChatTabsEl) return;
+      candidateChatTabsEl.innerHTML = '';
+      candidateChatThreads.forEach((thread) => {
+        const tab = document.createElement('div');
+        tab.className = 'candidate-chat-tab' + (thread.key === candidateChatActiveKey ? ' active' : '');
+        tab.onclick = () => {
+          candidateChatActiveKey = thread.key;
+          thread.unread = 0;
+          candidateChatMinimized = false;
+          renderCandidateChatDock();
+          fetchCandidateChatThread(thread, { silent: true }).catch(() => {});
+        };
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'candidate-chat-tab-name';
+        const unread = Number(thread.unread || 0);
+        nameEl.textContent = unread > 0
+          ? (candidateChatThreadLabel(thread) + ' (' + unread + ')')
+          : candidateChatThreadLabel(thread);
+        tab.appendChild(nameEl);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.type = 'button';
+        closeBtn.className = 'candidate-chat-tab-close';
+        closeBtn.textContent = '×';
+        closeBtn.title = 'Cerrar';
+        closeBtn.setAttribute('aria-label', 'Cerrar');
+        closeBtn.onclick = (event) => {
+          event.stopPropagation();
+          closeCandidateChatThread(thread.key);
+        };
+        tab.appendChild(closeBtn);
+
+        candidateChatTabsEl.appendChild(tab);
+      });
+    }
+
+    function renderCandidateChatMessages(thread) {
+      if (!candidateChatBodyEl) return;
+      const list = Array.isArray(thread?.messages) ? thread.messages : [];
+      candidateChatBodyEl.innerHTML = '';
+      if (!list.length) {
+        const empty = document.createElement('div');
+        empty.className = 'candidate-chat-empty';
+        empty.textContent = 'Sin mensajes todavía.';
+        candidateChatBodyEl.appendChild(empty);
+        return;
+      }
+      list.forEach((msg) => {
+        const direction = (msg && msg.direction) ? String(msg.direction).toLowerCase() : 'system';
+        const row = document.createElement('div');
+        row.className = 'candidate-chat-msg ' + (direction === 'inbound' ? 'inbound' : (direction === 'outbound' ? 'outbound' : 'system'));
+        row.textContent = msg && msg.body ? String(msg.body) : '';
+
+        const meta = document.createElement('div');
+        meta.className = 'candidate-chat-msg-meta';
+        const side = direction === 'inbound' ? 'Candidato' : (direction === 'outbound' ? 'Admin' : 'Sistema');
+        const stamp = formatCandidateChatTime(msg && msg.created_at ? msg.created_at : '');
+        const status = msg && msg.status ? String(msg.status) : '';
+        meta.textContent = [side, stamp, status].filter(Boolean).join(' · ');
+        row.appendChild(meta);
+        candidateChatBodyEl.appendChild(row);
+      });
+      candidateChatBodyEl.scrollTop = candidateChatBodyEl.scrollHeight;
+    }
+
+    function renderCandidateChatDock() {
+      const active = getActiveCandidateChatThread();
+      if (!active && candidateChatThreads.length) {
+        candidateChatActiveKey = candidateChatThreads[0].key;
+      }
+      const thread = getActiveCandidateChatThread();
+      if (candidateChatMinEl) candidateChatMinEl.textContent = candidateChatMinimized ? 'Max' : 'Min';
+      renderCandidateChatTabs();
+      if (candidateChatTitleEl) candidateChatTitleEl.textContent = thread ? ('SMS · ' + candidateChatThreadLabel(thread)) : 'SMS';
+      if (candidateChatMetaEl) {
+        if (!thread) {
+          candidateChatMetaEl.textContent = '';
+        } else {
+          const parts = [];
+          if (thread.phone) parts.push(thread.phone);
+          const roleLabel = [thread.brand || '', thread.role || ''].filter(Boolean).join(' • ');
+          if (roleLabel) parts.push(roleLabel);
+          candidateChatMetaEl.textContent = parts.join(' · ');
+        }
+      }
+      if (candidateChatInputEl) {
+        candidateChatInputEl.disabled = !thread || !canUseCandidateChat() || !!thread.opted_out;
+      }
+      if (candidateChatSendEl) {
+        candidateChatSendEl.disabled = !thread || !canUseCandidateChat() || !!thread.opted_out;
+      }
+      if (!thread) {
+        if (candidateChatBodyEl) candidateChatBodyEl.innerHTML = '<div class="candidate-chat-empty">Seleccioná un candidato para abrir el chat.</div>';
+      } else {
+        renderCandidateChatMessages(thread);
+        if (thread.opted_out) {
+          setCandidateChatStatus('Este número está en STOP/opt-out. Debe responder START o YES para retomar.', true);
+        } else if (thread.guard && (thread.guard.blocked_cooldown || thread.guard.blocked_pending)) {
+          const cooldown = Number(thread.guard.cooldown_remaining_ms || 0);
+          if (thread.guard.blocked_cooldown && cooldown > 0) {
+            setCandidateChatStatus('Cooldown activo: esperá ' + Math.ceil(cooldown / 1000) + 's antes de enviar.', true);
+          } else if (thread.guard.blocked_pending) {
+            setCandidateChatStatus('Límite anti-spam: demasiados SMS sin respuesta.', true);
+          } else {
+            setCandidateChatStatus('');
+          }
+        } else {
+          setCandidateChatStatus('');
+        }
+      }
+      ensureCandidateChatStateVisible();
+    }
+
+    function stopCandidateChatPolling() {
+      if (candidateChatTimer) {
+        clearInterval(candidateChatTimer);
+        candidateChatTimer = null;
+      }
+    }
+
+    function startCandidateChatPolling() {
+      stopCandidateChatPolling();
+      if (!canUseCandidateChat()) return;
+      candidateChatTimer = setInterval(() => {
+        const thread = getActiveCandidateChatThread();
+        if (!thread || candidateChatLoading) return;
+        fetchCandidateChatThread(thread, { silent: true }).catch(() => {});
+      }, CANDIDATE_CHAT_POLL_MS);
+    }
+
+    function clearCandidateChatState() {
+      stopCandidateChatPolling();
+      candidateChatThreads = [];
+      candidateChatActiveKey = '';
+      candidateChatLoading = false;
+      candidateChatMinimized = false;
+      if (candidateChatInputEl) candidateChatInputEl.value = '';
+      setCandidateChatStatus('');
+      renderCandidateChatDock();
+    }
+
+    function closeCandidateChatThread(key) {
+      const idx = candidateChatThreads.findIndex((thread) => thread.key === key);
+      if (idx === -1) return;
+      const wasActive = candidateChatThreads[idx].key === candidateChatActiveKey;
+      candidateChatThreads.splice(idx, 1);
+      if (wasActive) {
+        candidateChatActiveKey = candidateChatThreads[0]?.key || '';
+      }
+      if (!candidateChatThreads.length) {
+        candidateChatMinimized = false;
+      }
+      renderCandidateChatDock();
+      if (!candidateChatThreads.length) {
+        stopCandidateChatPolling();
+      }
+    }
+
+    async function fetchCandidateChatThread(thread, opts) {
+      if (!thread || !thread.phone) return;
+      const options = opts || {};
+      const silent = !!options.silent;
+      const previousLast = thread.messages && thread.messages.length
+        ? new Date(thread.messages[thread.messages.length - 1].created_at || 0).getTime()
+        : 0;
+      candidateChatLoading = true;
+      if (!silent) setCandidateChatStatus('Cargando conversación...');
+      try {
+        const params = new URLSearchParams();
+        params.set('phone', thread.phone);
+        if (thread.cv_id) params.set('cv_id', thread.cv_id);
+        params.set('limit', String(SMS_CHAT_FETCH_LIMIT));
+        const resp = await fetch('/admin/messages/thread?' + params.toString(), {
+          headers: portalAuthHeaders()
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'messages_thread_failed');
+        const nextMessages = Array.isArray(data.messages) ? data.messages : [];
+        const nextContact = data.contact && typeof data.contact === 'object' ? data.contact : {};
+        if (!thread.candidate_name && nextContact.candidate_name) thread.candidate_name = nextContact.candidate_name;
+        if (!thread.brand && nextContact.brand) thread.brand = nextContact.brand;
+        if (!thread.role && nextContact.role) thread.role = nextContact.role;
+        if (!thread.cv_id && nextContact.cv_id) thread.cv_id = nextContact.cv_id;
+        if (data.phone) thread.phone = data.phone;
+        thread.messages = nextMessages;
+        thread.opted_out = !!data.opted_out;
+        thread.guard = data.guard || null;
+        thread.last_loaded_at = Date.now();
+        const latestNow = nextMessages.length
+          ? new Date(nextMessages[nextMessages.length - 1].created_at || 0).getTime()
+          : 0;
+        if (latestNow > previousLast) {
+          const addedInbound = nextMessages.filter((msg) => {
+            const dt = new Date(msg?.created_at || 0).getTime();
+            return dt > previousLast && String(msg?.direction || '').toLowerCase() === 'inbound';
+          }).length;
+          if (addedInbound > 0) {
+            if (candidateChatActiveKey !== thread.key || candidateChatMinimized) {
+              thread.unread = Number(thread.unread || 0) + addedInbound;
+            } else {
+              thread.unread = 0;
+            }
+          }
+        }
+        if (candidateChatActiveKey === thread.key && !candidateChatMinimized) {
+          thread.unread = 0;
+        }
+        if (!silent) setCandidateChatStatus('');
+      } catch (err) {
+        if (!silent) setCandidateChatStatus('Error: ' + err.message, true);
+      } finally {
+        candidateChatLoading = false;
+        renderCandidateChatDock();
+      }
+    }
+
+    function openCandidateChat(target) {
+      if (!canUseCandidateChat()) {
+        setStatus('Sin permisos para enviar SMS.');
+        return;
+      }
+      const phone = normalizePhoneForChat(target && target.phone ? target.phone : '');
+      if (!phone) {
+        alert('Este candidato no tiene teléfono válido.');
+        return;
+      }
+      const key = candidateChatThreadKey(phone);
+      if (!key) {
+        alert('Este candidato no tiene teléfono válido.');
+        return;
+      }
+      let thread = findCandidateChatThread(key);
+      if (!thread) {
+        thread = {
+          key: key,
+          phone: phone,
+          cv_id: target && (target.cv_id || target.cvId || target.id) ? String(target.cv_id || target.cvId || target.id) : '',
+          candidate_name: target && (target.applicant || target.name) ? String(target.applicant || target.name) : '',
+          brand: target && (target.brand || target.brandName || target.brandLabel) ? String(target.brand || target.brandName || target.brandLabel) : '',
+          role: target && (target.role || target.roleName || target.roleLabel) ? String(target.role || target.roleName || target.roleLabel) : '',
+          messages: [],
+          unread: 0,
+          opted_out: false,
+          guard: null,
+          last_loaded_at: 0
+        };
+        candidateChatThreads.unshift(thread);
+        if (candidateChatThreads.length > CANDIDATE_CHAT_MAX_TABS) {
+          candidateChatThreads = candidateChatThreads.slice(0, CANDIDATE_CHAT_MAX_TABS);
+        }
+      } else {
+        if (!thread.cv_id && target && (target.cv_id || target.cvId || target.id)) {
+          thread.cv_id = String(target.cv_id || target.cvId || target.id);
+        }
+        if (!thread.candidate_name && target && (target.applicant || target.name)) {
+          thread.candidate_name = String(target.applicant || target.name);
+        }
+      }
+      candidateChatActiveKey = thread.key;
+      thread.unread = 0;
+      candidateChatMinimized = false;
+      renderCandidateChatDock();
+      startCandidateChatPolling();
+      fetchCandidateChatThread(thread, { silent: false }).catch(() => {});
+      if (candidateChatInputEl) candidateChatInputEl.focus();
+    }
+
+    async function sendCandidateChatMessage() {
+      const thread = getActiveCandidateChatThread();
+      if (!thread) return;
+      if (!canUseCandidateChat()) return;
+      const body = (candidateChatInputEl && candidateChatInputEl.value ? candidateChatInputEl.value : '').trim();
+      if (!body) return;
+      if (body.length > SMS_CHAT_MAX_BODY) {
+        setCandidateChatStatus('Máximo ' + SMS_CHAT_MAX_BODY + ' caracteres.', true);
+        return;
+      }
+      setCandidateChatStatus('Enviando SMS...');
+      if (candidateChatSendEl) candidateChatSendEl.disabled = true;
+      try {
+        const resp = await fetch('/admin/messages/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({
+            phone: thread.phone,
+            cv_id: thread.cv_id || '',
+            body: body
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'messages_send_failed');
+        if (candidateChatInputEl) candidateChatInputEl.value = '';
+        await fetchCandidateChatThread(thread, { silent: true });
+        setCandidateChatStatus('SMS enviado.');
+      } catch (err) {
+        setCandidateChatStatus('Error: ' + err.message, true);
+      } finally {
+        if (candidateChatSendEl) {
+          candidateChatSendEl.disabled = !canUseCandidateChat() || !!thread.opted_out;
+        }
+      }
     }
 
     function setPushStatus(status, detail) {
@@ -17805,6 +18877,21 @@ app.get("/admin/ui", (req, res) => {
           });
         };
         cvActions.appendChild(callBtn);
+      }
+      if (item.phone && canUseCandidateChat()) {
+        const smsBtn = document.createElement('button');
+        smsBtn.type = 'button';
+        smsBtn.className = 'secondary btn-compact';
+        smsBtn.textContent = 'SMS';
+        smsBtn.onclick = () => openCandidateChat({
+          id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+          cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+          phone: item.phone || '',
+          applicant: item.applicant || '',
+          brand: item.brand || item.brandKey || '',
+          role: item.role || item.roleKey || ''
+        });
+        cvActions.appendChild(smsBtn);
       }
       if (canWrite) {
         const qBtn = document.createElement('button');
@@ -21664,6 +22751,20 @@ app.get("/admin/ui", (req, res) => {
         nameSpan.className = 'candidate-name';
         nameSpan.textContent = item.applicant || '—';
         if (item.applicant) nameSpan.title = item.applicant;
+        if (item.phone && canUseCandidateChat()) {
+          nameSpan.style.cursor = 'pointer';
+          nameSpan.onclick = (event) => {
+            event.stopPropagation();
+            openCandidateChat({
+              id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+              cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+              phone: item.phone || '',
+              applicant: item.applicant || '',
+              brand: item.brand || item.brandKey || '',
+              role: item.role || item.roleKey || ''
+            });
+          };
+        }
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
@@ -21825,6 +22926,24 @@ app.get("/admin/ui", (req, res) => {
             });
           };
           actionWrap.appendChild(callBtn);
+        }
+        if (item.phone && canUseCandidateChat()) {
+          const smsBtn = document.createElement('button');
+          smsBtn.type = 'button';
+          smsBtn.className = 'secondary btn-compact';
+          smsBtn.textContent = 'SMS';
+          smsBtn.onclick = (event) => {
+            event.stopPropagation();
+            openCandidateChat({
+              id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+              cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : ''),
+              phone: item.phone || '',
+              applicant: item.applicant || '',
+              brand: item.brand || item.brandKey || '',
+              role: item.role || item.roleKey || ''
+            });
+          };
+          actionWrap.appendChild(smsBtn);
         }
         if (canWrite) {
           const qBtn = document.createElement('button');
@@ -23422,6 +24541,35 @@ app.get("/admin/ui", (req, res) => {
         if (assistantKbEl) assistantKbEl.value = defaults.assistant_kb || '';
       };
     }
+    if (candidateChatSendEl) candidateChatSendEl.onclick = sendCandidateChatMessage;
+    if (candidateChatInputEl) {
+      candidateChatInputEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          sendCandidateChatMessage();
+        }
+      });
+    }
+    if (candidateChatRefreshEl) {
+      candidateChatRefreshEl.onclick = () => {
+        const thread = getActiveCandidateChatThread();
+        if (!thread) return;
+        fetchCandidateChatThread(thread, { silent: false }).catch(() => {});
+      };
+    }
+    if (candidateChatMinEl) {
+      candidateChatMinEl.onclick = () => {
+        candidateChatMinimized = !candidateChatMinimized;
+        renderCandidateChatDock();
+      };
+    }
+    if (candidateChatCloseEl) {
+      candidateChatCloseEl.onclick = () => {
+        const active = getActiveCandidateChatThread();
+        if (!active) return;
+        closeCandidateChatThread(active.key);
+      };
+    }
     if (generalTabsEl) {
       generalTabsEl.addEventListener('click', (event) => {
         const btn = event.target.closest('.general-tab');
@@ -23934,18 +25082,24 @@ app.post("/inbound/brand", express.urlencoded({ extended: false }), async (req, 
 });
 
 function smsInboundTwiml(msg) {
+  if (!msg) {
+    return `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
+  }
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${xmlEscapeAttr(msg)}</Message></Response>`;
 }
 
 async function handleSmsInbound(req, res) {
   const from = normalizePhone(req.body?.From || "");
   const rawBody = req.body?.Body || "";
+  const messageSid = String(req.body?.MessageSid || req.body?.SmsSid || "").trim();
+  const messageStatus = String(req.body?.MessageStatus || req.body?.SmsStatus || "").trim();
   const normBody = normalizeSmsBody(rawBody);
   const tokens = normBody.split(/[^a-z0-9]+/).filter(Boolean);
   const hasToken = (list) => list.some((t) => tokens.includes(t));
   const isStop = hasToken(["stop", "unsubscribe", "cancel", "end", "quit"]);
-  const isNo = hasToken(["no"]);
-  const isYes = hasToken(["yes", "si"]);
+  const isStart = hasToken(["start", "unstop"]);
+  const isNo = tokens.length === 1 && tokens[0] === "no";
+  const isYes = tokens.length === 1 && (tokens[0] === "yes" || tokens[0] === "si");
 
   console.log("[sms-inbound] received", { from, body: rawBody, normalized: normBody });
 
@@ -23953,12 +25107,42 @@ async function handleSmsInbound(req, res) {
     return res.type("text/xml").send(smsInboundTwiml("We could not read your number."));
   }
 
+  const contact = await resolveSmsContactMeta({ phone: from });
+  const saveInbound = async (status, metadata = {}) => {
+    try {
+      await recordSmsMessage({
+        phone: from,
+        direction: "inbound",
+        channel: "sms",
+        body: rawBody,
+        status,
+        provider_sid: messageSid,
+        provider_status: messageStatus,
+        cv_id: contact.cv_id || "",
+        brand: contact.brand || "",
+        role: contact.role || "",
+        candidate_name: contact.candidate_name || "",
+        metadata
+      });
+    } catch (err) {
+      console.error("[sms-inbound] save failed", err?.message || err);
+    }
+  };
+
+  if (isStart) {
+    await setSmsOptOut(from, false);
+    await saveInbound("start_opt_in");
+    return res.type("text/xml").send(smsInboundTwiml("You are opted back in. Reply STOP to opt out."));
+  }
+
   if (isStop || isNo) {
     await setSmsOptOut(from, true);
+    await saveInbound(isStop ? "stop_opt_out" : "no_opt_out");
     return res.type("text/xml").send(smsInboundTwiml("You have been opted out. Reply YES if you want a call back later."));
   }
 
   if (isYes) {
+    await saveInbound("yes_callback");
     if (isSmsOptedOut(from)) {
       await setSmsOptOut(from, false);
     }
@@ -23997,7 +25181,14 @@ async function handleSmsInbound(req, res) {
     return res.type("text/xml").send(smsInboundTwiml("Thanks. We will call you back shortly."));
   }
 
-  return res.type("text/xml").send(smsInboundTwiml("Reply YES for a call back or NO/STOP to opt out."));
+  await saveInbound("received");
+  notifyInboundSmsMessage({
+    phone: from,
+    body: rawBody,
+    brand: contact.brand || "",
+    candidateName: contact.candidate_name || ""
+  }).catch((err) => console.error("[sms-inbound] push failed", err?.message || err));
+  return res.type("text/xml").send(smsInboundTwiml(""));
 }
 
 app.post("/sms-inbound", express.urlencoded({ extended: false }), handleSmsInbound);
@@ -26382,6 +27573,7 @@ async function sendSms(to, body) {
   }
   const data = await resp.json();
   console.log("[sms] sent", { sid: data.sid, to: toNorm });
+  return data;
 }
 
 async function sendOnboardingSms(to, body) {
@@ -26416,6 +27608,7 @@ async function sendOnboardingSms(to, body) {
   }
   const data = await resp.json();
   console.log("[sms] sent", { sid: data.sid, to: toNorm, from: fromNorm });
+  return data;
 }
 
 async function hangupCall(call) {
@@ -26493,7 +27686,22 @@ async function markNoAnswer(call, reason) {
     if (toNumber && !isSmsOptedOut(toNumber)) {
       const smsMsg = buildNoAnswerSms(call);
       try {
-        await sendSms(toNumber, smsMsg);
+        const smsData = await sendSms(toNumber, smsMsg);
+        await recordSmsMessage({
+          phone: toNumber,
+          direction: "outbound",
+          channel: "sms",
+          body: smsMsg,
+          status: smsData?.status || "queued",
+          provider_sid: smsData?.sid || "",
+          provider_status: smsData?.status || "",
+          cv_id: call.cvId || call.cv_id || "",
+          call_sid: call.callSid || "",
+          brand: call.brand || "",
+          role: call.role || "",
+          candidate_name: call.applicant || "",
+          metadata: { source: "auto_no_answer" }
+        });
       } catch (err) {
         console.error("[no-answer] sms failed", err);
       }
