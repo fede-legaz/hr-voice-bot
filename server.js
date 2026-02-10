@@ -1632,7 +1632,7 @@ function buildSmsConversationItem(row, meta) {
   const body = String(row?.body || "").trim();
   const preview = compactSmsPreview(body, 180);
   return {
-    key: "p:" + normalizePhoneKey(phone),
+    key: "p:" + normalizeDigits(phone),
     phone,
     candidate_name: candidateNameValue,
     brand: brandValue,
