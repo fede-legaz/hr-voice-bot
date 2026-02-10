@@ -10606,8 +10606,8 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-chat-dock {
       position: fixed;
-      right: 18px;
-      bottom: 18px;
+      right: 98px;
+      bottom: 24px;
       z-index: 78;
       display: none;
       flex-direction: column;
@@ -15302,14 +15302,11 @@ app.get("/admin/ui", (req, res) => {
     let candidateChatActiveKey = '';
     let candidateChatTimer = null;
     let candidateChatLoading = false;
-    let candidateChatMinimized = false;
-    let candidateChatHoverTimer = null;
-    let candidateChatHoverKey = '';
+    let candidateChatMinimized = true;
     const CV_CHAR_LIMIT = 4000;
     const SMS_CHAT_MAX_BODY = ${JSON.stringify(SMS_CHAT_MAX_BODY)};
     const SMS_CHAT_FETCH_LIMIT = ${JSON.stringify(SMS_CHAT_FETCH_LIMIT)};
     const CANDIDATE_CHAT_POLL_MS = 10000;
-    const CANDIDATE_CHAT_HOVER_OPEN_MS = 220;
     const CANDIDATE_CHAT_FRESH_MS = 12000;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
@@ -17364,45 +17361,6 @@ app.get("/admin/ui", (req, res) => {
       };
     }
 
-    function clearCandidateChatHoverTimer() {
-      if (candidateChatHoverTimer) {
-        clearTimeout(candidateChatHoverTimer);
-        candidateChatHoverTimer = null;
-      }
-      candidateChatHoverKey = '';
-    }
-
-    function scheduleCandidateChatOpenOnHover(target) {
-      if (!canUseCandidateChat()) return;
-      if (!window.matchMedia || !window.matchMedia('(hover: hover)').matches) return;
-      const hasDraft = !!(candidateChatInputEl && candidateChatInputEl.value && candidateChatInputEl.value.trim());
-      const inputFocused = candidateChatInputEl && document.activeElement === candidateChatInputEl;
-      if ((hasDraft || inputFocused) && candidateChatActiveKey) return;
-      const phone = normalizePhoneForChat(target && target.phone ? target.phone : '');
-      const key = candidateChatThreadKey(phone);
-      if (!key) return;
-      if (key === candidateChatActiveKey && !candidateChatMinimized) return;
-      clearCandidateChatHoverTimer();
-      candidateChatHoverKey = key;
-      candidateChatHoverTimer = setTimeout(() => {
-        const nextKey = candidateChatHoverKey;
-        clearCandidateChatHoverTimer();
-        if (!nextKey || nextKey !== key) return;
-        openCandidateChat(target, {
-          focusInput: false,
-          silent: true,
-          noisy: false,
-          trigger: 'hover'
-        });
-      }, CANDIDATE_CHAT_HOVER_OPEN_MS);
-    }
-
-    function attachCandidateChatHoverTrigger(el, target) {
-      if (!el || !target || !target.phone || !canUseCandidateChat()) return;
-      el.addEventListener('mouseenter', () => scheduleCandidateChatOpenOnHover(target));
-      el.addEventListener('mouseleave', clearCandidateChatHoverTimer);
-    }
-
     function ensureCandidateChatStateVisible() {
       if (!candidateChatDockEl) return;
       const shouldShow = canUseCandidateChat() && candidateChatThreads.length > 0;
@@ -17555,11 +17513,10 @@ app.get("/admin/ui", (req, res) => {
 
     function clearCandidateChatState() {
       stopCandidateChatPolling();
-      clearCandidateChatHoverTimer();
       candidateChatThreads = [];
       candidateChatActiveKey = '';
       candidateChatLoading = false;
-      candidateChatMinimized = false;
+      candidateChatMinimized = true;
       if (candidateChatInputEl) candidateChatInputEl.value = '';
       setCandidateChatStatus('');
       renderCandidateChatDock();
@@ -17574,7 +17531,7 @@ app.get("/admin/ui", (req, res) => {
         candidateChatActiveKey = candidateChatThreads[0]?.key || '';
       }
       if (!candidateChatThreads.length) {
-        candidateChatMinimized = false;
+        candidateChatMinimized = true;
       }
       renderCandidateChatDock();
       if (!candidateChatThreads.length) {
@@ -23319,6 +23276,14 @@ app.get("/admin/ui", (req, res) => {
         if (created && created > lastSeen && isPortalSource(item.source)) {
           tr.classList.add('is-new');
         }
+        if (item.phone && canUseCandidateChat()) {
+          const rowChatTarget = buildCandidateChatTarget(item);
+          tr.classList.add('row-clickable');
+          tr.addEventListener('click', (event) => {
+            if (event.target && event.target.closest && event.target.closest('button, a, input, textarea, select, .candidate-avatar, .decision-btn, .trial-chip, .audio-player')) return;
+            openCandidateChat(rowChatTarget, { trigger: 'row' });
+          });
+        }
         const addCell = (value, label, className, title) => {
           const td = document.createElement('td');
           td.textContent = value || '—';
@@ -23367,7 +23332,6 @@ app.get("/admin/ui", (req, res) => {
             event.stopPropagation();
             openCandidateChat(chatTarget, { trigger: 'click' });
           };
-          attachCandidateChatHoverTrigger(candidateTd, chatTarget);
         }
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
