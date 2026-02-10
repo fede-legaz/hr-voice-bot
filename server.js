@@ -77,6 +77,10 @@ const SMS_CHAT_FETCH_LIMIT = Math.min(Number(process.env.SMS_CHAT_FETCH_LIMIT) |
 const SMS_CHAT_COOLDOWN_MS = Math.max(0, Number(process.env.SMS_CHAT_COOLDOWN_MS) || 60 * 1000);
 const SMS_CHAT_MAX_PENDING_WITHOUT_REPLY = Math.max(1, Number(process.env.SMS_CHAT_MAX_PENDING_WITHOUT_REPLY) || 3);
 const SMS_CHAT_MEMORY_MAX_PER_PHONE = Number(process.env.SMS_CHAT_MEMORY_MAX_PER_PHONE) || 200;
+const TRIAL_SMS_INTERVIEWER_PHONES_RAW = process.env.TRIAL_SMS_INTERVIEWER_PHONES || "";
+const TRIAL_SMS_DURATION_MIN = Math.max(15, Number(process.env.TRIAL_SMS_DURATION_MIN) || 45);
+const TRIAL_SMS_CANDIDATE_ENABLED = process.env.TRIAL_SMS_CANDIDATE_ENABLED !== "0";
+const TRIAL_SMS_INTERVIEWER_ENABLED = process.env.TRIAL_SMS_INTERVIEWER_ENABLED !== "0";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -746,6 +750,67 @@ function brandKey(brand) {
   if (b.includes("mexi")) return "mexi";
   if (b.includes("yes")) return "yes";
   return "general";
+}
+
+let trialInterviewerPhoneMapCache = null;
+
+function parsePhoneList(raw) {
+  const text = String(raw || "");
+  const matches = text.match(/\+?\d[\d\s().-]{6,}\d/g) || [];
+  const out = [];
+  const seen = new Set();
+  for (const match of matches) {
+    const norm = normalizePhone(match);
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return out;
+}
+
+function getTrialInterviewerPhoneMap() {
+  if (trialInterviewerPhoneMapCache) return trialInterviewerPhoneMapCache;
+  const map = new Map();
+  const raw = String(TRIAL_SMS_INTERVIEWER_PHONES_RAW || "");
+  raw.split(/[,\n;]/).forEach((piece) => {
+    const token = piece.trim();
+    if (!token) return;
+    let key = "*";
+    let phonesRaw = token;
+    const eq = token.indexOf("=");
+    if (eq >= 0) {
+      key = token.slice(0, eq).trim();
+      phonesRaw = token.slice(eq + 1).trim();
+    }
+    const normalizedKey = key === "*" || normalizeKey(key) === "all" || normalizeKey(key) === "default"
+      ? "*"
+      : brandKey(key);
+    const phones = parsePhoneList(phonesRaw);
+    if (!phones.length) return;
+    const current = map.get(normalizedKey) || [];
+    map.set(normalizedKey, [...new Set([...current, ...phones])]);
+  });
+  trialInterviewerPhoneMapCache = map;
+  return map;
+}
+
+function resolveTrialInterviewerPhonesForBrand(brand) {
+  const map = getTrialInterviewerPhoneMap();
+  if (!map || !map.size) return [];
+  const key = brandKey(brand || "");
+  const out = [];
+  const seen = new Set();
+  const pushList = (list) => {
+    (list || []).forEach((phone) => {
+      const norm = normalizePhone(phone);
+      if (!norm || seen.has(norm)) return;
+      seen.add(norm);
+      out.push(norm);
+    });
+  };
+  pushList(map.get(key));
+  pushList(map.get("*"));
+  return out;
 }
 
 function assistantReadJsonFile(filePath) {
@@ -1835,6 +1900,51 @@ async function fetchCvMetaById(cvId) {
   };
 }
 
+async function fetchCallMetaBySid(callSid) {
+  const sid = String(callSid || "").trim();
+  if (!sid) return null;
+  const tracked = callsByCallSid.get(sid);
+  if (tracked) {
+    return {
+      call_sid: sid,
+      cv_id: tracked.cvId || tracked.cv_id || "",
+      brand: tracked.brand || "",
+      role: tracked.role || "",
+      applicant: tracked.applicant || "",
+      phone: normalizePhone(tracked.to || tracked.phone || "")
+    };
+  }
+  const historyEntry = callHistory.find((entry) => entry && (entry.callId === sid || entry.callSid === sid));
+  if (historyEntry) {
+    return {
+      call_sid: sid,
+      cv_id: historyEntry.cv_id || historyEntry.cvId || "",
+      brand: historyEntry.brand || "",
+      role: historyEntry.role || "",
+      applicant: historyEntry.applicant || "",
+      phone: normalizePhone(historyEntry.phone || "")
+    };
+  }
+  if (!dbPool) return null;
+  const result = await dbQuery(
+    `SELECT call_sid, cv_id, brand, role, applicant, phone
+     FROM calls
+     WHERE call_sid = $1
+     LIMIT 1`,
+    [sid]
+  );
+  const row = result?.rows?.[0];
+  if (!row) return null;
+  return {
+    call_sid: row.call_sid || sid,
+    cv_id: row.cv_id || "",
+    brand: row.brand || "",
+    role: row.role || "",
+    applicant: row.applicant || "",
+    phone: normalizePhone(row.phone || "")
+  };
+}
+
 async function fetchLatestCvMetaByPhone(phone, allowedBrands = null) {
   const norm = normalizePhone(phone);
   if (!norm) return null;
@@ -2006,6 +2116,190 @@ function computeFollowUpAt(trialAtIso, daysAfter = 1, hour = 7, minute = 0) {
 function computeFollowUpAfterHours(hours = 48) {
   const ms = Math.max(0, Number(hours) || 0) * 3600000;
   return new Date(Date.now() + ms).toISOString();
+}
+
+function formatTrialSmsDateTime(trialAtIso) {
+  if (!trialAtIso) return "";
+  const dt = new Date(trialAtIso);
+  if (Number.isNaN(dt.getTime())) return "";
+  return dt.toLocaleString("en-US", {
+    timeZone: MIAMI_TIMEZONE,
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  });
+}
+
+function toCalendarUtcStamp(date) {
+  const dt = date instanceof Date ? date : new Date(date);
+  if (Number.isNaN(dt.getTime())) return "";
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dt.getUTCDate()).padStart(2, "0");
+  const hh = String(dt.getUTCHours()).padStart(2, "0");
+  const mm = String(dt.getUTCMinutes()).padStart(2, "0");
+  const ss = String(dt.getUTCSeconds()).padStart(2, "0");
+  return `${y}${m}${d}T${hh}${mm}${ss}Z`;
+}
+
+function buildTrialCalendarLink({ trialAt, brand, role, applicant, address }) {
+  const start = new Date(trialAt || "");
+  if (Number.isNaN(start.getTime())) return "";
+  const end = new Date(start.getTime() + TRIAL_SMS_DURATION_MIN * 60000);
+  const brandLabel = resolveBrandDisplay(brand || DEFAULT_BRAND);
+  const roleLabel = role ? String(role).trim() : DEFAULT_ROLE;
+  const title = `Trial Shift - ${brandLabel}`;
+  const when = formatTrialSmsDateTime(trialAt);
+  const who = applicant ? `Candidate: ${applicant}` : "";
+  const details = [who, `Role: ${roleLabel}`, `When (Miami): ${when}`].filter(Boolean).join(" | ");
+  const location = address ? String(address).trim() : "";
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: title,
+    dates: `${toCalendarUtcStamp(start)}/${toCalendarUtcStamp(end)}`,
+    details
+  });
+  if (location) params.set("location", location);
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
+function createTrialSmsReport() {
+  return {
+    candidate_sent: 0,
+    candidate_skipped: 0,
+    interviewer_sent: 0,
+    interviewer_skipped: 0,
+    errors: []
+  };
+}
+
+function mergeTrialSmsReport(base, next) {
+  const out = base || createTrialSmsReport();
+  if (!next) return out;
+  out.candidate_sent += Number(next.candidate_sent || 0);
+  out.candidate_skipped += Number(next.candidate_skipped || 0);
+  out.interviewer_sent += Number(next.interviewer_sent || 0);
+  out.interviewer_skipped += Number(next.interviewer_skipped || 0);
+  if (Array.isArray(next.errors) && next.errors.length) {
+    out.errors.push(...next.errors);
+  }
+  return out;
+}
+
+async function sendTrialSmsAndLog({ to, body, cv_id, call_sid, brand, role, candidate_name, metadata }) {
+  const phone = normalizePhone(to || "");
+  if (!phone) return { ok: false, reason: "missing_phone" };
+  const text = String(body || "").trim();
+  if (!text) return { ok: false, reason: "missing_body" };
+  if (isSmsOptedOut(phone)) return { ok: false, reason: "opted_out" };
+  const smsData = await sendSms(phone, text);
+  await recordSmsMessage({
+    phone,
+    direction: "outbound",
+    channel: "sms",
+    body: text,
+    status: smsData?.status || "queued",
+    provider_sid: smsData?.sid || "",
+    provider_status: smsData?.status || "",
+    cv_id: cv_id || "",
+    call_sid: call_sid || "",
+    brand: brand || "",
+    role: role || "",
+    candidate_name: candidate_name || "",
+    metadata: metadata && typeof metadata === "object" ? metadata : {}
+  });
+  return { ok: true };
+}
+
+async function notifyTrialScheduledSms(target = {}) {
+  const report = createTrialSmsReport();
+  const trialAt = normalizeIso(target.trial_at || target.trialAt || "");
+  if (!trialAt) return report;
+  const brand = target.brand || DEFAULT_BRAND;
+  const role = target.role || DEFAULT_ROLE;
+  const applicant = (target.applicant || target.candidate_name || "").trim();
+  const candidatePhone = normalizePhone(target.phone || "");
+  const callSid = String(target.call_sid || target.callSid || "").trim();
+  const cvId = String(target.cv_id || target.cvId || "").trim();
+  const address = resolveAddress(brand, target.address || null);
+  const whenLabel = formatTrialSmsDateTime(trialAt);
+  const calendarLink = buildTrialCalendarLink({
+    trialAt,
+    brand,
+    role,
+    applicant,
+    address
+  });
+  const brandLabel = resolveBrandDisplay(brand);
+  const roleLabel = displayRole(role, brand);
+
+  if (TRIAL_SMS_CANDIDATE_ENABLED && candidatePhone) {
+    const candidateMsg = [
+      `Yes Restaurants: Your trial is scheduled for ${whenLabel} at ${brandLabel}.`,
+      roleLabel ? `Role: ${roleLabel}.` : "",
+      calendarLink ? `Add to calendar: ${calendarLink}` : "",
+      "Reply STOP to opt out."
+    ].filter(Boolean).join(" ");
+    try {
+      const sent = await sendTrialSmsAndLog({
+        to: candidatePhone,
+        body: candidateMsg,
+        cv_id: cvId,
+        call_sid: callSid,
+        brand,
+        role,
+        candidate_name: applicant,
+        metadata: { source: "trial_schedule_candidate" }
+      });
+      if (sent.ok) report.candidate_sent += 1;
+      else report.candidate_skipped += 1;
+    } catch (err) {
+      report.candidate_skipped += 1;
+      report.errors.push(`candidate:${candidatePhone}:${err.message}`);
+      console.error("[trial/sms] candidate send failed", { phone: candidatePhone, err: err.message });
+    }
+  } else {
+    report.candidate_skipped += 1;
+  }
+
+  const interviewerPhones = TRIAL_SMS_INTERVIEWER_ENABLED
+    ? resolveTrialInterviewerPhonesForBrand(brand).filter((phone) => phone !== candidatePhone)
+    : [];
+  if (!interviewerPhones.length) {
+    report.interviewer_skipped += 1;
+    return report;
+  }
+  for (const interviewerPhone of interviewerPhones) {
+    const interviewerMsg = [
+      `HRBOT: Trial scheduled ${whenLabel} (${brandLabel}).`,
+      applicant ? `Candidate: ${applicant}.` : "",
+      roleLabel ? `Role: ${roleLabel}.` : "",
+      calendarLink ? `Calendar: ${calendarLink}` : ""
+    ].filter(Boolean).join(" ");
+    try {
+      const sent = await sendTrialSmsAndLog({
+        to: interviewerPhone,
+        body: interviewerMsg,
+        cv_id: cvId,
+        call_sid: callSid,
+        brand,
+        role,
+        candidate_name: applicant,
+        metadata: { source: "trial_schedule_interviewer" }
+      });
+      if (sent.ok) report.interviewer_sent += 1;
+      else report.interviewer_skipped += 1;
+    } catch (err) {
+      report.interviewer_skipped += 1;
+      report.errors.push(`interviewer:${interviewerPhone}:${err.message}`);
+      console.error("[trial/sms] interviewer send failed", { phone: interviewerPhone, err: err.message });
+    }
+  }
+
+  return report;
 }
 
 function sanitizeRole(role) {
@@ -6211,7 +6505,62 @@ app.post("/admin/calls/:callId/trial", requirePermission("calls_notes"), async (
       return res.status(400).json({ error: "trial_failed", detail: err.message });
     }
   }
-  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status });
+  let notifications = createTrialSmsReport();
+  if (trial_at) {
+    const targets = [];
+    const seen = new Set();
+    for (const cvId of cvIds) {
+      const key = `cv:${cvId}`;
+      if (!cvId || seen.has(key)) continue;
+      seen.add(key);
+      try {
+        const meta = await fetchCvMetaById(cvId);
+        if (!meta) continue;
+        targets.push({
+          trial_at,
+          cv_id: meta.id,
+          brand: meta.brand || meta.brand_key || "",
+          role: meta.role || meta.role_key || "",
+          applicant: meta.applicant || "",
+          phone: meta.phone || ""
+        });
+      } catch (err) {
+        notifications.errors.push(`cv:${cvId}:${err.message}`);
+      }
+    }
+    if (!targets.length) {
+      for (const sid of targetIds) {
+        const key = `call:${sid}`;
+        if (!sid || seen.has(key)) continue;
+        seen.add(key);
+        try {
+          const meta = await fetchCallMetaBySid(sid);
+          if (!meta) continue;
+          targets.push({
+            trial_at,
+            call_sid: meta.call_sid || sid,
+            cv_id: meta.cv_id || "",
+            brand: meta.brand || "",
+            role: meta.role || "",
+            applicant: meta.applicant || "",
+            phone: meta.phone || ""
+          });
+        } catch (err) {
+          notifications.errors.push(`call:${sid}:${err.message}`);
+        }
+      }
+    }
+    for (const target of targets) {
+      try {
+        const next = await notifyTrialScheduledSms(target);
+        notifications = mergeTrialSmsReport(notifications, next);
+      } catch (err) {
+        notifications.errors.push(`notify:${target.cv_id || target.call_sid || "unknown"}:${err.message}`);
+        console.error("[trial/sms] call notification failed", { target, err: err.message });
+      }
+    }
+  }
+  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status, notifications });
 });
 
 app.post("/admin/calls/:callId/whatsapp", requirePermission("calls_whatsapp"), async (req, res) => {
@@ -9308,7 +9657,28 @@ app.post("/admin/cv/:id/trial", requirePermission("cvs_write"), async (req, res)
       return res.status(400).json({ error: "trial_failed", detail: err.message });
     }
   }
-  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status });
+  let notifications = createTrialSmsReport();
+  if (trial_at) {
+    for (const id of targetIds) {
+      try {
+        const meta = await fetchCvMetaById(id);
+        if (!meta) continue;
+        const next = await notifyTrialScheduledSms({
+          trial_at,
+          cv_id: meta.id,
+          brand: meta.brand || meta.brand_key || "",
+          role: meta.role || meta.role_key || "",
+          applicant: meta.applicant || "",
+          phone: meta.phone || ""
+        });
+        notifications = mergeTrialSmsReport(notifications, next);
+      } catch (err) {
+        notifications.errors.push(`cv:${id}:${err.message}`);
+        console.error("[trial/sms] cv notification failed", { cvId: id, err: err.message });
+      }
+    }
+  }
+  return res.json({ ok: true, trial_at, trial_follow_up_at, trial_follow_up_status, notifications });
 });
 
 app.delete("/admin/cv/:id", requirePermission("cvs_delete"), async (req, res) => {
@@ -16451,6 +16821,7 @@ app.get("/admin/ui", (req, res) => {
       };
       applyCvPatch(ids, patch);
       renderCvList(lastCvRaw);
+      return data.notifications || null;
     }
 
     async function saveCallTrial(callIds, cvIds, trial_at) {
@@ -16473,6 +16844,7 @@ app.get("/admin/ui", (req, res) => {
       }
       renderResults(lastResultsRaw);
       renderCvList(lastCvRaw);
+      return data.notifications || null;
     }
 
     async function saveTrialFromModal(clear) {
@@ -16481,6 +16853,7 @@ app.get("/admin/ui", (req, res) => {
       if (trialStatusEl) trialStatusEl.textContent = 'Guardando...';
       try {
         let trial_at = '';
+        let notifications = null;
         if (!clear && trialDatetimeEl && trialDatetimeEl.value) {
           const utc = zonedTimeToUtc(trialDatetimeEl.value, MIAMI_TZ);
           if (!utc || Number.isNaN(utc.getTime())) {
@@ -16489,11 +16862,17 @@ app.get("/admin/ui", (req, res) => {
           trial_at = utc.toISOString();
         }
         if (target.type === 'cv') {
-          await saveCvTrial(target.ids || [], trial_at || null);
+          notifications = await saveCvTrial(target.ids || [], trial_at || null);
         } else if (target.type === 'call') {
-          await saveCallTrial(target.callIds || [], target.cvIds || [], trial_at || null);
+          notifications = await saveCallTrial(target.callIds || [], target.cvIds || [], trial_at || null);
         }
-        if (trialStatusEl) trialStatusEl.textContent = 'Guardado';
+        if (trialStatusEl) {
+          if (trial_at && notifications && (notifications.candidate_sent || notifications.interviewer_sent)) {
+            trialStatusEl.textContent = 'Guardado · SMS candidato: ' + Number(notifications.candidate_sent || 0) + ' · interviewer: ' + Number(notifications.interviewer_sent || 0);
+          } else {
+            trialStatusEl.textContent = 'Guardado';
+          }
+        }
         refreshTrialViews();
         setTimeout(() => {
           if (trialStatusEl) trialStatusEl.textContent = '';
@@ -19509,6 +19888,7 @@ app.get("/admin/ui", (req, res) => {
     function isInterviewCompleted(call) {
       if (!call) return false;
       if (call.outcome === 'NO_ANSWER') return false;
+      if (call.outcome === 'NO_SPEECH') return false;
       if (call.score !== null && call.score !== undefined) return true;
       if (call.summary && String(call.summary).trim()) return true;
       if (call.recommendation) return true;
@@ -22767,7 +23147,7 @@ app.get("/admin/ui", (req, res) => {
     function renderResults(calls) {
       const raw = Array.isArray(calls) ? calls : [];
       lastResultsRaw = raw;
-      const grouped = groupCalls(raw);
+      const grouped = groupCalls(raw).filter((call) => String(call?.outcome || "").toUpperCase() !== "NO_SPEECH");
       lastResults = grouped;
       const lastSeen = getSeenTimestamp(INTERVIEWS_SEEN_KEY);
       const filtered = grouped.filter((call) => {
