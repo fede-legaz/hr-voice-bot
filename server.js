@@ -24927,10 +24927,23 @@ app.get("/admin/ui", (req, res) => {
 
     loadBtnEl.onclick = loadConfig;
     saveBtnEl.onclick = saveConfig;
-    addBrandEl.onclick = () => {
-      brandsEl.appendChild(brandTemplate(''));
-      syncSidebar();
-    };
+    if (addBrandEl) {
+      addBrandEl.onclick = () => {
+        // Ensure the user lands in General so the new local card is visible.
+        setActiveView('');
+        const nextCard = brandTemplate('');
+        brandsEl.appendChild(nextCard);
+        syncSidebar();
+        try {
+          nextCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (err) {}
+        const nameInput = nextCard.querySelector('.brand-name');
+        if (nameInput) {
+          nameInput.focus();
+          nameInput.select();
+        }
+      };
+    }
     document.getElementById('preview-generate').onclick = generatePreview;
     adminUnlockEl.onclick = unlockAdmin;
     if (systemPromptEl) {
