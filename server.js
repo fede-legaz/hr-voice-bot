@@ -7052,6 +7052,84 @@ app.post("/admin/cv/status", requirePermission("cvs_write"), async (req, res) =>
   return res.json({ ok: true, decision });
 });
 
+app.post("/admin/cv/:id/phone", requirePermission("cvs_write"), async (req, res) => {
+  const cvId = (req.params?.id || "").trim();
+  const body = req.body || {};
+  const idsRaw = Array.isArray(body.ids) ? body.ids : [];
+  const ids = (idsRaw.length ? idsRaw : [cvId])
+    .map((id) => String(id || "").trim())
+    .filter(Boolean);
+  const targetIds = Array.from(new Set(ids));
+  if (!targetIds.length) return res.status(400).json({ error: "missing_cv_id" });
+  const phoneRaw = String(body.phone || body.to || "").trim();
+  const phone = normalizePhone(phoneRaw);
+  if (!phone) return res.status(400).json({ error: "invalid_phone" });
+
+  const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+  if (allowedBrands.length) {
+    if (dbPool) {
+      const check = await dbQuery("SELECT id, brand_key FROM cvs WHERE id = ANY($1)", [targetIds]);
+      for (const row of check?.rows || []) {
+        const rowBrand = String(row?.brand_key || "").trim();
+        if (rowBrand && !allowedBrands.includes(rowBrand)) {
+          return res.status(403).json({ error: "brand_not_allowed" });
+        }
+      }
+    } else {
+      for (const id of targetIds) {
+        const entry = cvStoreById.get(id);
+        if (!entry) continue;
+        const rowBrand = entry.brandKey || brandKey(entry.brand || "");
+        if (rowBrand && !allowedBrands.includes(rowBrand)) {
+          return res.status(403).json({ error: "brand_not_allowed" });
+        }
+      }
+    }
+  }
+
+  for (const id of targetIds) {
+    const entry = cvStoreById.get(id);
+    if (entry) entry.phone = phone;
+  }
+  for (const item of cvStore) {
+    if (!item || !item.id) continue;
+    if (targetIds.includes(item.id)) {
+      item.phone = phone;
+    }
+  }
+
+  let callHistoryUpdated = false;
+  for (const entry of callHistory) {
+    if (!entry) continue;
+    const linkedCvId = String(entry.cv_id || entry.cvId || "").trim();
+    if (!linkedCvId || !targetIds.includes(linkedCvId)) continue;
+    entry.phone = phone;
+    callHistoryUpdated = true;
+  }
+  for (const call of callsByCallSid.values()) {
+    if (!call) continue;
+    const linkedCvId = String(call.cvId || call.cv_id || "").trim();
+    if (!linkedCvId || !targetIds.includes(linkedCvId)) continue;
+    call.phone = phone;
+    if (call.to) call.to = phone;
+  }
+  scheduleCvStoreSave();
+  if (callHistoryUpdated) scheduleCallHistorySave();
+
+  if (dbPool) {
+    try {
+      await dbQuery("UPDATE cvs SET phone = $1 WHERE id = ANY($2)", [phone, targetIds]);
+      await dbQuery("UPDATE calls SET phone = $1 WHERE cv_id = ANY($2)", [phone, targetIds]);
+      await dbQuery("UPDATE onboarding_profiles SET phone = $1 WHERE cv_id = ANY($2)", [phone, targetIds]);
+    } catch (err) {
+      console.error("[admin/cv] phone update failed", err);
+      return res.status(400).json({ error: "phone_update_failed", detail: err.message });
+    }
+  }
+
+  return res.json({ ok: true, ids: targetIds, phone });
+});
+
 app.post("/admin/cv/question", requirePermission("cvs_write"), async (req, res) => {
   try {
     const body = req.body || {};
@@ -19640,6 +19718,15 @@ app.get("/admin/ui", (req, res) => {
         cvActions.appendChild(callBtn);
       }
       if (canWrite) {
+        const phoneBtn = document.createElement('button');
+        phoneBtn.type = 'button';
+        phoneBtn.className = 'secondary btn-compact';
+        phoneBtn.textContent = 'Editar tel';
+        phoneBtn.onclick = (event) => {
+          event.stopPropagation();
+          promptAndUpdateCvPhone(item);
+        };
+        cvActions.appendChild(phoneBtn);
         const qBtn = document.createElement('button');
         qBtn.type = 'button';
         qBtn.className = 'secondary btn-compact';
@@ -19827,6 +19914,14 @@ app.get("/admin/ui", (req, res) => {
       actionSection.className = 'swipe-section';
       const actionWrap = document.createElement('div');
       actionWrap.className = 'action-stack';
+      if (canPermission('cvs_write')) {
+        const phoneBtn = document.createElement('button');
+        phoneBtn.type = 'button';
+        phoneBtn.className = 'secondary btn-compact';
+        phoneBtn.textContent = 'Editar tel';
+        phoneBtn.onclick = () => promptAndUpdateCvPhone(call);
+        actionWrap.appendChild(phoneBtn);
+      }
       if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
@@ -23064,6 +23159,26 @@ app.get("/admin/ui", (req, res) => {
       (lastCvFiltered || []).forEach(apply);
     }
 
+    function applyCallPatchByCvIds(ids, patch) {
+      const set = new Set((ids || []).filter(Boolean));
+      if (!set.size) return;
+      const apply = (item) => {
+        if (!item) return;
+        const directCvId = String(item.cv_id || item.cvId || "").trim();
+        if (directCvId && set.has(directCvId)) {
+          Object.assign(item, patch);
+          return;
+        }
+        const groupIds = Array.isArray(item.cvIds) ? item.cvIds : [];
+        if (groupIds.some((cvId) => set.has(cvId))) {
+          Object.assign(item, patch);
+        }
+      };
+      (lastResultsRaw || []).forEach(apply);
+      (lastResults || []).forEach(apply);
+      (lastResultsFiltered || []).forEach(apply);
+    }
+
     async function saveInterviewNotes(call, notes, altBrandKey, altRoleKey) {
       const callId = call?.callId || '';
       if (!callId) throw new Error('missing_call_id');
@@ -23342,6 +23457,17 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
+        if (canPermission('cvs_write')) {
+          const phoneBtn = document.createElement('button');
+          phoneBtn.type = 'button';
+          phoneBtn.className = 'secondary btn-compact';
+          phoneBtn.textContent = 'Editar tel';
+          phoneBtn.onclick = (event) => {
+            event.stopPropagation();
+            promptAndUpdateCvPhone(call);
+          };
+          actionWrap.appendChild(phoneBtn);
+        }
         if (canPermission('calls_whatsapp') && call.callId) {
           const waBtn = document.createElement('button');
           waBtn.type = 'button';
@@ -23628,6 +23754,63 @@ app.get("/admin/ui", (req, res) => {
       return data.decision || decision || '';
     }
 
+    function collectCvIds(target) {
+      const list = Array.isArray(target?.cvIds) ? target.cvIds.filter(Boolean) : [];
+      if (list.length) return list;
+      const single = String(target?.id || target?.cv_id || target?.cvId || "").trim();
+      return single ? [single] : [];
+    }
+
+    async function updateCvPhone(ids, phone) {
+      if (!ids || !ids.length) throw new Error('missing_cv_id');
+      const normalized = normalizePhoneForChat(phone);
+      if (!normalized) throw new Error('invalid_phone');
+      const resp = await fetch('/admin/cv/' + encodeURIComponent(ids[0]) + '/phone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ ids, phone: normalized })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || data.error || 'phone_update_failed');
+      return {
+        ids: Array.isArray(data.ids) && data.ids.length ? data.ids : ids,
+        phone: normalizePhoneForChat(data.phone || normalized) || normalized
+      };
+    }
+
+    async function promptAndUpdateCvPhone(target) {
+      if (!canPermission('cvs_write')) return;
+      const ids = collectCvIds(target);
+      if (!ids.length) {
+        alert('No se encontró el CV para actualizar teléfono.');
+        return;
+      }
+      const currentPhone = String(target?.phone || '').trim();
+      const rawValue = prompt('Editar teléfono del candidato', currentPhone);
+      if (rawValue === null) return;
+      const nextPhone = normalizePhoneForChat(rawValue);
+      if (!nextPhone) {
+        alert('Teléfono inválido.');
+        return;
+      }
+      try {
+        const updated = await updateCvPhone(ids, nextPhone);
+        const patch = { phone: updated.phone };
+        applyCvPatch(updated.ids, patch);
+        applyCallPatchByCvIds(updated.ids, patch);
+        if (target && typeof target === 'object') {
+          target.phone = updated.phone;
+        }
+        renderCvList(lastCvRaw);
+        renderResults(lastResultsRaw);
+        if (activeView === 'messages') {
+          loadMessagesConversations(true).catch(() => {});
+        }
+      } catch (err) {
+        alert('Error: ' + err.message);
+      }
+    }
+
     function renderCvList(list) {
       const raw = Array.isArray(list) ? list : [];
       lastCvRaw = raw;
@@ -23869,6 +24052,15 @@ app.get("/admin/ui", (req, res) => {
           actionWrap.appendChild(callBtn);
         }
         if (canWrite) {
+          const phoneBtn = document.createElement('button');
+          phoneBtn.type = 'button';
+          phoneBtn.className = 'secondary btn-compact';
+          phoneBtn.textContent = 'Editar tel';
+          phoneBtn.onclick = (event) => {
+            event.stopPropagation();
+            promptAndUpdateCvPhone(item);
+          };
+          actionWrap.appendChild(phoneBtn);
           const qBtn = document.createElement('button');
           qBtn.type = 'button';
           qBtn.className = 'secondary btn-compact';
