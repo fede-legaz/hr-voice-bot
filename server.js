@@ -19639,14 +19639,6 @@ app.get("/admin/ui", (req, res) => {
         };
         cvActions.appendChild(callBtn);
       }
-      if (item.phone && canUseCandidateChat()) {
-        const smsBtn = document.createElement('button');
-        smsBtn.type = 'button';
-        smsBtn.className = 'secondary btn-compact';
-        smsBtn.textContent = 'SMS';
-        smsBtn.onclick = () => openCandidateChat(buildCandidateChatTarget(item), { trigger: 'click' });
-        cvActions.appendChild(smsBtn);
-      }
       if (canWrite) {
         const qBtn = document.createElement('button');
         qBtn.type = 'button';
@@ -19835,20 +19827,6 @@ app.get("/admin/ui", (req, res) => {
       actionSection.className = 'swipe-section';
       const actionWrap = document.createElement('div');
       actionWrap.className = 'action-stack';
-      if (call.phone && canUseCandidateChat()) {
-        const smsBtn = document.createElement('button');
-        smsBtn.type = 'button';
-        smsBtn.className = 'secondary btn-compact';
-        smsBtn.textContent = 'SMS';
-        smsBtn.onclick = () => {
-          openCandidateChat(buildCandidateChatTarget(call), {
-            trigger: 'interviews-swipe-sms',
-            minimized: true,
-            focusInput: false
-          });
-        };
-        actionWrap.appendChild(smsBtn);
-      }
       if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
@@ -22272,6 +22250,10 @@ app.get("/admin/ui", (req, res) => {
         statusText = statusText + " (" + attempts + " intentos)";
       }
       let category = inCall ? 'in_call' : (!hasCalls ? 'no_calls' : (isNoAnswer ? 'no_answer' : 'interviewed'));
+      if (!inCall && item.decision === 'declined') {
+        statusText = 'Descartado';
+        category = 'declined';
+      }
       if (!inCall && item.decision === 'hired') {
         statusText = 'Contratado';
         statusClass = 'status-hired';
@@ -23360,21 +23342,6 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        if (call.phone && canUseCandidateChat()) {
-          const smsBtn = document.createElement('button');
-          smsBtn.type = 'button';
-          smsBtn.className = 'secondary btn-compact';
-          smsBtn.textContent = 'SMS';
-          smsBtn.onclick = (event) => {
-            event.stopPropagation();
-            openCandidateChat(buildCandidateChatTarget(call), {
-              trigger: 'interviews-sms',
-              minimized: true,
-              focusInput: false
-            });
-          };
-          actionWrap.appendChild(smsBtn);
-        }
         if (canPermission('calls_whatsapp') && call.callId) {
           const waBtn = document.createElement('button');
           waBtn.type = 'button';
@@ -23673,8 +23640,8 @@ app.get("/admin/ui", (req, res) => {
           if (cvFilterMode === 'no_calls') return info.category === 'no_calls';
           if (cvFilterMode === 'no_answer') return info.category === 'no_answer';
           if (cvFilterMode === 'interviewed') return info.category === 'interviewed';
-          if (cvFilterMode === 'declined') return item.decision === 'declined';
-          if (cvFilterMode === 'hired') return item.decision === 'hired' || info.category === 'hired';
+          if (cvFilterMode === 'declined') return info.category === 'declined';
+          if (cvFilterMode === 'hired') return info.category === 'hired';
           return true;
         });
       lastCvFiltered = filtered.slice();
@@ -23900,17 +23867,6 @@ app.get("/admin/ui", (req, res) => {
             });
           };
           actionWrap.appendChild(callBtn);
-        }
-        if (item.phone && canUseCandidateChat()) {
-          const smsBtn = document.createElement('button');
-          smsBtn.type = 'button';
-          smsBtn.className = 'secondary btn-compact';
-          smsBtn.textContent = 'SMS';
-          smsBtn.onclick = (event) => {
-            event.stopPropagation();
-            openCandidateChat(buildCandidateChatTarget(item), { trigger: 'click' });
-          };
-          actionWrap.appendChild(smsBtn);
         }
         if (canWrite) {
           const qBtn = document.createElement('button');
