@@ -11625,6 +11625,26 @@ app.get("/admin/ui", (req, res) => {
       min-width: 32px;
       text-align: center;
     }
+    .phone-cell {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+      line-height: 1.2;
+    }
+    .phone-value {
+      font-weight: 600;
+      color: var(--ink);
+      letter-spacing: 0.01em;
+    }
+    .phone-edit-btn {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      line-height: 1.1;
+      min-height: 0;
+      box-shadow: none;
+    }
     .cell-compact {
       white-space: nowrap;
       max-width: 160px;
@@ -19511,6 +19531,29 @@ app.get("/admin/ui", (req, res) => {
       return row;
     }
 
+    function buildPhoneCellContent(target) {
+      const wrap = document.createElement('div');
+      wrap.className = 'phone-cell';
+      const value = document.createElement('span');
+      value.className = 'phone-value';
+      value.textContent = (target && target.phone) ? target.phone : '—';
+      wrap.appendChild(value);
+      const ids = collectCvIds(target);
+      const canEditPhone = canPermission('cvs_write') && ids.length;
+      if (canEditPhone) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'secondary phone-edit-btn';
+        btn.textContent = 'Editar tel';
+        btn.onclick = (event) => {
+          event.stopPropagation();
+          promptAndUpdateCvPhone(target);
+        };
+        wrap.appendChild(btn);
+      }
+      return wrap;
+    }
+
     function attachSwipeNavigation(el, onPrev, onNext) {
       if (!el || el._swipeBound) return;
       let startX = 0;
@@ -19583,7 +19626,7 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Fecha', formatDate(item.created_at)));
       infoSection.appendChild(buildSwipeRow('Local', brandLabel));
       infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
-      infoSection.appendChild(buildSwipeRow('Teléfono', item.phone || '—'));
+      infoSection.appendChild(buildSwipeRow('Teléfono', buildPhoneCellContent(item)));
       const info = cvStatusInfo(item);
       infoSection.appendChild(buildSwipeRow('Estado', info.statusText || '—'));
       const trialAt = item.trial_at || '';
@@ -19718,15 +19761,6 @@ app.get("/admin/ui", (req, res) => {
         cvActions.appendChild(callBtn);
       }
       if (canWrite) {
-        const phoneBtn = document.createElement('button');
-        phoneBtn.type = 'button';
-        phoneBtn.className = 'secondary btn-compact';
-        phoneBtn.textContent = 'Editar tel';
-        phoneBtn.onclick = (event) => {
-          event.stopPropagation();
-          promptAndUpdateCvPhone(item);
-        };
-        cvActions.appendChild(phoneBtn);
         const qBtn = document.createElement('button');
         qBtn.type = 'button';
         qBtn.className = 'secondary btn-compact';
@@ -19810,7 +19844,7 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Fecha', formatDate(call.created_at)));
       infoSection.appendChild(buildSwipeRow('Local', brandLabel));
       infoSection.appendChild(buildSwipeRow('Posición', roleLabel));
-      infoSection.appendChild(buildSwipeRow('Teléfono', call.phone || '—'));
+      infoSection.appendChild(buildSwipeRow('Teléfono', buildPhoneCellContent(call)));
       infoSection.appendChild(buildSwipeRow('Estado', formatInterviewSummary(call)));
       const trialAt = call.trial_at || call.cv_trial_at || '';
       if (canPermission('calls_notes')) {
@@ -19914,14 +19948,6 @@ app.get("/admin/ui", (req, res) => {
       actionSection.className = 'swipe-section';
       const actionWrap = document.createElement('div');
       actionWrap.className = 'action-stack';
-      if (canPermission('cvs_write')) {
-        const phoneBtn = document.createElement('button');
-        phoneBtn.type = 'button';
-        phoneBtn.className = 'secondary btn-compact';
-        phoneBtn.textContent = 'Editar tel';
-        phoneBtn.onclick = () => promptAndUpdateCvPhone(call);
-        actionWrap.appendChild(phoneBtn);
-      }
       if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
@@ -23321,7 +23347,10 @@ app.get("/admin/ui", (req, res) => {
         candidateWrap.appendChild(scoreMini);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
-        addCell(call.phone, 'Teléfono');
+        const phoneTd = document.createElement('td');
+        phoneTd.dataset.label = 'Teléfono';
+        phoneTd.appendChild(buildPhoneCellContent(call));
+        tr.appendChild(phoneTd);
         const statusText = formatInterviewSummary(call);
         const statusTd = document.createElement('td');
         statusTd.dataset.label = 'Estado';
@@ -23457,17 +23486,6 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
-        if (canPermission('cvs_write')) {
-          const phoneBtn = document.createElement('button');
-          phoneBtn.type = 'button';
-          phoneBtn.className = 'secondary btn-compact';
-          phoneBtn.textContent = 'Editar tel';
-          phoneBtn.onclick = (event) => {
-            event.stopPropagation();
-            promptAndUpdateCvPhone(call);
-          };
-          actionWrap.appendChild(phoneBtn);
-        }
         if (canPermission('calls_whatsapp') && call.callId) {
           const waBtn = document.createElement('button');
           waBtn.type = 'button';
@@ -23892,7 +23910,10 @@ app.get("/admin/ui", (req, res) => {
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
-        addCell(item.phone || '', 'Teléfono');
+        const phoneTd = document.createElement('td');
+        phoneTd.dataset.label = 'Teléfono';
+        phoneTd.appendChild(buildPhoneCellContent(item));
+        tr.appendChild(phoneTd);
         const info = cvStatusInfo(item);
         if (info.inCall) {
           tr.classList.add('call-active');
@@ -24052,15 +24073,6 @@ app.get("/admin/ui", (req, res) => {
           actionWrap.appendChild(callBtn);
         }
         if (canWrite) {
-          const phoneBtn = document.createElement('button');
-          phoneBtn.type = 'button';
-          phoneBtn.className = 'secondary btn-compact';
-          phoneBtn.textContent = 'Editar tel';
-          phoneBtn.onclick = (event) => {
-            event.stopPropagation();
-            promptAndUpdateCvPhone(item);
-          };
-          actionWrap.appendChild(phoneBtn);
           const qBtn = document.createElement('button');
           qBtn.type = 'button';
           qBtn.className = 'secondary btn-compact';
