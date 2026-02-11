@@ -24929,11 +24929,12 @@ app.get("/admin/ui", (req, res) => {
     saveBtnEl.onclick = saveConfig;
     if (addBrandEl) {
       addBrandEl.onclick = () => {
-        // Ensure the user lands in General so the new local card is visible.
-        setActiveView('');
-        const nextCard = brandTemplate('');
+        const tempKey = 'new_local_' + Date.now().toString(36);
+        const nextCard = brandTemplate(tempKey);
         brandsEl.appendChild(nextCard);
         syncSidebar();
+        // Open the brand editor immediately for the newly created local.
+        setActiveView(tempKey);
         try {
           nextCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
         } catch (err) {}
