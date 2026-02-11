@@ -10987,7 +10987,7 @@ app.get("/admin/ui", (req, res) => {
     }
     .candidate-chat-tabs {
       display: none;
-      gap: 6px;
+      gap: 8px;
       align-items: center;
       justify-content: flex-end;
       width: 100%;
@@ -10995,16 +10995,17 @@ app.get("/admin/ui", (req, res) => {
     .candidate-chat-tab {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      border-radius: 12px;
+      gap: 10px;
+      border-radius: 14px;
       border: 1px solid rgba(18, 21, 24, 0.78);
       background: #2d2b2c;
       color: #fff;
       box-shadow: 0 12px 24px rgba(10, 12, 14, 0.35);
-      padding: 8px 10px;
-      font-size: 12px;
+      padding: 11px 14px;
+      font-size: 14px;
       font-weight: 700;
-      max-width: 260px;
+      min-height: 46px;
+      max-width: 340px;
       cursor: pointer;
     }
     .candidate-chat-tab.active {
@@ -11012,7 +11013,7 @@ app.get("/admin/ui", (req, res) => {
       box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 12px 24px rgba(10, 12, 14, 0.35);
     }
     .candidate-chat-tab-name {
-      max-width: 180px;
+      max-width: 240px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -11022,11 +11023,11 @@ app.get("/admin/ui", (req, res) => {
       background: rgba(255, 255, 255, 0.08);
       color: rgba(255, 255, 255, 0.9);
       padding: 0;
-      width: 18px;
-      height: 18px;
+      width: 22px;
+      height: 22px;
       border-radius: 999px;
       box-shadow: none;
-      font-size: 12px;
+      font-size: 13px;
       line-height: 1;
     }
     .candidate-chat-tab-close:hover {
@@ -11597,15 +11598,6 @@ app.get("/admin/ui", (req, res) => {
       border: 0;
       padding: 0;
       margin: 0;
-    }
-    .candidate-name.can-chat {
-      cursor: pointer;
-      transition: color 0.15s ease;
-    }
-    .candidate-name.can-chat:hover {
-      color: var(--primary-dark);
-      text-decoration: underline;
-      text-underline-offset: 2px;
     }
     .call-active td { background: rgba(27, 122, 140, 0.12) !important; }
     .status-live { color: #0f5563; font-weight: 700; }
@@ -17981,6 +17973,7 @@ app.get("/admin/ui", (req, res) => {
       const noisy = options.noisy !== false;
       const focusInput = options.focusInput !== false;
       const silent = !!options.silent;
+      const openMinimized = options.minimized === true;
       if (!canUseCandidateChat()) {
         if (noisy) setStatus('Sin permisos para enviar SMS.');
         return;
@@ -18027,14 +18020,14 @@ app.get("/admin/ui", (req, res) => {
       candidateChatThreads = [thread];
       candidateChatActiveKey = thread.key;
       thread.unread = 0;
-      candidateChatMinimized = false;
+      candidateChatMinimized = openMinimized;
       renderCandidateChatDock();
       startCandidateChatPolling();
       const needsRefresh = !thread.last_loaded_at || !thread.messages?.length || (Date.now() - thread.last_loaded_at) > CANDIDATE_CHAT_FRESH_MS;
       if (needsRefresh) {
         fetchCandidateChatThread(thread, { silent: silent }).catch(() => {});
       }
-      if (focusInput && candidateChatInputEl) candidateChatInputEl.focus();
+      if (!candidateChatMinimized && focusInput && candidateChatInputEl) candidateChatInputEl.focus();
     }
 
     async function sendCandidateChatMessage() {
@@ -19842,6 +19835,20 @@ app.get("/admin/ui", (req, res) => {
       actionSection.className = 'swipe-section';
       const actionWrap = document.createElement('div');
       actionWrap.className = 'action-stack';
+      if (call.phone && canUseCandidateChat()) {
+        const smsBtn = document.createElement('button');
+        smsBtn.type = 'button';
+        smsBtn.className = 'secondary btn-compact';
+        smsBtn.textContent = 'SMS';
+        smsBtn.onclick = () => {
+          openCandidateChat(buildCandidateChatTarget(call), {
+            trigger: 'interviews-swipe-sms',
+            minimized: true,
+            focusInput: false
+          });
+        };
+        actionWrap.appendChild(smsBtn);
+      }
       if (canPermission('calls_whatsapp') && call.callId) {
         const waBtn = document.createElement('button');
         waBtn.type = 'button';
@@ -23173,6 +23180,14 @@ app.get("/admin/ui", (req, res) => {
         tr.addEventListener('click', (event) => {
           if (event.target.closest('button, a, audio, input, .audio-player')) return;
           toggleInterviewDetailsRow(tr, call);
+          if (call.phone && canUseCandidateChat()) {
+            openCandidateChat(buildCandidateChatTarget(call), {
+              trigger: 'interviews-row',
+              minimized: true,
+              focusInput: false,
+              noisy: false
+            });
+          }
         });
         const addCell = (value, label, className, title) => {
           const td = document.createElement('td');
@@ -23345,6 +23360,21 @@ app.get("/admin/ui", (req, res) => {
         actionTd.dataset.label = 'Acción';
         const actionWrap = document.createElement('div');
         actionWrap.className = 'action-stack';
+        if (call.phone && canUseCandidateChat()) {
+          const smsBtn = document.createElement('button');
+          smsBtn.type = 'button';
+          smsBtn.className = 'secondary btn-compact';
+          smsBtn.textContent = 'SMS';
+          smsBtn.onclick = (event) => {
+            event.stopPropagation();
+            openCandidateChat(buildCandidateChatTarget(call), {
+              trigger: 'interviews-sms',
+              minimized: true,
+              focusInput: false
+            });
+          };
+          actionWrap.appendChild(smsBtn);
+        }
         if (canPermission('calls_whatsapp') && call.callId) {
           const waBtn = document.createElement('button');
           waBtn.type = 'button';
@@ -23661,7 +23691,11 @@ app.get("/admin/ui", (req, res) => {
           tr.classList.add('row-clickable');
           tr.addEventListener('click', (event) => {
             if (event.target && event.target.closest && event.target.closest('button, a, input, textarea, select, .candidate-avatar, .decision-btn, .trial-chip, .audio-player')) return;
-            openCandidateChat(rowChatTarget, { trigger: 'row' });
+            openCandidateChat(rowChatTarget, {
+              trigger: 'row',
+              minimized: true,
+              focusInput: false
+            });
           });
         }
         const addCell = (value, label, className, title) => {
@@ -23705,14 +23739,6 @@ app.get("/admin/ui", (req, res) => {
         nameSpan.className = 'candidate-name';
         nameSpan.textContent = item.applicant || '—';
         if (item.applicant) nameSpan.title = item.applicant;
-        if (item.phone && canUseCandidateChat()) {
-          const chatTarget = buildCandidateChatTarget(item);
-          nameSpan.classList.add('can-chat');
-          nameSpan.onclick = (event) => {
-            event.stopPropagation();
-            openCandidateChat(chatTarget, { trigger: 'click' });
-          };
-        }
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
