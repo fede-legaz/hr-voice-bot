@@ -223,7 +223,7 @@ function getOnboarding1099DocTypes(brand) {
   const w9TemplateUrl = resolveOnboardingW9TemplateUrl();
   const list = [
     { key: "id", label: "ID / Licencia", mode: "upload", template_url: "" },
-    { key: "w9", label: "W-9", mode: "upload", template_url: w9TemplateUrl || "" },
+    { key: "w9", label: "W-9", mode: "pdf", template_url: w9TemplateUrl || "" },
     { key: "policy_renuncia", label: "Política de renuncia (firmada)", mode: "policy", template_url: "" }
   ];
   return applyPolicyTemplateToDocTypes(list, brand);
@@ -5074,6 +5074,139 @@ function mapW4Fields(fields, templateFields) {
   return out;
 }
 
+function mapW9Fields(fields, templateFields) {
+  const out = {};
+  const data = fields && typeof fields === "object" ? fields : {};
+  const hasXfa = Array.isArray(templateFields) && templateFields.some((f) => String(f?.name || "").startsWith("topmostSubform"));
+  const safeText = (value) => {
+    if (value === undefined || value === null) return "";
+    return String(value).trim();
+  };
+  const digitsOnly = (value) => safeText(value).replace(/\D+/g, "");
+  const boolLike = (value) => {
+    const norm = normalizeChoice(value);
+    return ["1", "true", "yes", "si", "on", "checked"].includes(norm);
+  };
+  const firstNonEmpty = (...values) => {
+    for (const value of values) {
+      const str = safeText(value);
+      if (str) return str;
+    }
+    return "";
+  };
+
+  const fullName = firstNonEmpty(
+    data.full_name,
+    [safeText(data.first_name), safeText(data.last_name)].filter(Boolean).join(" ").trim(),
+    data.name
+  );
+  const businessName = firstNonEmpty(data.business_name, data.disregarded_entity_name);
+  const taxClass = normalizeChoice(data.tax_classification || data.federal_tax_classification || data.classification);
+  const isClass = (...aliases) => aliases.some((alias) => normalizeChoice(alias) === taxClass);
+  const llcCode = safeText(data.llc_tax_classification || data.llc_code).toUpperCase().slice(0, 1);
+  const cityStateZip = firstNonEmpty(
+    data.city_state_zip,
+    [safeText(data.city), safeText(data.state)].filter(Boolean).join(", ").trim() + (safeText(data.zip) ? " " + safeText(data.zip) : "")
+  ).trim();
+  const accountNumbers = safeText(data.account_numbers || data.account_number);
+  const tinType = normalizeChoice(data.tin_type).includes("ein") ? "ein" : "ssn";
+  const tinDigits = digitsOnly(data.tin_number || data.tin || data.ssn || data.ein);
+
+  if (hasXfa) {
+    const set = (fieldName, value) => {
+      if (!fieldName) return;
+      if (value === undefined || value === null || value === "") return;
+      out[fieldName] = value;
+    };
+    const setCheck = (fieldName, checked) => {
+      if (!fieldName) return;
+      out[fieldName] = checked ? "true" : "false";
+    };
+
+    set("topmostSubform[0].Page1[0].f1_01[0]", fullName);
+    set("topmostSubform[0].Page1[0].f1_02[0]", businessName);
+
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[0]", isClass("individual", "sole_proprietor", "sole_prop"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[1]", isClass("c_corp", "ccorp", "c_corporation"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[2]", isClass("s_corp", "scorp", "s_corporation"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[3]", isClass("partnership"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[4]", isClass("trust_estate", "trust", "estate"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[5]", isClass("llc"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_1[6]", isClass("other"));
+    setCheck("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].c1_2[0]", boolLike(data.line3b_foreign_partners || data.foreign_partners || data.line3b));
+
+    set("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].f1_03[0]", llcCode);
+    set("topmostSubform[0].Page1[0].Boxes3a-b_ReadOrder[0].f1_04[0]", safeText(data.other_classification));
+    set("topmostSubform[0].Page1[0].f1_05[0]", safeText(data.exempt_payee_code));
+    set("topmostSubform[0].Page1[0].f1_06[0]", safeText(data.fatca_code));
+    set("topmostSubform[0].Page1[0].Address_ReadOrder[0].f1_07[0]", safeText(data.address));
+    set("topmostSubform[0].Page1[0].Address_ReadOrder[0].f1_08[0]", cityStateZip);
+    set("topmostSubform[0].Page1[0].f1_09[0]", accountNumbers);
+
+    if (tinDigits) {
+      const paddedTin = tinDigits.slice(0, 9);
+      if (tinType === "ein") {
+        set("topmostSubform[0].Page1[0].f1_14[0]", paddedTin.slice(0, 2));
+        set("topmostSubform[0].Page1[0].f1_15[0]", paddedTin.slice(2));
+      } else {
+        set("topmostSubform[0].Page1[0].f1_11[0]", paddedTin.slice(0, 3));
+        set("topmostSubform[0].Page1[0].f1_12[0]", paddedTin.slice(3, 5));
+        set("topmostSubform[0].Page1[0].f1_13[0]", paddedTin.slice(5));
+      }
+    }
+
+    out.__signature_date = formatDateUs(data.signature_date || new Date());
+    return out;
+  }
+
+  const setIf = (fieldName, value) => {
+    if (!fieldName) return;
+    if (value === undefined || value === null || value === "") return;
+    out[fieldName] = value;
+  };
+  setIf(findTemplateField(templateFields, ["name of entity", "name of individual", "line 1 name"]), fullName);
+  setIf(findTemplateField(templateFields, ["business name", "disregarded entity"]), businessName);
+  setIf(findTemplateField(templateFields, ["address number street", "address line 1", "address"]), safeText(data.address));
+  setIf(findTemplateField(templateFields, ["city state and zip", "city, state, and zip"]), cityStateZip);
+  setIf(findTemplateField(templateFields, ["list account number", "account number"]), accountNumbers);
+  setIf(findTemplateField(templateFields, ["exempt payee code"]), safeText(data.exempt_payee_code));
+  setIf(findTemplateField(templateFields, ["fatca"]), safeText(data.fatca_code));
+  setIf(findTemplateField(templateFields, ["llc enter the tax classification", "llc tax classification"]), llcCode);
+  setIf(findTemplateField(templateFields, ["other (see instructions)", "other classification"]), safeText(data.other_classification));
+
+  const checks = [
+    [isClass("individual", "sole_proprietor", "sole_prop"), ["individual", "sole proprietor"]],
+    [isClass("c_corp", "ccorp", "c_corporation"), ["c corporation", "c corp"]],
+    [isClass("s_corp", "scorp", "s_corporation"), ["s corporation", "s corp"]],
+    [isClass("partnership"), ["partnership"]],
+    [isClass("trust_estate", "trust", "estate"), ["trust/estate", "trust estate"]],
+    [isClass("llc"), ["llc"]],
+    [isClass("other"), ["other (see instructions)", "other"]]
+  ];
+  checks.forEach(([checked, patterns]) => {
+    const fieldName = findTemplateField(templateFields, patterns);
+    if (fieldName) out[fieldName] = checked ? "true" : "false";
+  });
+  const line3bField = findTemplateField(templateFields, ["line 3b", "foreign partners", "foreign owners", "foreign beneficiaries"]);
+  if (line3bField) out[line3bField] = boolLike(data.line3b_foreign_partners || data.foreign_partners || data.line3b) ? "true" : "false";
+
+  if (tinDigits) {
+    const paddedTin = tinDigits.slice(0, 9);
+    if (tinType === "ein") {
+      setIf(findTemplateField(templateFields, ["employer identification number first 2"]), paddedTin.slice(0, 2));
+      setIf(findTemplateField(templateFields, ["employer identification number last 7"]), paddedTin.slice(2));
+    } else {
+      setIf(findTemplateField(templateFields, ["social security number first 3"]), paddedTin.slice(0, 3));
+      setIf(findTemplateField(templateFields, ["middle 2 digits", "social security number middle 2"]), paddedTin.slice(3, 5));
+      setIf(findTemplateField(templateFields, ["last 4 digits", "social security number last 4"]), paddedTin.slice(5));
+    }
+    setIf(findTemplateField(templateFields, ["taxpayer identification number", "tin"]), paddedTin);
+  }
+
+  out.__signature_date = formatDateUs(data.signature_date || new Date());
+  return out;
+}
+
 async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   const payload = fields && typeof fields === "object" ? fields : {};
   const keys = Object.keys(payload);
@@ -5092,6 +5225,7 @@ async function mapPdfFieldsIfNeeded({ docType, fields, templateUrl }) {
   let mapped = payload;
   if (typeKey === "i9") mapped = mapI9Fields(payload, templateFields);
   if (typeKey === "w4") mapped = mapW4Fields(payload, templateFields);
+  if (typeKey === "w9") mapped = mapW9Fields(payload, templateFields);
   const layout = await getPdfTemplateLayout(templateUrl);
   if (typeKey === "i9") {
     const coerced = coerceNameParts(payload);
@@ -5263,10 +5397,14 @@ async function fillPdfTemplate({
   form.flatten();
   const normalizedDocType = normalizeKey(docType);
   const isW4Template = normalizedDocType === "w4" || /fw4\\.pdf/i.test(String(templateUrl || "")) || /w-?4\\.pdf/i.test(String(templateUrl || ""));
+  const isW9Template = normalizedDocType === "w9" || /fw9\\.pdf/i.test(String(templateUrl || "")) || /w-?9\\.pdf/i.test(String(templateUrl || ""));
   const isI9Template = normalizedDocType === "i9" || /i-9\\.pdf/i.test(String(templateUrl || ""));
   let w4Page = null;
   let w4SignatureRect = null;
   let w4DateRect = null;
+  let w9Page = null;
+  let w9SignatureRect = null;
+  let w9DateRect = null;
   if (isW4Template) {
     const pages = pdfDoc.getPages();
     w4Page = pages[0];
@@ -5288,14 +5426,37 @@ async function fillPdfTemplate({
       height: step5Height
     };
   }
+  if (isW9Template) {
+    const pages = pdfDoc.getPages();
+    w9Page = pages[0];
+    const pageH = w9Page?.getHeight?.() || 792;
+    const signTop = 576.0;
+    const signHeight = 24.0;
+    const dateTop = 576.0;
+    const dateHeight = 24.0;
+    w9SignatureRect = {
+      pageIndex: 0,
+      x: 72.0,
+      y: pageH - signTop - signHeight,
+      width: 381.6 - 72.0,
+      height: signHeight
+    };
+    w9DateRect = {
+      pageIndex: 0,
+      x: 381.6,
+      y: pageH - dateTop - dateHeight,
+      width: 576.0 - 381.6,
+      height: dateHeight
+    };
+  }
   let dateDrawn = false;
-  if (signatureDataUrl && (signatureRect || isW4Template) && !signaturePlaced) {
+  if (signatureDataUrl && (signatureRect || isW4Template || isW9Template) && !signaturePlaced) {
     const parsed = parseDataUrl(signatureDataUrl);
     if (parsed && parsed.mime && parsed.mime.startsWith("image/")) {
       const pages = pdfDoc.getPages();
-      let targetRect = isW4Template ? w4SignatureRect : signatureRect;
-      let targetDateRect = isW4Template ? w4DateRect : signatureDateRect;
-      let page = isW4Template ? w4Page : (pages[signatureRect?.pageIndex] || pages[0]);
+      let targetRect = isW4Template ? w4SignatureRect : (isW9Template ? w9SignatureRect : signatureRect);
+      let targetDateRect = isW4Template ? w4DateRect : (isW9Template ? w9DateRect : signatureDateRect);
+      let page = isW4Template ? w4Page : (isW9Template ? w9Page : (pages[signatureRect?.pageIndex] || pages[0]));
       if (page) {
         const isPng = parsed.mime.includes("png");
         let sigBytes = parsed.buffer;
@@ -5371,7 +5532,12 @@ async function fillPdfTemplate({
       }
     }
   }
-  if (isW4Template && w4DateRect && w4Page && !dateDrawn) {
+  if ((isW4Template || isW9Template) && !dateDrawn) {
+    const dateRect = isW4Template ? w4DateRect : w9DateRect;
+    const datePageRef = isW4Template ? w4Page : w9Page;
+    if (!dateRect || !datePageRef) {
+      // no-op
+    } else {
     const dateValue = payload?.__signature_date
       || payload?.[signatureDateFieldName]
       || payload?.signature_date
@@ -5380,14 +5546,15 @@ async function fillPdfTemplate({
     const dateFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontSize = 10;
     const datePad = 2;
-    const dateX = w4DateRect.x + datePad;
-    const dateY = w4DateRect.y + 8;
+    const dateX = dateRect.x + datePad;
+    const dateY = dateRect.y + 8;
     const pagesNow = pdfDoc.getPages();
-    const datePage = pagesNow[w4DateRect.pageIndex || 0] || pagesNow[0];
+    const datePage = pagesNow[dateRect.pageIndex || 0] || pagesNow[0];
     if (datePage) {
       datePage.drawText(dateText, { x: dateX, y: dateY, size: fontSize, font: dateFont, color: rgb(0, 0, 0) });
     }
     dateDrawn = true;
+    }
   }
   if (keepFirstPage) {
     const total = pdfDoc.getPageCount();
@@ -8200,6 +8367,41 @@ function renderOnboardingPageHtml(token) {
             ]
           };
         }
+        if (key === 'w9') {
+          return {
+            title: L('W-9 (Página 1)', 'W-9 (Page 1)'),
+            fields: [
+              formField(L('Nombre legal (línea 1)', 'Legal name (line 1)'), 'full_name'),
+              formField(L('Business name (línea 2, opcional)', 'Business name (line 2, optional)'), 'business_name'),
+              formField(L('Clasificación fiscal (3a)', 'Federal tax classification (3a)'), 'tax_classification', 'select', [
+                { label: L('Individual / sole proprietor', 'Individual / sole proprietor'), value: 'individual' },
+                { label: L('C corporation', 'C corporation'), value: 'c_corp' },
+                { label: L('S corporation', 'S corporation'), value: 's_corp' },
+                { label: L('Partnership', 'Partnership'), value: 'partnership' },
+                { label: L('Trust / estate', 'Trust / estate'), value: 'trust_estate' },
+                { label: 'LLC', value: 'llc' },
+                { label: L('Other', 'Other'), value: 'other' }
+              ]),
+              formField(L('Código LLC (C/S/P)', 'LLC code (C/S/P)'), 'llc_tax_classification', 'text', [], { showTax: 'llc' }),
+              formField(L('Other (si aplica)', 'Other (if applicable)'), 'other_classification', 'text', [], { showTax: 'other' }),
+              formField(L('¿Line 3b aplica?', 'Does line 3b apply?'), 'line3b_foreign_partners', 'select', [
+                { label: L('No', 'No'), value: 'no' },
+                { label: L('Yes', 'Yes'), value: 'yes' }
+              ]),
+              formField(L('Exempt payee code (opcional)', 'Exempt payee code (optional)'), 'exempt_payee_code'),
+              formField(L('FATCA code (opcional)', 'FATCA code (optional)'), 'fatca_code'),
+              formField(L('Dirección', 'Address'), 'address'),
+              formField(L('Ciudad, estado y ZIP', 'City, state, and ZIP code'), 'city_state_zip'),
+              formField(L('Account number(s) (opcional)', 'Account number(s) (optional)'), 'account_numbers'),
+              formField(L('Tipo de TIN', 'TIN type'), 'tin_type', 'select', [
+                { label: 'SSN', value: 'ssn' },
+                { label: 'EIN', value: 'ein' }
+              ]),
+              formField(L('TIN (9 dígitos)', 'TIN (9 digits)'), 'tin_number', 'text'),
+              formField(L('Fecha de firma', 'Signature date'), 'signature_date', 'date')
+            ]
+          };
+        }
         return null;
       }
 
@@ -8312,6 +8514,8 @@ function renderOnboardingPageHtml(token) {
               wrap.className = 'form-field';
               if (field.extra?.showStatus) wrap.dataset.showStatus = field.extra.showStatus;
               if (field.extra?.showAuth) wrap.dataset.showAuth = field.extra.showAuth;
+              if (field.extra?.showTax) wrap.dataset.showTax = field.extra.showTax;
+              if (field.extra?.showTin) wrap.dataset.showTin = field.extra.showTin;
               const label = document.createElement('label');
               label.textContent = field.label;
               if (field.extra?.info) {
@@ -8372,6 +8576,14 @@ function renderOnboardingPageHtml(token) {
                   input.value = input.value.replace(/\D+/g, '').slice(0, 9);
                 });
               }
+              if (lowerKey === 'tin_number') {
+                input.inputMode = 'numeric';
+                input.maxLength = 9;
+                input.placeholder = 'XXXXXXXXX';
+                input.addEventListener('input', () => {
+                  input.value = input.value.replace(/\D+/g, '').slice(0, 9);
+                });
+              }
               if (lowerKey === 'middle_initial') {
                 input.maxLength = 1;
                 input.placeholder = 'M';
@@ -8386,6 +8598,8 @@ function renderOnboardingPageHtml(token) {
               const existingValue = existing && existing.fields ? existing.fields[field.key] : (existing && existing[field.key]);
               if (existingValue) {
                 input.value = existingValue || '';
+              } else if (lowerKey === 'full_name' && profile.name) {
+                input.value = profile.name || '';
               } else if (lowerKey === 'signature_date') {
                 const today = new Date();
                 const yyyy = today.getFullYear();
@@ -8417,9 +8631,13 @@ function renderOnboardingPageHtml(token) {
             formFieldsEl.appendChild(sigWrap);
             const statusInput = formFieldsEl.querySelector('[data-key="status"]');
             const authInput = formFieldsEl.querySelector('[data-key="auth_doc_type"]');
+            const taxInput = formFieldsEl.querySelector('[data-key="tax_classification"]');
+            const tinTypeInput = formFieldsEl.querySelector('[data-key="tin_type"]');
             const applyConditional = () => {
               const statusVal = normalizeValue(statusInput?.value || '');
               const authVal = normalizeValue(authInput?.value || '');
+              const taxVal = normalizeValue(taxInput?.value || '');
+              const tinVal = normalizeValue(tinTypeInput?.value || '');
               formFieldsEl.querySelectorAll('[data-show-status]').forEach((el) => {
                 const needed = normalizeValue(el.dataset.showStatus || '');
                 el.style.display = !needed || needed === statusVal ? '' : 'none';
@@ -8428,9 +8646,19 @@ function renderOnboardingPageHtml(token) {
                 const needed = normalizeValue(el.dataset.showAuth || '');
                 el.style.display = !needed || needed === authVal ? '' : 'none';
               });
+              formFieldsEl.querySelectorAll('[data-show-tax]').forEach((el) => {
+                const needed = normalizeValue(el.dataset.showTax || '');
+                el.style.display = !needed || needed === taxVal ? '' : 'none';
+              });
+              formFieldsEl.querySelectorAll('[data-show-tin]').forEach((el) => {
+                const needed = normalizeValue(el.dataset.showTin || '');
+                el.style.display = !needed || needed === tinVal ? '' : 'none';
+              });
             };
             if (statusInput) statusInput.addEventListener('change', applyConditional);
             if (authInput) authInput.addEventListener('change', applyConditional);
+            if (taxInput) taxInput.addEventListener('change', applyConditional);
+            if (tinTypeInput) tinTypeInput.addEventListener('change', applyConditional);
             applyConditional();
             if (normalizeDocKey(docType) === 'w4') {
               const childrenInput = formFieldsEl.querySelector('[data-key="dependents_children"]');
@@ -8577,6 +8805,22 @@ function renderOnboardingPageHtml(token) {
                 if (!last || isNumeric(last)) data.last_name = pLast || last;
               }
             }
+            if (normalizeDocKey(activeFormDocType) === 'w9') {
+              const tinDigits = String(data.tin_number || '').replace(/\D+/g, '');
+              if (tinDigits.length !== 9) {
+                formStatusEl.textContent = onboardLang === 'en' ? 'TIN must have 9 digits.' : 'El TIN debe tener 9 dígitos.';
+                return;
+              }
+              data.tin_number = tinDigits;
+              data.tin_type = normalizeValue(data.tin_type || '') === 'ein' ? 'ein' : 'ssn';
+              data.line3b_foreign_partners = normalizeValue(data.line3b_foreign_partners || '') === 'yes' ? 'yes' : 'no';
+              if (data.llc_tax_classification) {
+                data.llc_tax_classification = String(data.llc_tax_classification || '').replace(/[^a-zA-Z]/g, '').toUpperCase().slice(0, 1);
+              }
+              if (!String(data.full_name || '').trim() && state.profile?.name) {
+                data.full_name = String(state.profile.name || '').trim();
+              }
+            }
             if (data.ssn) {
               const digits = String(data.ssn || '').replace(/\D+/g, '');
               if (digits.length !== 9) {
@@ -8717,8 +8961,8 @@ function renderOnboardingPageHtml(token) {
           const latest = match.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
           let mode = doc.mode || '';
           const normalizedDocKey = normalizeDocKey(doc.key);
-          if (['i9', 'w4'].includes(normalizedDocKey) && doc.template_url) {
-            // Always use PDF flow for I-9 / W-4 when a template URL exists.
+          if (['i9', 'w4', 'w9'].includes(normalizedDocKey) && doc.template_url) {
+            // Always use PDF flow for I-9 / W-4 / W-9 when a template URL exists.
             mode = 'pdf';
           }
           if (mode === 'policy') {
@@ -9626,7 +9870,7 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     const rawFields = req.body?.fields || req.body?.doc_fields || {};
     const signatureName = String(req.body?.signature_name || req.body?.signatureName || "").trim();
     const signatureDataUrl = String(req.body?.signature_data_url || req.body?.signatureDataUrl || "").trim();
-    const keepFirstPage = ["i9", "w4"].includes(normalizeKey(docType));
+    const keepFirstPage = ["i9", "w4", "w9"].includes(normalizeKey(docType));
     const mappedFields = await mapPdfFieldsIfNeeded({ docType, fields: rawFields, templateUrl });
     const signatureFieldName = mappedFields?.__signature_field || "";
     const signatureDateFieldName = mappedFields?.__signature_date_field || "";
@@ -24329,7 +24573,7 @@ app.get("/admin/ui", (req, res) => {
           if ((doc.mode || '') === mode) opt.selected = true;
           modeSelect.appendChild(opt);
         });
-        if (!doc.mode && ['i9', 'w4'].includes((doc.key || '').toLowerCase())) {
+        if (!doc.mode && ['i9', 'w4', 'w9'].includes((doc.key || '').toLowerCase())) {
           modeSelect.value = 'pdf';
         }
         const templateInput = document.createElement('input');
