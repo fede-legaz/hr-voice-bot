@@ -3804,19 +3804,47 @@ async function sendPushToAll(payload, brand) {
   return sent;
 }
 
+function buildAdminUiUrl(params = {}) {
+  const search = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (!key) return;
+    if (value === undefined || value === null) return;
+    const text = String(value).trim();
+    if (!text) return;
+    search.set(key, text);
+  });
+  const query = search.toString();
+  return query ? `/admin/ui?${query}` : "/admin/ui";
+}
+
 async function notifyPortalApplication({ application, page }) {
   if (!pushEnabled || !application) return 0;
   const brand = application.brand || page?.brand || "";
   const role = application.role || page?.role || "";
   const name = application.name || "Nuevo candidato";
   const slug = application.slug || page?.slug || "";
+  const appId = String(application.id || "").trim();
+  const appCode = normalizeDigits(
+    application.application_code
+    || application.answers?.apply_code
+    || application.answers?.__apply_code
+    || ""
+  );
+  const phone = normalizePhone(application.phone || "");
   const bodyParts = [name];
   if (brand) bodyParts.push(brand);
   if (role) bodyParts.push(role);
   const payload = {
     title: "Nueva postulacion",
     body: bodyParts.join(" · "),
-    url: slug ? `/admin/ui?view=portal&slug=${encodeURIComponent(slug)}` : "/admin/ui?view=portal",
+    url: buildAdminUiUrl({
+      view: "portal",
+      slug: slug || "",
+      focus: "application",
+      app_id: appId,
+      app_code: appCode,
+      phone: phone
+    }),
     icon: "/admin/icon.svg"
   };
   return sendPushToAll(payload, brand);
@@ -3833,25 +3861,41 @@ async function notifyInterviewCompleted({ call, scoring }) {
   if (brand) bodyParts.push(brand);
   if (score !== "" && score !== null && score !== undefined) bodyParts.push(`Score ${score}`);
   if (recText) bodyParts.push(recText);
+  const callId = String(call.callId || call.callSid || call.sid || "").trim();
+  const cvId = String(call.cv_id || call.cvId || "").trim();
+  const phone = normalizePhone(call.phone || call.to || call.from || "");
   const payload = {
     title: "Entrevista completada",
     body: bodyParts.join(" · "),
-    url: "/admin/ui?view=interviews",
+    url: buildAdminUiUrl({
+      view: "interviews",
+      focus: "interview",
+      call_id: callId,
+      cv_id: cvId,
+      phone: phone
+    }),
     icon: "/admin/icon.svg"
   };
   return sendPushToAll(payload, brand);
 }
 
-async function notifyInboundSmsMessage({ phone, body, brand, candidateName }) {
+async function notifyInboundSmsMessage({ phone, body, brand, candidateName, cvId }) {
   if (!pushEnabled) return 0;
   const text = String(body || "").trim();
   if (!text) return 0;
   const preview = text.length > 90 ? `${text.slice(0, 87)}...` : text;
-  const identity = candidateName || phone || "Candidato";
+  const normalizedPhone = normalizePhone(phone || "");
+  const identity = candidateName || normalizedPhone || "Candidato";
+  const cvIdSafe = String(cvId || "").trim();
   const payload = {
     title: "Nuevo SMS",
     body: `${identity}: ${preview}`,
-    url: "/admin/ui?view=candidates",
+    url: buildAdminUiUrl({
+      view: "messages",
+      focus: "chat",
+      phone: normalizedPhone,
+      cv_id: cvIdSafe
+    }),
     icon: "/admin/icon.svg"
   };
   return sendPushToAll(payload, brand || "");
@@ -6002,16 +6046,29 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(title, options));
 });
 self.addEventListener('notificationclick', (event) => {
-  const url = event.notification?.data?.url || '/admin/ui';
+  const rawUrl = event.notification?.data?.url || '/admin/ui';
   event.notification.close();
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
+      const targetUrl = new URL(rawUrl, self.location.origin).href;
+      const targetPath = new URL(targetUrl).pathname;
       for (const client of clientsArr) {
-        if (client.url && client.focus) {
-          if (client.url.includes(url)) return client.focus();
+        if (!client || !client.url || !client.focus) continue;
+        try {
+          const clientPath = new URL(client.url).pathname;
+          const isAdminUi = clientPath === '/admin/ui' || clientPath === '/admin/ui/';
+          const samePath = clientPath === targetPath;
+          if (isAdminUi || samePath) {
+            if (client.navigate) {
+              return client.navigate(targetUrl).then(() => client.focus());
+            }
+            return client.focus();
+          }
+        } catch (err) {
+          if (client.url.includes(rawUrl)) return client.focus();
         }
       }
-      return self.clients.openWindow(url);
+      return self.clients.openWindow(targetUrl);
     })
   );
 });
@@ -6185,7 +6242,7 @@ app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res
       );
       portalApps = portalResp?.rows || [];
       const callsResp = await dbQuery(
-        "SELECT brand, role, outcome, duration_sec, trial_at, trial_follow_up_status, decision, cv_id, phone FROM calls ORDER BY created_at DESC LIMIT 10000"
+        "SELECT brand, role, outcome, duration_sec, trial_at, trial_follow_up_status, decision, cv_id, phone, score FROM calls ORDER BY created_at DESC LIMIT 10000"
       );
       calls = callsResp?.rows || [];
       const cvsResp = await dbQuery(
@@ -16052,6 +16109,7 @@ app.get("/admin/ui", (req, res) => {
     let portalLoaded = false;
     let pendingPortalView = '';
     let pendingView = '';
+    let pendingDeepLink = null;
     let currentUserProfile = null;
     let onboardingConfigState = null;
     let onboardingProfile = null;
@@ -16076,6 +16134,7 @@ app.get("/admin/ui", (req, res) => {
     const SMS_CHAT_FETCH_LIMIT = ${JSON.stringify(SMS_CHAT_FETCH_LIMIT)};
     const CANDIDATE_CHAT_POLL_MS = 10000;
     const CANDIDATE_CHAT_FRESH_MS = 12000;
+    const DEEP_LINK_ROW_FLASH_MS = 4500;
     const MAX_LOGO_SIZE = 600 * 1024;
     const MAX_PDF_PAGES = 8;
     const OCR_TEXT_THRESHOLD = 180;
@@ -18066,6 +18125,163 @@ app.get("/admin/ui", (req, res) => {
       if (digits.length === 10) return '+1' + digits;
       if (digits.length === 11 && digits.startsWith('1')) return '+' + digits;
       return '+' + digits;
+    }
+
+    function normalizeDigitsUi(value) {
+      return String(value || '').replace(/\D+/g, '');
+    }
+
+    function flashDeepLinkRow(row) {
+      if (!row) return;
+      try {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch (err) {}
+      const prevTransition = row.style.transition || '';
+      const prevOutline = row.style.outline || '';
+      const prevBoxShadow = row.style.boxShadow || '';
+      const prevBg = row.style.backgroundColor || '';
+      row.style.transition = 'box-shadow .2s ease, background-color .2s ease, outline .2s ease';
+      row.style.outline = '2px solid rgba(27, 122, 140, 0.85)';
+      row.style.boxShadow = '0 0 0 3px rgba(27, 122, 140, 0.18)';
+      row.style.backgroundColor = 'rgba(27, 122, 140, 0.08)';
+      setTimeout(() => {
+        row.style.transition = prevTransition;
+        row.style.outline = prevOutline;
+        row.style.boxShadow = prevBoxShadow;
+        row.style.backgroundColor = prevBg;
+      }, DEEP_LINK_ROW_FLASH_MS);
+    }
+
+    function clearPendingDeepLinkQueryParams() {
+      if (!window.history || !window.location) return;
+      let params;
+      try {
+        params = new URLSearchParams(window.location.search || '');
+      } catch (err) {
+        return;
+      }
+      const keys = [
+        'focus',
+        'call_id',
+        'callId',
+        'cv_id',
+        'cvId',
+        'phone',
+        'app_id',
+        'application_id',
+        'app_code',
+        'apply_code',
+        'application_code'
+      ];
+      let changed = false;
+      keys.forEach((key) => {
+        if (!params.has(key)) return;
+        params.delete(key);
+        changed = true;
+      });
+      if (!changed) return;
+      const nextQuery = params.toString();
+      const nextUrl = window.location.pathname + (nextQuery ? ('?' + nextQuery) : '') + (window.location.hash || '');
+      history.replaceState(null, '', nextUrl);
+    }
+
+    function consumePendingDeepLink() {
+      pendingDeepLink = null;
+      clearPendingDeepLinkQueryParams();
+    }
+
+    function matchesInterviewDeepLink(call, target) {
+      if (!call || !target) return false;
+      const callId = String(target.callId || '').trim();
+      const cvId = String(target.cvId || '').trim();
+      const phone = normalizePhoneForChat(target.phone || '');
+      const callIds = [];
+      if (call.callId) callIds.push(String(call.callId).trim());
+      if (Array.isArray(call.callIds)) {
+        call.callIds.forEach((id) => {
+          const value = String(id || '').trim();
+          if (value) callIds.push(value);
+        });
+      }
+      if (callId && callIds.includes(callId)) return true;
+      const cvIds = [];
+      if (call.cv_id) cvIds.push(String(call.cv_id).trim());
+      if (call.cvId) cvIds.push(String(call.cvId).trim());
+      if (Array.isArray(call.cvIds)) {
+        call.cvIds.forEach((id) => {
+          const value = String(id || '').trim();
+          if (value) cvIds.push(value);
+        });
+      }
+      if (cvId && cvIds.includes(cvId)) return true;
+      if (phone && normalizePhoneForChat(call.phone || '') === phone) return true;
+      return false;
+    }
+
+    function matchesPortalAppDeepLink(app, target) {
+      if (!app || !target) return false;
+      const appId = String(target.appId || '').trim();
+      const appCode = normalizeDigitsUi(target.appCode || '');
+      const phone = normalizePhoneForChat(target.phone || '');
+      const rowAppId = String(app.id || '').trim();
+      const rowCode = normalizeDigitsUi(app.application_code || app.answers?.apply_code || app.answers?.__apply_code || '');
+      const rowPhone = normalizePhoneForChat(app.phone || '');
+      if (appId && rowAppId && appId === rowAppId) return true;
+      if (appCode && rowCode && appCode === rowCode) return true;
+      if (phone && rowPhone && phone === rowPhone) return true;
+      return false;
+    }
+
+    function applyPendingDeepLinkFromUrlParams(urlParams, viewParam) {
+      if (!urlParams) return;
+      const focus = String(urlParams.get('focus') || '').trim().toLowerCase();
+      const callId = String(urlParams.get('call_id') || urlParams.get('callId') || '').trim();
+      const cvId = String(urlParams.get('cv_id') || urlParams.get('cvId') || '').trim();
+      const phone = normalizePhoneForChat(urlParams.get('phone') || '');
+      const appId = String(urlParams.get('app_id') || urlParams.get('application_id') || '').trim();
+      const appCode = normalizeDigitsUi(urlParams.get('app_code') || urlParams.get('apply_code') || urlParams.get('application_code') || '');
+      if (focus === 'chat' || (viewParam === 'messages' && (phone || cvId))) {
+        pendingDeepLink = { type: 'chat', phone, cvId };
+        return;
+      }
+      if (focus === 'interview' || (viewParam === 'interviews' && (callId || cvId || phone))) {
+        pendingDeepLink = { type: 'interview', callId, cvId, phone };
+        return;
+      }
+      if (focus === 'application' || (viewParam === 'portal' && (appId || appCode || phone))) {
+        pendingDeepLink = { type: 'application', appId, appCode, phone };
+      }
+    }
+
+    function tryApplyPendingMessageDeepLink() {
+      const target = pendingDeepLink;
+      if (!target || target.type !== 'chat') return false;
+      if (activeView !== 'messages') return false;
+      if (!canUseCandidateChat()) return false;
+      const match = (messagesList || []).find((item) => {
+        if (!item) return false;
+        if (target.cvId && String(item.cv_id || '').trim() === String(target.cvId || '').trim()) return true;
+        if (target.phone && normalizePhoneForChat(item.phone || '') === normalizePhoneForChat(target.phone || '')) return true;
+        return false;
+      }) || null;
+      const phone = normalizePhoneForChat(target.phone || match?.phone || '');
+      if (!phone) return false;
+      openCandidateChat({
+        id: match?.cv_id || target.cvId || '',
+        cv_id: match?.cv_id || target.cvId || '',
+        phone: phone,
+        applicant: match?.candidate_name || '',
+        brand: match?.brand || '',
+        role: match?.role || ''
+      }, {
+        trigger: 'notification',
+        minimized: false,
+        focusInput: true,
+        noisy: false,
+        silent: false
+      });
+      consumePendingDeepLink();
+      return true;
     }
 
     function canUseCandidateChat() {
@@ -20404,6 +20620,8 @@ app.get("/admin/ui", (req, res) => {
     function portalRenderApplications(apps) {
       if (!portalAppBodyEl) return;
       const list = Array.isArray(apps) ? apps : [];
+      const target = pendingDeepLink && pendingDeepLink.type === 'application' ? pendingDeepLink : null;
+      let targetRow = null;
       portalLastApps = list.slice();
       portalAppBodyEl.innerHTML = '';
       if (portalAppCountEl) {
@@ -20411,6 +20629,9 @@ app.get("/admin/ui", (req, res) => {
       }
       list.forEach((app) => {
         const row = document.createElement('tr');
+        if (target && matchesPortalAppDeepLink(app, target)) {
+          targetRow = row;
+        }
         const page = portalFindPageBySlug(app.slug);
         const pageLabel = (page && page.brand) || app.brand || app.slug || '';
         portalAddTextCell(row, formatDate(app.created_at), 'cell-compact');
@@ -20427,6 +20648,10 @@ app.get("/admin/ui", (req, res) => {
         portalAddTextCell(row, answers || '—', 'portal-answer');
         portalAppBodyEl.appendChild(row);
       });
+      if (target && targetRow) {
+        flashDeepLinkRow(targetRow);
+        consumePendingDeepLink();
+      }
     }
 
     function portalCsvEscape(value) {
@@ -20844,6 +21069,7 @@ app.get("/admin/ui", (req, res) => {
       if (activeView === 'messages') {
         scheduleMessagesLoad();
         startMessagesPolling();
+        tryApplyPendingMessageDeepLink();
       } else {
         stopMessagesPolling();
       }
@@ -23584,6 +23810,9 @@ app.get("/admin/ui", (req, res) => {
 
     function renderResults(calls) {
       const raw = Array.isArray(calls) ? calls : [];
+      const pendingInterviewTarget = pendingDeepLink && pendingDeepLink.type === 'interview' ? pendingDeepLink : null;
+      let pendingInterviewRow = null;
+      let pendingInterviewCall = null;
       lastResultsRaw = raw;
       const grouped = groupCalls(raw).filter((call) => String(call?.outcome || "").toUpperCase() !== "NO_SPEECH");
       lastResults = grouped;
@@ -23603,6 +23832,10 @@ app.get("/admin/ui", (req, res) => {
       resultsBodyEl.innerHTML = '';
       filtered.forEach((call) => {
         const tr = document.createElement('tr');
+        if (pendingInterviewTarget && matchesInterviewDeepLink(call, pendingInterviewTarget)) {
+          pendingInterviewRow = tr;
+          pendingInterviewCall = call;
+        }
         const created = call.created_at ? new Date(call.created_at).getTime() : 0;
         if (created && created > lastSeen && isPortalSource(call.source)) {
           tr.classList.add('is-new');
@@ -23852,6 +24085,11 @@ app.get("/admin/ui", (req, res) => {
       } else {
         setResultsCount(shown + ' de ' + total + ' llamadas');
       }
+      if (pendingInterviewTarget && pendingInterviewRow && pendingInterviewCall) {
+        flashDeepLinkRow(pendingInterviewRow);
+        toggleInterviewDetailsRow(pendingInterviewRow, pendingInterviewCall);
+        consumePendingDeepLink();
+      }
       updateInterviewsBadge(raw);
       refreshTrialViews();
       if (activeView === 'interviews') {
@@ -23929,6 +24167,8 @@ app.get("/admin/ui", (req, res) => {
     function renderMessagesConversations(items) {
       if (!messagesBodyEl) return;
       const list = Array.isArray(items) ? items : [];
+      const pendingChatTarget = pendingDeepLink && pendingDeepLink.type === 'chat' ? pendingDeepLink : null;
+      let pendingChatRow = null;
       messagesList = list.slice();
       messagesBodyEl.innerHTML = '';
       if (!list.length) {
@@ -23943,6 +24183,11 @@ app.get("/admin/ui", (req, res) => {
       }
       list.forEach((item) => {
         const tr = document.createElement('tr');
+        if (pendingChatTarget) {
+          const byCvId = pendingChatTarget.cvId && String(item.cv_id || '').trim() === String(pendingChatTarget.cvId || '').trim();
+          const byPhone = pendingChatTarget.phone && normalizePhoneForChat(item.phone || '') === normalizePhoneForChat(pendingChatTarget.phone || '');
+          if (byCvId || byPhone) pendingChatRow = tr;
+        }
         const addCell = (value, label, className, title) => {
           const td = document.createElement('td');
           td.dataset.label = label || '';
@@ -24006,6 +24251,10 @@ app.get("/admin/ui", (req, res) => {
         messagesBodyEl.appendChild(tr);
       });
       setMessagesCount(String(list.length) + ' conversaciones');
+      if (pendingChatTarget && pendingChatRow) {
+        flashDeepLinkRow(pendingChatRow);
+      }
+      tryApplyPendingMessageDeepLink();
     }
 
     async function loadMessagesConversations(silent = false) {
@@ -26096,6 +26345,7 @@ app.get("/admin/ui", (req, res) => {
       } else if (viewParam === 'general') {
         pendingView = '';
       }
+      applyPendingDeepLinkFromUrlParams(urlParams, viewParam || '');
       const slugParam = urlParams.get('slug');
       if (slugParam) portalPendingSlug = toSlug(slugParam);
     }
@@ -26680,7 +26930,8 @@ async function handleSmsInbound(req, res) {
     phone: from,
     body: rawBody,
     brand: contact.brand || "",
-    candidateName: contact.candidate_name || ""
+    candidateName: contact.candidate_name || "",
+    cvId: contact.cv_id || ""
   }).catch((err) => console.error("[sms-inbound] push failed", err?.message || err));
   return res.type("text/xml").send(smsInboundTwiml(""));
 }
