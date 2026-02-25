@@ -175,15 +175,34 @@ const ONBOARDING_POLICY_TEMPLATES = {
   mexi: "Politica_Aviso_Renuncia_MEXI_CAFE_-_Miami_Beach.pdf",
   mexitrailer: "Politica_Aviso_Renuncia_MEXI_CAFE_-_Miami_Beach.pdf"
 };
+const ONBOARDING_W9_TEMPLATE_FILE = "fw9.pdf";
 const ONBOARDING_POLICY_FILES = new Set(Object.values(ONBOARDING_POLICY_TEMPLATES).filter(Boolean));
+const ONBOARDING_ASSET_FILES = new Set([...ONBOARDING_POLICY_FILES, ONBOARDING_W9_TEMPLATE_FILE]);
+const ONBOARDING_TYPE_W2 = "w2";
+const ONBOARDING_TYPE_1099 = "1099";
+
+function normalizeOnboardingType(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  if (raw === "1099" || raw === "w9" || raw === "w-9") return ONBOARDING_TYPE_1099;
+  return ONBOARDING_TYPE_W2;
+}
+
+function resolveOnboardingAssetUrl(file) {
+  const safeFile = sanitizeFilename(String(file || "").trim());
+  if (!safeFile) return "";
+  const base = String(PUBLIC_BASE_URL || "").trim();
+  const pathPart = "/assets/onboarding/" + encodeURIComponent(safeFile);
+  return base ? base + pathPart : pathPart;
+}
 
 function resolveOnboardingPolicyTemplateUrl(brand) {
   const key = brandKey(brand || "");
   const file = ONBOARDING_POLICY_TEMPLATES[key] || "";
-  if (!file) return "";
-  const base = String(PUBLIC_BASE_URL || "").trim();
-  const pathPart = "/assets/onboarding/" + encodeURIComponent(file);
-  return base ? base + pathPart : pathPart;
+  return file ? resolveOnboardingAssetUrl(file) : "";
+}
+
+function resolveOnboardingW9TemplateUrl() {
+  return resolveOnboardingAssetUrl(ONBOARDING_W9_TEMPLATE_FILE);
 }
 
 function applyPolicyTemplateToDocTypes(docTypes, brand) {
@@ -198,6 +217,24 @@ function applyPolicyTemplateToDocTypes(docTypes, brand) {
     }
     return doc;
   });
+}
+
+function getOnboarding1099DocTypes(brand) {
+  const w9TemplateUrl = resolveOnboardingW9TemplateUrl();
+  const list = [
+    { key: "id", label: "ID / Licencia", mode: "upload", template_url: "" },
+    { key: "w9", label: "W-9", mode: "upload", template_url: w9TemplateUrl || "" },
+    { key: "policy_renuncia", label: "Política de renuncia (firmada)", mode: "policy", template_url: "" }
+  ];
+  return applyPolicyTemplateToDocTypes(list, brand);
+}
+
+function resolveOnboardingConfigDocTypesByType(onboardingType, brand, configDocTypes) {
+  const type = normalizeOnboardingType(onboardingType);
+  if (type === ONBOARDING_TYPE_1099) {
+    return getOnboarding1099DocTypes(brand);
+  }
+  return Array.isArray(configDocTypes) ? configDocTypes : [];
 }
 
 function normalizeDocTypeKey(value) {
@@ -3943,6 +3980,7 @@ async function initDb() {
         policy_text TEXT,
         policy_text_en TEXT,
         doc_types JSONB,
+        onboarding_type TEXT,
         pay_rate TEXT,
         pay_unit TEXT,
         start_date DATE,
@@ -3968,6 +4006,7 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS pay_unit TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS start_date DATE;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS admin_notes TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS onboarding_type TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_phone TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_sent_at TIMESTAMPTZ;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_token ON onboarding_profiles (public_token);`);
@@ -5507,7 +5546,7 @@ app.use(express.urlencoded({ extended: false }));
 
 app.get("/assets/onboarding/:file", (req, res) => {
   const rawFile = String(req.params?.file || "");
-  if (!rawFile || !ONBOARDING_POLICY_FILES.has(rawFile)) {
+  if (!rawFile || !ONBOARDING_ASSET_FILES.has(rawFile)) {
     return res.status(404).send("Not found");
   }
   const safeFile = sanitizeFilename(rawFile);
@@ -8973,6 +9012,7 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
     const body = req.body || {};
     const cvId = (body.cv_id || body.cvId || "").toString().trim();
     const callSid = (body.call_sid || body.callId || body.callSid || "").toString().trim();
+    const requestedOnboardingType = normalizeOnboardingType(body.onboarding_type || body.onboardingType || "");
     if (!cvId && !callSid) return res.status(400).json({ error: "missing_target" });
     let profile = await findOnboardingProfile({ cvId, callSid });
     const config = getOnboardingConfig();
@@ -9017,6 +9057,7 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
       const role = (body.role || candidate.role || DEFAULT_ROLE).toString().trim();
       const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
       const roleNotesEn = getRoleConfig(brand, role)?.notes_en || config.role_notes_en || "";
+      const onboardingDocTypes = resolveOnboardingConfigDocTypesByType(requestedOnboardingType, brand, config.doc_types);
       profile = await createOnboardingProfile({
         cv_id: cvId || candidate.cv_id || "",
         call_sid: callSid || candidate.call_sid || "",
@@ -9035,7 +9076,8 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
         policy_title_en: config.policy_title_en,
         policy_text: config.policy_text,
         policy_text_en: config.policy_text_en,
-        doc_types: config.doc_types,
+        doc_types: onboardingDocTypes,
+        onboarding_type: requestedOnboardingType,
         status: "pending"
       });
     } else {
@@ -9174,12 +9216,22 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
   try {
     const id = (req.params?.id || "").trim();
     if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const existing = await fetchOnboardingProfile(id);
+    if (!existing) return res.status(404).json({ error: "not_found" });
+    const startDateValue = req.body?.start_date !== undefined ? req.body.start_date : req.body?.startDate;
     const patch = {
       pay_rate: typeof req.body?.pay_rate === "string" ? req.body.pay_rate : req.body?.payRate,
       pay_unit: typeof req.body?.pay_unit === "string" ? req.body.pay_unit : req.body?.payUnit,
-      start_date: req.body?.start_date || req.body?.startDate || "",
+      start_date: startDateValue !== undefined ? startDateValue : undefined,
       admin_notes: typeof req.body?.admin_notes === "string" ? req.body.admin_notes : req.body?.adminNotes
     };
+    const onboardingTypeInput = req.body?.onboarding_type ?? req.body?.onboardingType;
+    if (onboardingTypeInput !== undefined) {
+      const config = getOnboardingConfig();
+      const onboardingType = normalizeOnboardingType(onboardingTypeInput);
+      patch.onboarding_type = onboardingType;
+      patch.doc_types = resolveOnboardingConfigDocTypesByType(onboardingType, existing.brand || "", config.doc_types);
+    }
     const updated = await updateOnboardingProfile(id, patch);
     return res.json({ ok: true, profile: updated });
   } catch (err) {
@@ -9195,8 +9247,12 @@ app.post("/admin/onboarding/:id/docs-sync", requirePermission("onboarding_manage
     if (dbPool) {
       await loadOnboardingConfigFromDb();
     }
+    const current = await fetchOnboardingProfile(id);
+    if (!current) return res.status(404).json({ error: "not_found" });
+    const onboardingType = normalizeOnboardingType(current.onboarding_type || "");
     const config = getOnboardingConfig();
-    const updated = await updateOnboardingProfile(id, { doc_types: config?.doc_types || [] });
+    const nextDocTypes = resolveOnboardingConfigDocTypesByType(onboardingType, current.brand || "", config?.doc_types || []);
+    const updated = await updateOnboardingProfile(id, { onboarding_type: onboardingType, doc_types: nextDocTypes });
     if (!updated) return res.status(404).json({ error: "not_found" });
     const docs = await fetchOnboardingDocs(id);
     return res.json({ ok: true, profile: updated, docs });
@@ -15150,6 +15206,13 @@ app.get("/admin/ui", (req, res) => {
           <input type="text" id="onboarding-phone-input" placeholder="+1..." />
           <label class="small"><input type="checkbox" id="onboarding-phone-save" /> Guardar este número</label>
         </div>
+        <div>
+          <div class="small">Tipo</div>
+          <select id="onboarding-type">
+            <option value="w2">W2</option>
+            <option value="1099">1099</option>
+          </select>
+        </div>
       </div>
       <div class="row">
         <label>Portal para el empleado</label>
@@ -15569,6 +15632,7 @@ app.get("/admin/ui", (req, res) => {
     const onboardingSummaryEl = document.getElementById('onboarding-summary');
     const onboardingNameEl = document.getElementById('onboarding-name');
     const onboardingRoleEl = document.getElementById('onboarding-role');
+    const onboardingTypeEl = document.getElementById('onboarding-type');
     const onboardingPhoneInputEl = document.getElementById('onboarding-phone-input');
     const onboardingPhoneSaveEl = document.getElementById('onboarding-phone-save');
     const onboardingLinkEl = document.getElementById('onboarding-link');
@@ -24229,6 +24293,10 @@ app.get("/admin/ui", (req, res) => {
       onboardingStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
     }
 
+    function normalizeOnboardingTypeUi(value) {
+      return String(value || '').trim() === '1099' ? '1099' : 'w2';
+    }
+
     function renderOnboardingConfigDocList(list) {
       if (!onboardingDocsListEl) return;
       onboardingDocsListEl.innerHTML = '';
@@ -24464,6 +24532,7 @@ app.get("/admin/ui", (req, res) => {
           onboardingDocs = data.docs || [];
           if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
           if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
+          if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || 'w2');
           if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
           if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
           if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
@@ -24486,7 +24555,8 @@ app.get("/admin/ui", (req, res) => {
           brand: target?.brand || '',
           role: target?.role || '',
           name: target?.name || target?.applicant || '',
-          phone: target?.phone || ''
+          phone: target?.phone || '',
+          onboarding_type: normalizeOnboardingTypeUi(onboardingTypeEl?.value || 'w2')
         };
         const resp = await fetch('/admin/onboarding/create', {
           method: 'POST',
@@ -24499,6 +24569,7 @@ app.get("/admin/ui", (req, res) => {
         onboardingDocs = data.docs || [];
         if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
         if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
+        if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || payload.onboarding_type || 'w2');
         if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
         if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
         if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
@@ -24573,6 +24644,32 @@ app.get("/admin/ui", (req, res) => {
         setOnboardingDocStatus('Datos guardados');
         setTimeout(() => setOnboardingDocStatus(''), 2000);
       } catch (err) {
+        setOnboardingDocStatus('Error: ' + err.message, true);
+      }
+    }
+
+    async function updateOnboardingType(nextValue) {
+      if (!onboardingProfile || !onboardingProfile.id) return;
+      if (!canPermission('onboarding_manage')) return;
+      const nextType = normalizeOnboardingTypeUi(nextValue);
+      const currentType = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || 'w2');
+      if (nextType === currentType) return;
+      setOnboardingDocStatus('Actualizando tipo de onboarding...');
+      try {
+        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({ onboarding_type: nextType })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_type_failed');
+        onboardingProfile = data.profile || onboardingProfile;
+        if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || nextType);
+        renderOnboardingDocList();
+        setOnboardingDocStatus('Tipo actualizado');
+        setTimeout(() => setOnboardingDocStatus(''), 2000);
+      } catch (err) {
+        if (onboardingTypeEl) onboardingTypeEl.value = currentType;
         setOnboardingDocStatus('Error: ' + err.message, true);
       }
     }
@@ -25212,6 +25309,11 @@ app.get("/admin/ui", (req, res) => {
     if (onboardingPhoneInputEl) {
       onboardingPhoneInputEl.addEventListener('input', () => {
         if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl.value || '').trim());
+      });
+    }
+    if (onboardingTypeEl) {
+      onboardingTypeEl.addEventListener('change', () => {
+        updateOnboardingType(onboardingTypeEl.value).catch(() => {});
       });
     }
     if (onboardingSmsEl) {
@@ -28103,7 +28205,7 @@ async function fetchOnboardingProfile(profileId) {
   if (!dbPool || !profileId) return null;
   const result = await dbQuery(
     `SELECT id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
-            policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes,
+            policy_title, policy_title_en, policy_text, policy_text_en, doc_types, onboarding_type, pay_rate, pay_unit, start_date, admin_notes,
             status, last_sms_phone, last_sms_sent_at,
             policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
      FROM onboarding_profiles WHERE id = $1 LIMIT 1`,
@@ -28112,8 +28214,10 @@ async function fetchOnboardingProfile(profileId) {
   const row = result?.rows?.[0];
   if (!row) return null;
   const docTypesRaw = Array.isArray(row.doc_types) ? row.doc_types : (row.doc_types || []);
+  const onboardingType = normalizeOnboardingType(row.onboarding_type || "");
   const configDocTypes = getOnboardingConfig().doc_types;
-  const mergedDocTypes = mergeDocTypesWithConfig(docTypesRaw, configDocTypes);
+  const baseConfigDocTypes = resolveOnboardingConfigDocTypesByType(onboardingType, row.brand || "", configDocTypes);
+  const mergedDocTypes = mergeDocTypesWithConfig(docTypesRaw, baseConfigDocTypes);
   const docTypes = applyPolicyTemplateToDocTypes(mergedDocTypes, row.brand || "");
   return {
     id: row.id,
@@ -28137,6 +28241,7 @@ async function fetchOnboardingProfile(profileId) {
     policy_text: row.policy_text || "",
     policy_text_en: row.policy_text_en || "",
     doc_types: docTypes,
+    onboarding_type: onboardingType,
     pay_rate: row.pay_rate || "",
     pay_unit: row.pay_unit || "",
     start_date: row.start_date ? new Date(row.start_date).toISOString() : "",
@@ -28189,8 +28294,7 @@ async function createOnboardingProfile(payload = {}) {
   const publicToken = payload.public_token || payload.publicToken || randomToken();
   const nowIso = new Date().toISOString();
   const rawDocTypes = Array.isArray(payload.doc_types) ? payload.doc_types : [];
-  const configDocTypes = getOnboardingConfig().doc_types;
-  const baseDocTypes = rawDocTypes.length ? rawDocTypes : configDocTypes;
+  const onboardingType = normalizeOnboardingType(payload.onboarding_type || payload.onboardingType || "");
   const entry = {
     id,
     public_token: publicToken,
@@ -28213,6 +28317,7 @@ async function createOnboardingProfile(payload = {}) {
     policy_text: payload.policy_text || "",
     policy_text_en: payload.policy_text_en || payload.policyTextEn || "",
     doc_types: rawDocTypes,
+    onboarding_type: onboardingType,
     pay_rate: payload.pay_rate || payload.payRate || "",
     pay_unit: payload.pay_unit || payload.payUnit || "",
     start_date: payload.start_date || payload.startDate || "",
@@ -28223,17 +28328,20 @@ async function createOnboardingProfile(payload = {}) {
     created_at: nowIso,
     updated_at: nowIso
   };
+  const configDocTypes = getOnboardingConfig().doc_types;
+  const baseConfigDocTypes = resolveOnboardingConfigDocTypesByType(entry.onboarding_type, entry.brand, configDocTypes);
+  const baseDocTypes = rawDocTypes.length ? rawDocTypes : baseConfigDocTypes;
   entry.doc_types = applyPolicyTemplateToDocTypes(
-    mergeDocTypesWithConfig(baseDocTypes, configDocTypes),
+    mergeDocTypesWithConfig(baseDocTypes, baseConfigDocTypes),
     entry.brand
   );
   await dbQuery(
     `INSERT INTO onboarding_profiles (
         id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
-        policy_title, policy_title_en, policy_text, policy_text_en, doc_types, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
+        policy_title, policy_title_en, policy_text, policy_text_en, doc_types, onboarding_type, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
      ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-        $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30
+        $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
      )`,
     [
       entry.id,
@@ -28257,6 +28365,7 @@ async function createOnboardingProfile(payload = {}) {
       entry.policy_text,
       entry.policy_text_en,
       JSON.stringify(entry.doc_types || []),
+      entry.onboarding_type,
       entry.pay_rate,
       entry.pay_unit,
       entry.start_date || null,
@@ -28303,6 +28412,7 @@ async function updateOnboardingProfile(profileId, patch = {}) {
     policy_text: "policy_text",
     policy_text_en: "policy_text_en",
     doc_types: "doc_types",
+    onboarding_type: "onboarding_type",
     pay_rate: "pay_rate",
     pay_unit: "pay_unit",
     start_date: "start_date",
