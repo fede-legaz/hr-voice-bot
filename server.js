@@ -10371,6 +10371,9 @@ app.get("/admin/ui", (req, res) => {
   <title>HRBOT Console</title>
   <link rel="manifest" href="/admin/manifest.json" />
   <meta name="theme-color" content="#1b7a8c" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="icon" href="/admin/icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="/admin/icon.svg" />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=DM+Sans:wght@400;500;700&display=swap" />
@@ -10388,6 +10391,11 @@ app.get("/admin/ui", (req, res) => {
       --glow: 0 0 0 2px rgba(27, 122, 140, 0.16);
     }
     * { box-sizing: border-box; }
+    html {
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
     body {
       font-family: "DM Sans", "Helvetica Neue", sans-serif;
       margin: 0;
@@ -10395,6 +10403,10 @@ app.get("/admin/ui", (req, res) => {
       background: radial-gradient(circle at top left, #fff6e9 0%, #f4efe6 45%, #efe6d8 100%);
       color: var(--ink);
       min-height: 100vh;
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+      overscroll-behavior-x: none;
     }
     body::before {
       content: "";
@@ -10439,7 +10451,14 @@ app.get("/admin/ui", (req, res) => {
     }
     button.secondary:hover { box-shadow: var(--glow); }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
-    .app { display: flex; min-height: 100vh; }
+    .app {
+      display: flex;
+      min-height: 100vh;
+      min-height: 100dvh;
+      width: 100%;
+      max-width: 100%;
+      overflow-x: hidden;
+    }
     .sidebar {
       width: 280px;
       flex: 0 0 280px;
@@ -10544,8 +10563,12 @@ app.get("/admin/ui", (req, res) => {
     .sidebar.collapsed .brand-thumb { width: 40px; height: 40px; border-radius: 12px; }
     .content {
       flex: 1;
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
       padding: 28px 32px 64px;
     }
+    .view { width: 100%; min-width: 0; }
     .content-header {
       display: flex;
       justify-content: space-between;
@@ -11660,6 +11683,10 @@ app.get("/admin/ui", (req, res) => {
       overflow: auto;
       max-height: 540px;
       background: #fff;
+    }
+    .portal-table-wrapper {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
     }
     .portal-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
     .portal-sidebar { display: flex; flex-direction: column; gap: 12px; }
@@ -13230,9 +13257,23 @@ app.get("/admin/ui", (req, res) => {
         transform: translateX(-104%);
       }
       .sidebar:not(.collapsed) { transform: translateX(0); }
-      .content { padding: 18px 16px 40px; }
+      .content {
+        width: 100%;
+        max-width: 100%;
+        padding: calc(14px + env(safe-area-inset-top, 0px)) 14px calc(30px + env(safe-area-inset-bottom, 0px));
+      }
       .mobile-bar { display: flex; }
       .portal-layout { grid-template-columns: 1fr; }
+      .portal-source-fields { grid-template-columns: 1fr; }
+      .portal-url-row { flex-wrap: wrap; }
+      .portal-url-row input {
+        min-width: 0;
+        width: 100%;
+      }
+      .portal-url-row button {
+        flex: 1 1 calc(50% - 4px);
+      }
+      .portal-preview-hero { grid-template-columns: 1fr; }
       .user-form-grid { grid-template-columns: 1fr; }
       .user-hero { flex-direction: column; align-items: flex-start; }
       .user-roles { justify-content: flex-start; }
@@ -13261,10 +13302,23 @@ app.get("/admin/ui", (req, res) => {
     }
     @media (max-width: 760px) {
       .table-wrapper { overflow: visible; }
+      .portal-table-wrapper { overflow: visible; }
       .cv-table, .results-table, .messages-table { border-collapse: separate; }
+      .portal-table { border-collapse: separate; }
       .cv-table thead, .results-table thead, .messages-table thead { display: none; }
+      .portal-table thead { display: none; }
       .cv-table tbody, .results-table tbody, .messages-table tbody { display: block; }
+      .portal-table tbody { display: block; }
       .cv-table tbody tr, .results-table tbody tr, .messages-table tbody tr {
+        display: block;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 4px 2px;
+        margin-bottom: 12px;
+        box-shadow: var(--shadow);
+      }
+      .portal-table tbody tr {
         display: block;
         background: var(--panel);
         border: 1px solid var(--border);
@@ -13286,8 +13340,27 @@ app.get("/admin/ui", (req, res) => {
         background: transparent !important;
         align-items: center;
       }
+      .portal-table tbody tr td {
+        display: grid;
+        grid-template-columns: 112px minmax(0, 1fr);
+        gap: 8px;
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(228, 218, 200, 0.65);
+        background: transparent !important;
+        align-items: center;
+        word-break: break-word;
+      }
       .cv-table tbody tr td:last-child, .results-table tbody tr td:last-child, .messages-table tbody tr td:last-child { border-bottom: none; }
+      .portal-table tbody tr td:last-child { border-bottom: none; }
       .cv-table tbody tr td::before, .results-table tbody tr td::before, .messages-table tbody tr td::before {
+        content: attr(data-label);
+        font-size: 10.5px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        font-weight: 700;
+      }
+      .portal-table tbody tr td::before {
         content: attr(data-label);
         font-size: 10.5px;
         text-transform: uppercase;
@@ -13298,9 +13371,26 @@ app.get("/admin/ui", (req, res) => {
       .cv-table tbody tr td[data-label=""]::before,
       .results-table tbody tr td[data-label=""]::before,
       .messages-table tbody tr td[data-label=""]::before { content: ""; }
+      .portal-table tbody tr td[data-label=""]::before { content: ""; }
       .cv-table tbody tr:nth-child(even) td,
       .results-table tbody tr:nth-child(even) td,
       .messages-table tbody tr:nth-child(even) td { background: transparent !important; }
+      .portal-table tbody tr:nth-child(even) td { background: transparent !important; }
+      .portal-table tbody tr td[data-label="Nombre"] {
+        order: -12;
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+        padding-top: 8px;
+        padding-bottom: 10px;
+      }
+      .portal-table tbody tr td[data-label="Nombre"]::before { content: ""; }
+      .portal-table tbody tr td[data-label="Respuestas"] {
+        grid-template-columns: 1fr;
+        align-items: flex-start;
+      }
+      .portal-table tbody tr td a {
+        word-break: break-word;
+      }
       .candidate-wrap { gap: 8px; }
       .candidate-name {
         font-size: 15px;
@@ -13519,6 +13609,7 @@ app.get("/admin/ui", (req, res) => {
       .audio-player { gap: 6px 8px; }
       .audio-time { font-size: 11px; }
       .detail-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+      .portal-url-row button { flex: 1 1 100%; }
     }
     @media (max-width: 520px) {
       .brand-mark { font-size: 16px; }
@@ -15263,7 +15354,7 @@ app.get("/admin/ui", (req, res) => {
               </div>
             </div>
           </div>
-          <div class="table-wrapper" style="margin-top:10px;">
+          <div class="table-wrapper portal-table-wrapper" style="margin-top:10px;">
             <table class="portal-table">
               <thead>
                 <tr>
@@ -19927,16 +20018,18 @@ app.get("/admin/ui", (req, res) => {
       return (match && match.label) ? match.label : key;
     }
 
-    function portalAddTextCell(row, text, className) {
+    function portalAddTextCell(row, text, className, dataLabel) {
       const td = document.createElement('td');
       if (className) td.className = className;
+      if (dataLabel) td.dataset.label = dataLabel;
       td.textContent = text || '—';
       row.appendChild(td);
       return td;
     }
 
-    function portalAddLinkCell(row, url, label) {
+    function portalAddLinkCell(row, url, label, dataLabel) {
       const td = document.createElement('td');
+      if (dataLabel) td.dataset.label = dataLabel;
       if (url) {
         const link = document.createElement('a');
         link.href = url;
@@ -20634,18 +20727,18 @@ app.get("/admin/ui", (req, res) => {
         }
         const page = portalFindPageBySlug(app.slug);
         const pageLabel = (page && page.brand) || app.brand || app.slug || '';
-        portalAddTextCell(row, formatDate(app.created_at), 'cell-compact');
-        portalAddTextCell(row, pageLabel);
-        portalAddTextCell(row, portalFormatLocationLabels(app));
-        portalAddTextCell(row, app.name || '');
-        portalAddTextCell(row, app.email || '');
-        portalAddTextCell(row, app.phone || '');
-        portalAddTextCell(row, portalFormatRoleLabels(app));
-        portalAddTextCell(row, portalFormatSourceLabel(app));
-        portalAddLinkCell(row, app.resume_url || '', 'CV');
-        portalAddLinkCell(row, app.photo_url || '', 'Foto');
+        portalAddTextCell(row, formatDate(app.created_at), 'cell-compact', 'Fecha');
+        portalAddTextCell(row, pageLabel, '', 'Página');
+        portalAddTextCell(row, portalFormatLocationLabels(app), '', 'Locaciones');
+        portalAddTextCell(row, app.name || '', '', 'Nombre');
+        portalAddTextCell(row, app.email || '', '', 'Email');
+        portalAddTextCell(row, app.phone || '', '', 'Teléfono');
+        portalAddTextCell(row, portalFormatRoleLabels(app), '', 'Roles');
+        portalAddTextCell(row, portalFormatSourceLabel(app), '', 'Fuente');
+        portalAddLinkCell(row, app.resume_url || '', 'CV', 'CV');
+        portalAddLinkCell(row, app.photo_url || '', 'Foto', 'Foto');
         const answers = portalBuildAnswerText(app);
-        portalAddTextCell(row, answers || '—', 'portal-answer');
+        portalAddTextCell(row, answers || '—', 'portal-answer', 'Respuestas');
         portalAppBodyEl.appendChild(row);
       });
       if (target && targetRow) {
