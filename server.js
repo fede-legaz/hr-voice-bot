@@ -15498,8 +15498,13 @@ app.get("/admin/ui", (req, res) => {
   <div id="cv-modal" class="cv-modal">
     <div class="cv-modal-card">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-        <div style="font-weight:700;">CV</div>
+        <div id="cv-modal-title" style="font-weight:700;">CV</div>
         <button class="secondary" id="cv-modal-close" type="button">Cerrar</button>
+      </div>
+      <div class="small" id="cv-modal-note" style="display:none;"></div>
+      <div class="inline" id="cv-modal-actions" style="display:none; justify-content:flex-start; gap:8px;">
+        <button class="secondary btn-compact" id="cv-modal-open-file" type="button">Abrir archivo</button>
+        <button class="secondary btn-compact" id="cv-modal-open-viewer" type="button">Abrir visor</button>
       </div>
       <textarea id="cv-modal-text" readonly></textarea>
     </div>
@@ -15993,6 +15998,11 @@ app.get("/admin/ui", (req, res) => {
     const cvSwipePrevEl = document.getElementById('cv-swipe-prev');
     const cvSwipeNextEl = document.getElementById('cv-swipe-next');
     const cvModalEl = document.getElementById('cv-modal');
+    const cvModalTitleEl = document.getElementById('cv-modal-title');
+    const cvModalNoteEl = document.getElementById('cv-modal-note');
+    const cvModalActionsEl = document.getElementById('cv-modal-actions');
+    const cvModalOpenFileEl = document.getElementById('cv-modal-open-file');
+    const cvModalOpenViewerEl = document.getElementById('cv-modal-open-viewer');
     const cvModalTextEl = document.getElementById('cv-modal-text');
     const cvModalCloseEl = document.getElementById('cv-modal-close');
     const cvQuestionModalEl = document.getElementById('cv-question-modal');
@@ -16496,10 +16506,19 @@ app.get("/admin/ui", (req, res) => {
       actions.forEach((action) => {
         if (!action || !action.url) return;
         const link = document.createElement('a');
-        link.href = action.url;
-        link.target = '_blank';
-        link.rel = 'noopener';
         link.textContent = action.label || 'Abrir';
+        const isCvAction = String(action.kind || action.label || '').toLowerCase() === 'cv';
+        if (isCvAction) {
+          link.href = '#';
+          link.onclick = (event) => {
+            event.preventDefault();
+            openCvAsset(action.url, action.text || '', { title: action.title || 'CV' });
+          };
+        } else {
+          link.href = action.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+        }
         wrap.appendChild(link);
       });
       return wrap;
@@ -16549,7 +16568,7 @@ app.get("/admin/ui", (req, res) => {
         }
         const actions = [];
         if (item.audio_url) actions.push({ label: 'Audio', url: item.audio_url });
-        if (item.cv_url) actions.push({ label: 'CV', url: item.cv_url });
+        if (item.cv_url) actions.push({ label: 'CV', kind: 'cv', url: item.cv_url, text: item.cv_text || '', title: 'CV de ' + (item.applicant || 'candidato') });
         if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
         return card;
       });
@@ -16569,7 +16588,7 @@ app.get("/admin/ui", (req, res) => {
         card.appendChild(sub);
         if (meta.textContent) card.appendChild(meta);
         const actions = [];
-        if (item.cv_url) actions.push({ label: 'CV', url: item.cv_url });
+        if (item.cv_url) actions.push({ label: 'CV', kind: 'cv', url: item.cv_url, text: item.cv_text || '', title: 'CV de ' + (item.applicant || 'candidato') });
         if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
         return card;
       });
@@ -16589,7 +16608,7 @@ app.get("/admin/ui", (req, res) => {
         card.appendChild(sub);
         if (meta.textContent) card.appendChild(meta);
         const actions = [];
-        if (item.resume_url) actions.push({ label: 'CV', url: item.resume_url });
+        if (item.resume_url) actions.push({ label: 'CV', kind: 'cv', url: item.resume_url, title: 'Resume de ' + (item.name || 'candidato') });
         if (item.photo_url) actions.push({ label: 'Foto', url: item.photo_url });
         if (actions.length) card.appendChild(assistantBuildActionLinks(actions));
         return card;
@@ -17305,15 +17324,126 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
-    function openCvModal(text) {
-      if (!cvModalEl) return;
-      cvModalTextEl.value = text || '';
+    function getFileExtensionFromUrl(url) {
+      const value = String(url || '').trim();
+      if (!value) return '';
+      try {
+        const parsed = new URL(value, window.location.origin);
+        const match = parsed.pathname.toLowerCase().match(/\.([a-z0-9]+)$/);
+        return match ? match[1] : '';
+      } catch (err) {
+        const clean = value.split('?')[0].toLowerCase();
+        const match = clean.match(/\.([a-z0-9]+)$/);
+        return match ? match[1] : '';
+      }
+    }
+
+    function isOfficeResumeUrl(url) {
+      return ['doc', 'docx', 'rtf', 'odt'].includes(getFileExtensionFromUrl(url));
+    }
+
+    function isTextResumeUrl(url) {
+      return ['txt', 'text'].includes(getFileExtensionFromUrl(url));
+    }
+
+    function isMobileCvPreviewMode() {
+      return !!(window.matchMedia && window.matchMedia('(max-width: 820px)').matches);
+    }
+
+    function buildOfficeViewerUrl(url) {
+      const value = String(url || '').trim();
+      if (!value) return '';
+      try {
+        const absoluteUrl = new URL(value, window.location.origin).toString();
+        return 'https://view.officeapps.live.com/op/view.aspx?src=' + encodeURIComponent(absoluteUrl);
+      } catch (err) {
+        return '';
+      }
+    }
+
+    function openCvModal(payload) {
+      if (!cvModalEl || !cvModalTextEl) return;
+      const options = (payload && typeof payload === 'object' && !Array.isArray(payload))
+        ? payload
+        : { text: payload || '' };
+      const text = String(options.text || '');
+      const title = String(options.title || 'CV');
+      const note = String(options.note || '');
+      const fileUrl = String(options.fileUrl || options.originalUrl || '').trim();
+      const viewerUrl = String(options.viewerUrl || '').trim();
+      cvModalTextEl.value = text;
+      if (cvModalTitleEl) cvModalTitleEl.textContent = title;
+      if (cvModalNoteEl) {
+        cvModalNoteEl.textContent = note;
+        cvModalNoteEl.style.display = note ? 'block' : 'none';
+      }
+      if (cvModalActionsEl) {
+        const hasActions = !!(fileUrl || viewerUrl);
+        cvModalActionsEl.style.display = hasActions ? 'flex' : 'none';
+      }
+      if (cvModalOpenFileEl) {
+        cvModalOpenFileEl.style.display = fileUrl ? 'inline-flex' : 'none';
+        cvModalOpenFileEl.onclick = fileUrl ? () => window.open(fileUrl, '_blank', 'noopener') : null;
+      }
+      if (cvModalOpenViewerEl) {
+        cvModalOpenViewerEl.style.display = viewerUrl ? 'inline-flex' : 'none';
+        cvModalOpenViewerEl.onclick = viewerUrl ? () => window.open(viewerUrl, '_blank', 'noopener') : null;
+      }
       cvModalEl.style.display = 'flex';
     }
 
     function closeCvModal() {
-      if (!cvModalEl) return;
+      if (!cvModalEl || !cvModalTextEl) return;
       cvModalEl.style.display = 'none';
+      cvModalTextEl.value = '';
+      if (cvModalTitleEl) cvModalTitleEl.textContent = 'CV';
+      if (cvModalNoteEl) {
+        cvModalNoteEl.textContent = '';
+        cvModalNoteEl.style.display = 'none';
+      }
+      if (cvModalActionsEl) cvModalActionsEl.style.display = 'none';
+      if (cvModalOpenFileEl) {
+        cvModalOpenFileEl.style.display = 'none';
+        cvModalOpenFileEl.onclick = null;
+      }
+      if (cvModalOpenViewerEl) {
+        cvModalOpenViewerEl.style.display = 'none';
+        cvModalOpenViewerEl.onclick = null;
+      }
+    }
+
+    function openCvAsset(url, text, options = {}) {
+      const fileUrl = String(url || '').trim();
+      const cvText = String(text || '').trim();
+      const title = String(options.title || 'CV');
+      if (!fileUrl) {
+        openCvModal({ title, text: cvText });
+        return;
+      }
+      if (isOfficeResumeUrl(fileUrl)) {
+        const viewerUrl = buildOfficeViewerUrl(fileUrl);
+        if (isMobileCvPreviewMode() && cvText) {
+          openCvModal({
+            title,
+            text: cvText,
+            note: 'Word detectado. En mobile mostramos el texto del resume porque el navegador no siempre puede previsualizar .doc/.docx.',
+            fileUrl,
+            viewerUrl
+          });
+          return;
+        }
+        window.open(viewerUrl || fileUrl, '_blank', 'noopener');
+        return;
+      }
+      if (isTextResumeUrl(fileUrl) && cvText) {
+        openCvModal({
+          title,
+          text: cvText,
+          fileUrl
+        });
+        return;
+      }
+      window.open(fileUrl, '_blank', 'noopener');
     }
 
     function setCvQuestionStatus(msg, isError) {
@@ -20031,12 +20161,21 @@ app.get("/admin/ui", (req, res) => {
       const td = document.createElement('td');
       if (dataLabel) td.dataset.label = dataLabel;
       if (url) {
-        const link = document.createElement('a');
-        link.href = url;
-        link.target = '_blank';
-        link.rel = 'noopener';
-        link.textContent = label;
-        td.appendChild(link);
+        if (String(label || '').toLowerCase() === 'cv') {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'secondary btn-compact';
+          btn.textContent = label;
+          btn.onclick = () => openCvAsset(url, '', { title: 'Resume' });
+          td.appendChild(btn);
+        } else {
+          const link = document.createElement('a');
+          link.href = url;
+          link.target = '_blank';
+          link.rel = 'noopener';
+          link.textContent = label;
+          td.appendChild(link);
+        }
       } else {
         td.textContent = '—';
       }
@@ -20325,7 +20464,7 @@ app.get("/admin/ui", (req, res) => {
         btn.type = 'button';
         btn.className = 'secondary btn-compact';
         btn.textContent = 'Ver CV';
-        btn.onclick = () => window.open(item.cv_url, '_blank', 'noopener');
+        btn.onclick = () => openCvAsset(item.cv_url, item.cv_text || '', { title: 'CV de ' + (item.applicant || 'candidato') });
         cvActions.appendChild(btn);
       } else if (item.cv_text) {
         const btn = document.createElement('button');
@@ -20549,7 +20688,7 @@ app.get("/admin/ui", (req, res) => {
         btn.type = 'button';
         btn.className = 'secondary btn-compact';
         btn.textContent = 'Ver CV';
-        btn.onclick = () => window.open(call.cv_url, '_blank', 'noopener');
+        btn.onclick = () => openCvAsset(call.cv_url, call.cv_text || '', { title: 'CV de ' + (call.applicant || 'candidato') });
         mediaWrap.appendChild(btn);
       }
       if (call.audio_url) {
@@ -22850,13 +22989,11 @@ app.get("/admin/ui", (req, res) => {
       const actions = document.createElement('div');
       actions.className = 'detail-actions';
       if (call.cv_url) {
-        const cvLink = document.createElement('a');
-        cvLink.href = call.cv_url;
-        cvLink.target = '_blank';
-        cvLink.rel = 'noopener';
+        const cvLink = document.createElement('button');
+        cvLink.type = 'button';
         cvLink.textContent = 'Abrir CV';
         cvLink.className = 'secondary btn-compact';
-        cvLink.style.textDecoration = 'none';
+        cvLink.onclick = () => openCvAsset(call.cv_url, call.cv_text || '', { title: 'CV de ' + (call.applicant || 'candidato') });
         actions.appendChild(cvLink);
       }
       if (call.audio_url) {
@@ -23452,7 +23589,7 @@ app.get("/admin/ui", (req, res) => {
           cvBtn.type = 'button';
           cvBtn.className = 'secondary btn-compact';
           cvBtn.textContent = 'Ver CV';
-          cvBtn.onclick = () => window.open(item.cv_url, '_blank', 'noopener');
+          cvBtn.onclick = () => openCvAsset(item.cv_url, item.cv_text || '', { title: 'CV de ' + (item.name || 'candidato') });
           actionRow.appendChild(cvBtn);
         }
         if (actionRow.children.length) actions.appendChild(actionRow);
@@ -24096,9 +24233,7 @@ app.get("/admin/ui", (req, res) => {
           btn.type = 'button';
           btn.className = 'secondary btn-compact';
           btn.textContent = 'Ver CV';
-          btn.onclick = () => {
-            window.open(call.cv_url, '_blank', 'noopener');
-          };
+          btn.onclick = () => openCvAsset(call.cv_url, call.cv_text || '', { title: 'CV de ' + (call.applicant || 'candidato') });
           wrap.appendChild(btn);
           cvTd.appendChild(wrap);
         } else {
@@ -24652,16 +24787,11 @@ app.get("/admin/ui", (req, res) => {
         if (item.cv_url) {
           const wrap = document.createElement('div');
           wrap.className = 'inline';
-          const link = document.createElement('a');
-          link.href = item.cv_url;
-          link.target = '_blank';
-          link.rel = 'noopener';
+          const link = document.createElement('button');
+          link.type = 'button';
           link.textContent = 'Ver CV';
-          link.className = 'secondary';
-          link.style.textDecoration = 'none';
-          link.style.padding = '8px 12px';
-          link.style.borderRadius = '10px';
-          link.style.border = '1px solid var(--border)';
+          link.className = 'secondary btn-compact';
+          link.onclick = () => openCvAsset(item.cv_url, item.cv_text || '', { title: 'CV de ' + (item.applicant || 'candidato') });
           wrap.appendChild(link);
           cvTd.appendChild(wrap);
         } else if (item.cv_text) {
