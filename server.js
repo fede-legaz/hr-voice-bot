@@ -3302,6 +3302,7 @@ function hydrateCvStore(entries) {
     if (!entry.custom_question_mode) {
       entry.custom_question_mode = entry.custom_question ? "exact" : "exact";
     }
+    if (!entry.scheduled_call_at) entry.scheduled_call_at = "";
     cvStore.push(entry);
     cvStoreById.set(entry.id, entry);
   });
@@ -3924,6 +3925,7 @@ async function initDb() {
         cv_text TEXT,
         cv_url TEXT,
         cv_photo_url TEXT,
+        scheduled_call_at TIMESTAMPTZ,
         trial_at TIMESTAMPTZ,
         trial_follow_up_status TEXT,
         trial_follow_up_at TIMESTAMPTZ,
@@ -3935,6 +3937,7 @@ async function initDb() {
       );
     `);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS cv_photo_url TEXT;`);
+    await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS scheduled_call_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_follow_up_status TEXT;`);
     await dbPool.query(`ALTER TABLE cvs ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
@@ -10031,6 +10034,48 @@ app.post("/onboard/:token/ack", async (req, res) => {
   }
 });
 
+app.post("/admin/cv/:id/scheduled-call", requirePermission("cvs_write"), async (req, res) => {
+  const cvId = (req.params?.id || "").trim();
+  if (!cvId) return res.status(400).json({ error: "missing_cv_id" });
+  const raw = (req.body?.scheduled_call_at ?? req.body?.scheduledCallAt ?? "").toString().trim();
+  const normalized = raw ? normalizeIso(raw) : "";
+  if (raw && !normalized) return res.status(400).json({ error: "invalid_scheduled_call_at" });
+  const scheduled_call_at = normalized || "";
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : [];
+  const targetIds = ids.length ? ids : [cvId];
+  for (const id of targetIds) {
+    const entry = cvStoreById.get(id);
+    if (entry) {
+      entry.scheduled_call_at = scheduled_call_at;
+    }
+    for (const item of cvStore) {
+      if (item && item.id === id) {
+        item.scheduled_call_at = scheduled_call_at;
+      }
+    }
+  }
+  scheduleCvStoreSave();
+  if (dbPool) {
+    try {
+      if (targetIds.length > 1) {
+        await dbQuery(
+          "UPDATE cvs SET scheduled_call_at = $2 WHERE id = ANY($1)",
+          [targetIds, scheduled_call_at || null]
+        );
+      } else {
+        await dbQuery(
+          "UPDATE cvs SET scheduled_call_at = $2 WHERE id = $1",
+          [cvId, scheduled_call_at || null]
+        );
+      }
+    } catch (err) {
+      console.error("[admin/cv] scheduled call update failed", err);
+      return res.status(400).json({ error: "scheduled_call_failed", detail: err.message });
+    }
+  }
+  return res.json({ ok: true, scheduled_call_at });
+});
+
 app.post("/admin/cv/:id/trial", requirePermission("cvs_write"), async (req, res) => {
   const cvId = (req.params?.id || "").trim();
   if (!cvId) return res.status(400).json({ error: "missing_cv_id" });
@@ -12893,6 +12938,22 @@ app.get("/admin/ui", (req, res) => {
       padding: 10px 12px;
       border-radius: 12px;
     }
+    .schedule-call-card { width: min(480px, 92vw); }
+    .schedule-call-quick {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: #fbfaf7;
+    }
+    .schedule-call-quick .small {
+      margin: 0;
+      color: var(--muted);
+    }
     .trial-chip {
       border: 1px dashed var(--border);
       background: #faf7f0;
@@ -14515,7 +14576,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Candidato</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
-                  <th>Prueba</th>
+                  <th>Llamada</th>
                   <th>Decisión</th>
                   <th>CV</th>
                   <th>Acción</th>
@@ -15570,6 +15631,31 @@ app.get("/admin/ui", (req, res) => {
       </div>
     </div>
   </div>
+  <div id="scheduled-call-modal" class="cv-modal">
+    <div class="cv-modal-card schedule-call-card">
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px;">
+        <div>
+          <div style="font-weight:700;">Programar llamada</div>
+          <div class="small">Siempre en hora del Este (ET).</div>
+        </div>
+        <button class="secondary" id="scheduled-call-close" type="button">Cerrar</button>
+      </div>
+      <div class="small" id="scheduled-call-candidate"></div>
+      <div class="schedule-call-quick">
+        <div class="small">Atajo sugerido: usar el próximo 9AM disponible.</div>
+        <button class="secondary" id="scheduled-call-next-nine" type="button">Próximo 9AM</button>
+      </div>
+      <div class="row">
+        <label>O elegí otra hora</label>
+        <input type="datetime-local" id="scheduled-call-datetime" class="trial-input" />
+      </div>
+      <div class="inline" style="justify-content:flex-end; gap:10px;">
+        <button class="secondary" id="scheduled-call-clear" type="button">Limpiar</button>
+        <button id="scheduled-call-save" type="button">Guardar</button>
+        <span class="small" id="scheduled-call-status"></span>
+      </div>
+    </div>
+  </div>
   <div id="trial-review-modal" class="cv-modal">
     <div class="cv-modal-card trial-review-card">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
@@ -16026,6 +16112,14 @@ app.get("/admin/ui", (req, res) => {
     const trialSaveEl = document.getElementById('trial-save');
     const trialClearEl = document.getElementById('trial-clear');
     const trialStatusEl = document.getElementById('trial-status');
+    const scheduledCallModalEl = document.getElementById('scheduled-call-modal');
+    const scheduledCallCloseEl = document.getElementById('scheduled-call-close');
+    const scheduledCallCandidateEl = document.getElementById('scheduled-call-candidate');
+    const scheduledCallNextNineEl = document.getElementById('scheduled-call-next-nine');
+    const scheduledCallDatetimeEl = document.getElementById('scheduled-call-datetime');
+    const scheduledCallClearEl = document.getElementById('scheduled-call-clear');
+    const scheduledCallSaveEl = document.getElementById('scheduled-call-save');
+    const scheduledCallStatusEl = document.getElementById('scheduled-call-status');
     const trialReviewModalEl = document.getElementById('trial-review-modal');
     const trialReviewListEl = document.getElementById('trial-review-list');
     const trialReviewCloseEl = document.getElementById('trial-review-close');
@@ -16196,6 +16290,7 @@ app.get("/admin/ui", (req, res) => {
     let currentCvFileType = '';
     let currentCvId = '';
     let pendingTrialTarget = null;
+    let pendingScheduledCallTarget = null;
     let assistantHistory = [];
     let assistantOpen = false;
     let assistantBusy = false;
@@ -17467,6 +17562,64 @@ app.get("/admin/ui", (req, res) => {
       if (!cvQuestionModalEl) return;
       cvQuestionModalEl.style.display = 'none';
       pendingCvQuestionId = '';
+    }
+
+    function openScheduledCallModal(payload) {
+      if (!scheduledCallModalEl || !scheduledCallDatetimeEl) return;
+      pendingScheduledCallTarget = payload || null;
+      const label = (payload?.label || '').trim();
+      if (scheduledCallCandidateEl) {
+        scheduledCallCandidateEl.textContent = label ? ('Candidato: ' + label) : '';
+      }
+      scheduledCallDatetimeEl.value = formatMiamiInputValue(payload?.scheduled_call_at || '') || nextMiamiTimeInputValue(9, 0);
+      if (scheduledCallStatusEl) scheduledCallStatusEl.textContent = '';
+      scheduledCallModalEl.style.display = 'flex';
+    }
+
+    function closeScheduledCallModal() {
+      if (!scheduledCallModalEl) return;
+      scheduledCallModalEl.style.display = 'none';
+      pendingScheduledCallTarget = null;
+    }
+
+    async function saveCvScheduledCall(ids, scheduled_call_at) {
+      if (!ids || !ids.length) throw new Error('missing_cv_id');
+      const resp = await fetch('/admin/cv/' + encodeURIComponent(ids[0]) + '/scheduled-call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tokenEl.value },
+        body: JSON.stringify({ ids, scheduled_call_at })
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.detail || data.error || 'scheduled_call_failed');
+      applyCvPatch(ids, {
+        scheduled_call_at: data.scheduled_call_at || ''
+      });
+      renderCvList(lastCvRaw);
+      return data.scheduled_call_at || '';
+    }
+
+    async function saveScheduledCallFromModal(clear) {
+      if (!pendingScheduledCallTarget) return;
+      const target = pendingScheduledCallTarget;
+      if (scheduledCallStatusEl) scheduledCallStatusEl.textContent = 'Guardando...';
+      try {
+        let scheduled_call_at = '';
+        if (!clear && scheduledCallDatetimeEl && scheduledCallDatetimeEl.value) {
+          const utc = zonedTimeToUtc(scheduledCallDatetimeEl.value, MIAMI_TZ);
+          if (!utc || Number.isNaN(utc.getTime())) {
+            throw new Error('Fecha inválida');
+          }
+          scheduled_call_at = utc.toISOString();
+        }
+        await saveCvScheduledCall(target.ids || [], scheduled_call_at || null);
+        if (scheduledCallStatusEl) scheduledCallStatusEl.textContent = 'Guardado';
+        setTimeout(() => {
+          if (scheduledCallStatusEl) scheduledCallStatusEl.textContent = '';
+        }, 1500);
+        closeScheduledCallModal();
+      } catch (err) {
+        if (scheduledCallStatusEl) scheduledCallStatusEl.textContent = 'Error: ' + err.message;
+      }
     }
 
     function openTrialModal(payload) {
@@ -20385,28 +20538,27 @@ app.get("/admin/ui", (req, res) => {
       infoSection.appendChild(buildSwipeRow('Teléfono', buildPhoneCellContent(item)));
       const info = cvStatusInfo(item);
       infoSection.appendChild(buildSwipeRow('Estado', info.statusText || '—'));
-      const trialAt = item.trial_at || '';
+      const scheduledCallAt = item.scheduled_call_at || '';
       if (canPermission('cvs_write')) {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'trial-chip' + (trialAt ? ' has-trial' : '');
-        btn.textContent = formatTrialLabel(trialAt);
-        btn.title = trialAt ? formatMiamiDateTime(trialAt) : 'Agendar prueba';
+        btn.className = 'trial-chip' + (scheduledCallAt ? ' has-trial' : '');
+        btn.textContent = formatScheduledCallLabel(scheduledCallAt);
+        btn.title = scheduledCallAt ? formatMiamiDateTime(scheduledCallAt) : 'Programar llamada';
         btn.onclick = (event) => {
           event.stopPropagation();
           const ids = Array.isArray(item.cvIds) && item.cvIds.length
             ? item.cvIds
             : (item.id ? [item.id] : []);
-          openTrialModal({
-            type: 'cv',
+          openScheduledCallModal({
             ids,
-            trial_at: trialAt,
+            scheduled_call_at: scheduledCallAt,
             label: item.applicant || ''
           });
         };
-        infoSection.appendChild(buildSwipeRow('Prueba', btn));
+        infoSection.appendChild(buildSwipeRow('Llamada', btn));
       } else {
-        infoSection.appendChild(buildSwipeRow('Prueba', trialAt ? formatMiamiDateTime(trialAt) : '—'));
+        infoSection.appendChild(buildSwipeRow('Llamada', scheduledCallAt ? formatMiamiDateTime(scheduledCallAt) : '—'));
       }
       card.appendChild(infoSection);
 
@@ -22547,6 +22699,17 @@ app.get("/admin/ui", (req, res) => {
       return parts.year + "-" + pad(parts.month) + "-" + pad(parts.day) + "T" + pad(parts.hour) + ":" + pad(parts.minute);
     }
 
+    function nextMiamiTimeInputValue(hour = 9, minute = 0, fromValue = new Date()) {
+      const parts = getZonedParts(fromValue, MIAMI_TZ);
+      if (!parts) return '';
+      let target = { year: parts.year, month: parts.month, day: parts.day };
+      if (parts.hour > hour || (parts.hour === hour && parts.minute >= minute)) {
+        target = addDaysLocalDate(parts.year, parts.month, parts.day, 1);
+      }
+      const pad = (num) => String(num).padStart(2, '0');
+      return target.year + "-" + pad(target.month) + "-" + pad(target.day) + "T" + pad(hour) + ":" + pad(minute);
+    }
+
     function miamiDateKey(value) {
       if (!value) return '';
       const d = new Date(value);
@@ -22561,6 +22724,11 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function formatTrialLabel(value) {
+      if (!value) return 'Agendar';
+      return formatMiamiDateTime(value, { withYear: false });
+    }
+
+    function formatScheduledCallLabel(value) {
       if (!value) return 'Agendar';
       return formatMiamiDateTime(value, { withYear: false });
     }
@@ -23299,6 +23467,7 @@ app.get("/admin/ui", (req, res) => {
         if (!entry) {
           entry = {
             ...item,
+            scheduled_call_at: item.scheduled_call_at || "",
             custom_question: item.custom_question || "",
             custom_question_mode: item.custom_question_mode || "exact",
             cvIds: [],
@@ -23314,6 +23483,13 @@ app.get("/admin/ui", (req, res) => {
         }
         if (item.id) entry.cvIds.push(item.id);
         entry.call_count = Math.max(entry.call_count || 0, Number(item.call_count || 0));
+        if (item.scheduled_call_at) {
+          const currentScheduled = entry.scheduled_call_at ? new Date(entry.scheduled_call_at).getTime() : 0;
+          const nextScheduled = new Date(item.scheduled_call_at).getTime();
+          if (!currentScheduled || (Number.isFinite(nextScheduled) && nextScheduled >= currentScheduled)) {
+            entry.scheduled_call_at = item.scheduled_call_at;
+          }
+        }
         if (item.trial_at) {
           const currentTrial = entry.trial_at ? new Date(entry.trial_at).getTime() : 0;
           const nextTrial = new Date(item.trial_at).getTime();
@@ -23342,6 +23518,7 @@ app.get("/admin/ui", (req, res) => {
           entry.cv_text = item.cv_text;
           entry.cv_url = item.cv_url;
           entry.cv_photo_url = item.cv_photo_url;
+          if (item.scheduled_call_at && !entry.scheduled_call_at) entry.scheduled_call_at = item.scheduled_call_at;
           if (item.trial_at && !entry.trial_at) entry.trial_at = item.trial_at;
           if (item.trial_follow_up_at && !entry.trial_follow_up_at) entry.trial_follow_up_at = item.trial_follow_up_at;
           if (item.trial_follow_up_status && !entry.trial_follow_up_status) {
@@ -24712,29 +24889,29 @@ app.get("/admin/ui", (req, res) => {
         statusTd.dataset.label = 'Estado';
         tr.appendChild(statusTd);
         const trialTd = document.createElement('td');
-        trialTd.dataset.label = 'Prueba';
-        const trialLabel = formatTrialLabel(item.trial_at);
+        trialTd.dataset.label = 'Llamada';
+        const scheduledCallAt = item.scheduled_call_at || '';
+        const trialLabel = formatScheduledCallLabel(scheduledCallAt);
         if (canPermission('cvs_write')) {
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.className = 'trial-chip' + (item.trial_at ? ' has-trial' : '');
+          btn.className = 'trial-chip' + (scheduledCallAt ? ' has-trial' : '');
           btn.textContent = trialLabel;
-          btn.title = item.trial_at ? formatMiamiDateTime(item.trial_at) : 'Agendar prueba';
+          btn.title = scheduledCallAt ? formatMiamiDateTime(scheduledCallAt) : 'Programar llamada';
           btn.onclick = (event) => {
             event.stopPropagation();
             const ids = Array.isArray(item.cvIds) && item.cvIds.length
               ? item.cvIds
               : (item.id ? [item.id] : []);
-            openTrialModal({
-              type: 'cv',
+            openScheduledCallModal({
               ids,
-              trial_at: item.trial_at || '',
+              scheduled_call_at: scheduledCallAt,
               label: item.applicant || ''
             });
           };
           trialTd.appendChild(btn);
         } else {
-          trialTd.textContent = item.trial_at ? formatMiamiDateTime(item.trial_at) : '—';
+          trialTd.textContent = scheduledCallAt ? formatMiamiDateTime(scheduledCallAt) : '—';
         }
         tr.appendChild(trialTd);
         const decisionTd = document.createElement('td');
@@ -26463,6 +26640,19 @@ app.get("/admin/ui", (req, res) => {
     if (trialModalEl) {
       trialModalEl.addEventListener('click', (event) => {
         if (event.target === trialModalEl) closeTrialModal();
+      });
+    }
+    if (scheduledCallCloseEl) scheduledCallCloseEl.addEventListener('click', closeScheduledCallModal);
+    if (scheduledCallNextNineEl) {
+      scheduledCallNextNineEl.addEventListener('click', () => {
+        if (scheduledCallDatetimeEl) scheduledCallDatetimeEl.value = nextMiamiTimeInputValue(9, 0);
+      });
+    }
+    if (scheduledCallSaveEl) scheduledCallSaveEl.addEventListener('click', () => saveScheduledCallFromModal(false));
+    if (scheduledCallClearEl) scheduledCallClearEl.addEventListener('click', () => saveScheduledCallFromModal(true));
+    if (scheduledCallModalEl) {
+      scheduledCallModalEl.addEventListener('click', (event) => {
+        if (event.target === scheduledCallModalEl) closeScheduledCallModal();
       });
     }
     if (trialReviewCloseEl) trialReviewCloseEl.addEventListener('click', closeTrialReviewModal);
@@ -28236,6 +28426,7 @@ function buildCvEntry(payload = {}) {
   const id = payload.id || randomToken();
   const cvUrl = payload.cv_url || payload.resume_url || payload.resumeUrl || "";
   const cvPhotoUrl = payload.cv_photo_url || "";
+  const scheduledCallAt = normalizeIso(payload.scheduled_call_at || payload.scheduledCallAt || "");
   const trialAt = normalizeIso(payload.trial_at || payload.trialAt || "");
   const trialFollowUpAt = normalizeIso(payload.trial_follow_up_at || payload.trialFollowUpAt || "");
   const trialFollowUpStatus = (payload.trial_follow_up_status || payload.trialFollowUpStatus || "").toString().trim();
@@ -28257,6 +28448,7 @@ function buildCvEntry(payload = {}) {
     cv_len: cvText.length,
     cv_url: cvUrl,
     cv_photo_url: cvPhotoUrl,
+    scheduled_call_at: scheduledCallAt || "",
     trial_at: trialAt || "",
     trial_follow_up_status: trialFollowUpStatus || "",
     trial_follow_up_at: trialFollowUpAt || "",
@@ -28281,6 +28473,9 @@ function recordCvEntry(entry) {
     }
     if (!next.onboarding_id && existing.onboarding_id) {
       next.onboarding_id = existing.onboarding_id;
+    }
+    if ((next.scheduled_call_at === undefined || next.scheduled_call_at === "") && existing.scheduled_call_at) {
+      next.scheduled_call_at = existing.scheduled_call_at;
     }
     if ((next.trial_at === undefined || next.trial_at === "") && existing.trial_at) {
       next.trial_at = existing.trial_at;
@@ -28315,10 +28510,10 @@ async function upsertCvDb(entry) {
   const sql = `
     INSERT INTO cvs (
       id, created_at, brand, brand_key, role, role_key, applicant, phone,
-      cv_text, cv_url, cv_photo_url, trial_at, trial_follow_up_status, trial_follow_up_at,
+      cv_text, cv_url, cv_photo_url, scheduled_call_at, trial_at, trial_follow_up_status, trial_follow_up_at,
       custom_question, custom_question_mode, decision, onboarding_id, source
     ) VALUES (
-      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19
+      $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20
     )
     ON CONFLICT (id) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -28330,6 +28525,7 @@ async function upsertCvDb(entry) {
       cv_text = EXCLUDED.cv_text,
       cv_url = EXCLUDED.cv_url,
       cv_photo_url = EXCLUDED.cv_photo_url,
+      scheduled_call_at = EXCLUDED.scheduled_call_at,
       trial_at = EXCLUDED.trial_at,
       trial_follow_up_status = EXCLUDED.trial_follow_up_status,
       trial_follow_up_at = EXCLUDED.trial_follow_up_at,
@@ -28351,6 +28547,7 @@ async function upsertCvDb(entry) {
     entry.cv_text || "",
     entry.cv_url || "",
     entry.cv_photo_url || "",
+    entry.scheduled_call_at === undefined || entry.scheduled_call_at === "" ? null : entry.scheduled_call_at,
     entry.trial_at === undefined || entry.trial_at === "" ? null : entry.trial_at,
     entry.trial_follow_up_status || "",
     entry.trial_follow_up_at === undefined || entry.trial_follow_up_at === "" ? null : entry.trial_follow_up_at,
@@ -28866,6 +29063,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
     )
     SELECT
       c.id, c.created_at, c.brand, c.brand_key, c.role, c.role_key, c.applicant, c.phone, c.cv_text, c.cv_url, c.cv_photo_url,
+      c.scheduled_call_at,
       c.trial_at, c.trial_follow_up_status, c.trial_follow_up_at,
       c.custom_question, c.custom_question_mode, c.decision, c.onboarding_id, c.source,
       COALESCE(s.call_count, sp.call_count) AS call_count,
@@ -28900,6 +29098,7 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
       cv_text: row.cv_text || "",
       cv_url: cvUrl || "",
       cv_photo_url: cvPhotoUrl || "",
+      scheduled_call_at: row.scheduled_call_at ? new Date(row.scheduled_call_at).toISOString() : "",
       trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
       trial_follow_up_status: row.trial_follow_up_status || "",
       trial_follow_up_at: row.trial_follow_up_at ? new Date(row.trial_follow_up_at).toISOString() : "",
