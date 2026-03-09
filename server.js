@@ -22729,7 +22729,7 @@ app.get("/admin/ui", (req, res) => {
     }
 
     function formatScheduledCallLabel(value) {
-      if (!value) return 'Agendar';
+      if (!value) return 'Programar llamada';
       return formatMiamiDateTime(value, { withYear: false });
     }
 
