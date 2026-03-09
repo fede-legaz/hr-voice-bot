@@ -330,14 +330,31 @@ function estimateTextCostUsd(usage, model) {
   );
 }
 
-function buildCallCostMeta(call) {
+function buildCallCostMeta(call, options = {}) {
   if (!call) return null;
-  const realtimeModel = String(call.realtimeModel || call.realtime_model || OPENAI_MODEL_REALTIME || "").trim();
-  const scoringModel = String(call.scoringModel || call.scoring_model || OPENAI_MODEL_SCORING || "").trim();
-  const transcriptionModel = String(call.transcriptionModel || call.transcription_model || (call.recordingPath || call.transcriptText ? TRANSCRIPTION_MODEL : "")).trim();
+  const useDefaultModels = options.useDefaultModels !== false;
+  const assumeTranscription = options.assumeTranscription === true;
+  const durationSec = toFiniteNumber(call.durationSec ?? call.duration_sec, 0);
+  const realtimeModelSource = call.realtimeModel ?? call.realtime_model;
+  const scoringModelSource = call.scoringModel ?? call.scoring_model;
+  const transcriptionModelSource = call.transcriptionModel ?? call.transcription_model;
+  const realtimeModel = String(
+    realtimeModelSource !== undefined && realtimeModelSource !== null && realtimeModelSource !== ""
+      ? realtimeModelSource
+      : (useDefaultModels ? OPENAI_MODEL_REALTIME : "")
+  ).trim();
+  const scoringModel = String(
+    scoringModelSource !== undefined && scoringModelSource !== null && scoringModelSource !== ""
+      ? scoringModelSource
+      : (useDefaultModels ? OPENAI_MODEL_SCORING : "")
+  ).trim();
+  const transcriptionModel = String(
+    transcriptionModelSource !== undefined && transcriptionModelSource !== null && transcriptionModelSource !== ""
+      ? transcriptionModelSource
+      : ((call.recordingPath || call.transcriptText || (assumeTranscription && durationSec > 0)) ? TRANSCRIPTION_MODEL : "")
+  ).trim();
   const realtimeUsage = normalizeRealtimeUsage(call.realtimeUsage || call.realtime_usage || null);
   const scoringUsage = normalizeTextUsage(call.scoringUsage || call.scoring_usage || null);
-  const durationSec = toFiniteNumber(call.durationSec ?? call.duration_sec, 0);
   const realtimeCostUsd = estimateRealtimeCostUsd(realtimeUsage, realtimeModel);
   const scoringCostUsd = estimateTextCostUsd(scoringUsage, scoringModel);
   const transcriptionCostUsd = transcriptionModel && durationSec > 0
@@ -372,6 +389,19 @@ function buildCallCostMeta(call) {
     twilio_voice_cost_usd: twilioCostUsd,
     total_cost_usd: totalUsd
   };
+}
+
+function buildStoredCallCostMeta(call) {
+  if (!call) return null;
+  const hasTranscriptEvidence =
+    !!(call.audio_url || call.audioUrl || call.recordingPath || call.transcriptText) ||
+    call.score !== null && call.score !== undefined ||
+    !!call.summary ||
+    !!call.recommendation;
+  return buildCallCostMeta(call, {
+    useDefaultModels: false,
+    assumeTranscription: hasTranscriptEvidence
+  });
 }
 
 function normalizeOnboardingType(value) {
@@ -3440,6 +3470,9 @@ function hydrateCallHistory(entries) {
     if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
     if (entry.cost_meta && typeof entry.cost_meta === "string") {
       try { entry.cost_meta = JSON.parse(entry.cost_meta); } catch {}
+    }
+    if (!entry.cost_meta) {
+      entry.cost_meta = buildStoredCallCostMeta(entry);
     }
     const key = entry._key || entry.callId || `${entry.phone || "na"}:${entry.created_at || new Date().toISOString()}`;
     entry._key = key;
@@ -29262,6 +29295,14 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
   for (const row of rows) {
     const audioUrl = await resolveStoredUrl(row.audio_url || "");
     const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    const storedCostMeta = row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null;
+    const derivedCostMeta = storedCostMeta || buildStoredCallCostMeta({
+      duration_sec: row.duration_sec,
+      audio_url: row.audio_url || "",
+      score: row.score,
+      summary: row.summary || "",
+      recommendation: row.recommendation || ""
+    });
     mapped.push({
       callId: row.call_sid,
       brand: row.brand || "",
@@ -29306,7 +29347,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       onboarding_id: row.onboarding_id || "",
       alt_brand_key: row.alt_brand_key || "",
       alt_role_key: row.alt_role_key || "",
-      cost_meta: row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null
+      cost_meta: derivedCostMeta
     });
   }
   return mapped;
@@ -29372,6 +29413,14 @@ async function fetchCallById(callId) {
   if (!row) return null;
   const audioUrl = await resolveStoredUrl(row.audio_url || "");
   const cvUrl = await resolveStoredUrl(row.cv_url || "");
+  const storedCostMeta = row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null;
+  const derivedCostMeta = storedCostMeta || buildStoredCallCostMeta({
+    duration_sec: row.duration_sec,
+    audio_url: row.audio_url || "",
+    score: row.score,
+    summary: row.summary || "",
+    recommendation: row.recommendation || ""
+  });
   return {
     callId: row.call_sid,
     brand: row.brand || "",
@@ -29416,7 +29465,7 @@ async function fetchCallById(callId) {
     onboarding_id: row.onboarding_id || "",
     alt_brand_key: row.alt_brand_key || "",
     alt_role_key: row.alt_role_key || "",
-    cost_meta: row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null
+    cost_meta: derivedCostMeta
   };
 }
 
