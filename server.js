@@ -41,6 +41,7 @@ const SPACES_PUBLIC = process.env.SPACES_PUBLIC === "1";
 const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-4o-mini-realtime-preview-2024-12-17";
 const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
 const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
+const TRANSCRIPTION_MODEL = "whisper-1";
 const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
 const CV_UPLOAD_MAX_BYTES = Number(process.env.CV_UPLOAD_MAX_BYTES) || 8 * 1024 * 1024;
@@ -81,6 +82,8 @@ const TRIAL_SMS_INTERVIEWER_PHONES_RAW = process.env.TRIAL_SMS_INTERVIEWER_PHONE
 const TRIAL_SMS_DURATION_MIN = Math.max(15, Number(process.env.TRIAL_SMS_DURATION_MIN) || 45);
 const TRIAL_SMS_CANDIDATE_ENABLED = process.env.TRIAL_SMS_CANDIDATE_ENABLED !== "0";
 const TRIAL_SMS_INTERVIEWER_ENABLED = process.env.TRIAL_SMS_INTERVIEWER_ENABLED !== "0";
+const TWILIO_VOICE_PRICE_PER_MIN_USD = Number(process.env.TWILIO_VOICE_PRICE_PER_MIN_USD || 0.013);
+const OPENAI_WHISPER_PRICE_PER_MIN_USD = Number(process.env.OPENAI_WHISPER_PRICE_PER_MIN_USD || 0.006);
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -180,6 +183,196 @@ const ONBOARDING_POLICY_FILES = new Set(Object.values(ONBOARDING_POLICY_TEMPLATE
 const ONBOARDING_ASSET_FILES = new Set([...ONBOARDING_POLICY_FILES, ONBOARDING_W9_TEMPLATE_FILE]);
 const ONBOARDING_TYPE_W2 = "w2";
 const ONBOARDING_TYPE_1099 = "1099";
+
+const OPENAI_TEXT_PRICING = {
+  "gpt-4o-mini": { input: 0.15, cached_input: 0.075, output: 0.60 }
+};
+
+const OPENAI_REALTIME_PRICING = {
+  "gpt-4o-mini-realtime-preview": {
+    text_input: 0.60,
+    cached_input: 0.30,
+    text_output: 2.40,
+    audio_input: 10.0,
+    audio_output: 20.0
+  },
+  "gpt-realtime-1.5": {
+    text_input: 4.0,
+    cached_input: 0.40,
+    text_output: 16.0,
+    audio_input: 32.0,
+    audio_output: 64.0
+  }
+};
+
+function toFiniteNumber(value, fallback = 0) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : fallback;
+}
+
+function roundUsd(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 1000000) / 1000000;
+}
+
+function normalizeRealtimePricingModel(model) {
+  const raw = String(model || "").trim().toLowerCase();
+  if (!raw) return "gpt-4o-mini-realtime-preview";
+  if (raw.startsWith("gpt-realtime-1.5")) return "gpt-realtime-1.5";
+  if (raw.startsWith("gpt-4o-mini-realtime-preview")) return "gpt-4o-mini-realtime-preview";
+  return raw;
+}
+
+function normalizeTextPricingModel(model) {
+  const raw = String(model || "").trim().toLowerCase();
+  if (!raw) return "gpt-4o-mini";
+  if (raw.startsWith("gpt-4o-mini")) return "gpt-4o-mini";
+  return raw;
+}
+
+function pricingPerMillion(tokens, pricePerMillion) {
+  const count = toFiniteNumber(tokens, 0);
+  const rate = toFiniteNumber(pricePerMillion, 0);
+  if (!count || !rate) return 0;
+  return (count / 1000000) * rate;
+}
+
+function normalizeRealtimeUsage(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const inputDetails = raw.input_token_details || raw.inputTokenDetails || {};
+  const outputDetails = raw.output_token_details || raw.outputTokenDetails || {};
+  const inputTokens = toFiniteNumber(raw.input_tokens ?? raw.inputTokens, 0);
+  const outputTokens = toFiniteNumber(raw.output_tokens ?? raw.outputTokens, 0);
+  const cachedTokens = toFiniteNumber(inputDetails.cached_tokens ?? inputDetails.cachedTokens ?? raw.cached_tokens ?? raw.cachedTokens, 0);
+  const inputAudioTokens = toFiniteNumber(inputDetails.audio_tokens ?? inputDetails.audioTokens ?? raw.input_audio_tokens ?? raw.inputAudioTokens, 0);
+  const outputAudioTokens = toFiniteNumber(outputDetails.audio_tokens ?? outputDetails.audioTokens ?? raw.output_audio_tokens ?? raw.outputAudioTokens, 0);
+  let inputTextTokens = toFiniteNumber(inputDetails.text_tokens ?? inputDetails.textTokens ?? raw.input_text_tokens ?? raw.inputTextTokens, 0);
+  let outputTextTokens = toFiniteNumber(outputDetails.text_tokens ?? outputDetails.textTokens ?? raw.output_text_tokens ?? raw.outputTextTokens, 0);
+  if (!inputTextTokens && inputTokens) {
+    inputTextTokens = Math.max(0, inputTokens - cachedTokens - inputAudioTokens);
+  }
+  if (!outputTextTokens && outputTokens) {
+    outputTextTokens = Math.max(0, outputTokens - outputAudioTokens);
+  }
+  if (!inputTokens && !outputTokens && !cachedTokens && !inputAudioTokens && !outputAudioTokens && !inputTextTokens && !outputTextTokens) {
+    return null;
+  }
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cached_tokens: cachedTokens,
+    input_audio_tokens: inputAudioTokens,
+    output_audio_tokens: outputAudioTokens,
+    input_text_tokens: inputTextTokens,
+    output_text_tokens: outputTextTokens
+  };
+}
+
+function mergeRealtimeUsage(current, next) {
+  const a = normalizeRealtimeUsage(current) || {};
+  const b = normalizeRealtimeUsage(next);
+  if (!b) return normalizeRealtimeUsage(a);
+  return normalizeRealtimeUsage({
+    input_tokens: toFiniteNumber(a.input_tokens, 0) + toFiniteNumber(b.input_tokens, 0),
+    output_tokens: toFiniteNumber(a.output_tokens, 0) + toFiniteNumber(b.output_tokens, 0),
+    cached_tokens: toFiniteNumber(a.cached_tokens, 0) + toFiniteNumber(b.cached_tokens, 0),
+    input_audio_tokens: toFiniteNumber(a.input_audio_tokens, 0) + toFiniteNumber(b.input_audio_tokens, 0),
+    output_audio_tokens: toFiniteNumber(a.output_audio_tokens, 0) + toFiniteNumber(b.output_audio_tokens, 0),
+    input_text_tokens: toFiniteNumber(a.input_text_tokens, 0) + toFiniteNumber(b.input_text_tokens, 0),
+    output_text_tokens: toFiniteNumber(a.output_text_tokens, 0) + toFiniteNumber(b.output_text_tokens, 0)
+  });
+}
+
+function normalizeTextUsage(raw = {}) {
+  if (!raw || typeof raw !== "object") return null;
+  const promptTokens = toFiniteNumber(raw.prompt_tokens ?? raw.promptTokens ?? raw.input_tokens ?? raw.inputTokens, 0);
+  const completionTokens = toFiniteNumber(raw.completion_tokens ?? raw.completionTokens ?? raw.output_tokens ?? raw.outputTokens, 0);
+  const promptDetails = raw.prompt_tokens_details || raw.promptTokensDetails || {};
+  const cachedPromptTokens = toFiniteNumber(promptDetails.cached_tokens ?? promptDetails.cachedTokens ?? raw.cached_prompt_tokens ?? raw.cachedPromptTokens, 0);
+  if (!promptTokens && !completionTokens && !cachedPromptTokens) return null;
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    cached_prompt_tokens: cachedPromptTokens
+  };
+}
+
+function estimateRealtimeCostUsd(usage, model) {
+  const normalized = normalizeRealtimeUsage(usage);
+  if (!normalized) return 0;
+  const pricing = OPENAI_REALTIME_PRICING[normalizeRealtimePricingModel(model)] || OPENAI_REALTIME_PRICING["gpt-4o-mini-realtime-preview"];
+  const uncachedTextInput = Math.max(0, toFiniteNumber(normalized.input_text_tokens, 0));
+  const audioInput = Math.max(0, toFiniteNumber(normalized.input_audio_tokens, 0));
+  const cachedInput = Math.max(0, toFiniteNumber(normalized.cached_tokens, 0));
+  const textOutput = Math.max(0, toFiniteNumber(normalized.output_text_tokens, 0));
+  const audioOutput = Math.max(0, toFiniteNumber(normalized.output_audio_tokens, 0));
+  return roundUsd(
+    pricingPerMillion(uncachedTextInput, pricing.text_input) +
+    pricingPerMillion(audioInput, pricing.audio_input) +
+    pricingPerMillion(cachedInput, pricing.cached_input) +
+    pricingPerMillion(textOutput, pricing.text_output) +
+    pricingPerMillion(audioOutput, pricing.audio_output)
+  );
+}
+
+function estimateTextCostUsd(usage, model) {
+  const normalized = normalizeTextUsage(usage);
+  if (!normalized) return 0;
+  const pricing = OPENAI_TEXT_PRICING[normalizeTextPricingModel(model)] || OPENAI_TEXT_PRICING["gpt-4o-mini"];
+  const uncachedPrompt = Math.max(0, toFiniteNumber(normalized.prompt_tokens, 0) - toFiniteNumber(normalized.cached_prompt_tokens, 0));
+  const cachedPrompt = Math.max(0, toFiniteNumber(normalized.cached_prompt_tokens, 0));
+  const completion = Math.max(0, toFiniteNumber(normalized.completion_tokens, 0));
+  return roundUsd(
+    pricingPerMillion(uncachedPrompt, pricing.input) +
+    pricingPerMillion(cachedPrompt, pricing.cached_input) +
+    pricingPerMillion(completion, pricing.output)
+  );
+}
+
+function buildCallCostMeta(call) {
+  if (!call) return null;
+  const realtimeModel = String(call.realtimeModel || call.realtime_model || OPENAI_MODEL_REALTIME || "").trim();
+  const scoringModel = String(call.scoringModel || call.scoring_model || OPENAI_MODEL_SCORING || "").trim();
+  const transcriptionModel = String(call.transcriptionModel || call.transcription_model || (call.recordingPath || call.transcriptText ? TRANSCRIPTION_MODEL : "")).trim();
+  const realtimeUsage = normalizeRealtimeUsage(call.realtimeUsage || call.realtime_usage || null);
+  const scoringUsage = normalizeTextUsage(call.scoringUsage || call.scoring_usage || null);
+  const durationSec = toFiniteNumber(call.durationSec ?? call.duration_sec, 0);
+  const realtimeCostUsd = estimateRealtimeCostUsd(realtimeUsage, realtimeModel);
+  const scoringCostUsd = estimateTextCostUsd(scoringUsage, scoringModel);
+  const transcriptionCostUsd = transcriptionModel && durationSec > 0
+    ? roundUsd((durationSec / 60) * OPENAI_WHISPER_PRICE_PER_MIN_USD)
+    : 0;
+  const twilioCostUsd = durationSec > 0
+    ? roundUsd((durationSec / 60) * TWILIO_VOICE_PRICE_PER_MIN_USD)
+    : 0;
+  const openaiTotalUsd = roundUsd(realtimeCostUsd + scoringCostUsd + transcriptionCostUsd);
+  const totalUsd = roundUsd(openaiTotalUsd + twilioCostUsd);
+  const hasAnyCost =
+    realtimeCostUsd > 0 ||
+    scoringCostUsd > 0 ||
+    transcriptionCostUsd > 0 ||
+    twilioCostUsd > 0 ||
+    !!realtimeModel ||
+    !!scoringModel ||
+    !!transcriptionModel;
+  if (!hasAnyCost) return null;
+  return {
+    currency: "USD",
+    estimated: true,
+    realtime_model: realtimeModel || "",
+    scoring_model: scoringModel || "",
+    transcription_model: transcriptionModel || "",
+    realtime_usage: realtimeUsage || null,
+    scoring_usage: scoringUsage || null,
+    realtime_cost_usd: realtimeCostUsd,
+    scoring_cost_usd: scoringCostUsd,
+    transcription_cost_usd: transcriptionCostUsd,
+    openai_total_usd: openaiTotalUsd,
+    twilio_voice_cost_usd: twilioCostUsd,
+    total_cost_usd: totalUsd
+  };
+}
 
 function normalizeOnboardingType(value) {
   const raw = String(value || "").trim().toLowerCase();
@@ -2804,6 +2997,12 @@ function buildCallFromPayload(payload, extra = {}) {
     recordingStarted: false,
     transcriptText: "",
     scoring: null,
+    realtimeModel: OPENAI_MODEL_REALTIME,
+    scoringModel: OPENAI_MODEL_SCORING,
+    transcriptionModel: "",
+    realtimeUsage: null,
+    scoringUsage: null,
+    costMeta: null,
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
@@ -3239,6 +3438,9 @@ function hydrateCallHistory(entries) {
     if (!entry || typeof entry !== "object") return;
     if (!entry.brandKey && entry.brand) entry.brandKey = brandKey(entry.brand);
     if (!entry.roleKey && entry.role) entry.roleKey = roleKey(entry.role);
+    if (entry.cost_meta && typeof entry.cost_meta === "string") {
+      try { entry.cost_meta = JSON.parse(entry.cost_meta); } catch {}
+    }
     const key = entry._key || entry.callId || `${entry.phone || "na"}:${entry.created_at || new Date().toISOString()}`;
     entry._key = key;
     callHistory.push(entry);
@@ -3988,7 +4190,8 @@ async function initDb() {
         decision TEXT,
         onboarding_id TEXT,
         alt_brand_key TEXT,
-        alt_role_key TEXT
+        alt_role_key TEXT,
+        cost_meta JSONB
       );
     `);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS notes TEXT;`);
@@ -3999,6 +4202,7 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS trial_follow_up_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_brand_key TEXT;`);
     await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS alt_role_key TEXT;`);
+    await dbPool.query(`ALTER TABLE calls ADD COLUMN IF NOT EXISTS cost_meta JSONB;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_brand ON calls (brand_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_role ON calls (role_key);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_calls_rec ON calls (recommendation);`);
@@ -13817,6 +14021,10 @@ app.get("/admin/ui", (req, res) => {
           <span class="nav-icon">📊</span>
           <span class="nav-label">Analytics</span>
         </button>
+        <button class="nav-item" id="nav-pricing" type="button" title="Pricing">
+          <span class="nav-icon">$</span>
+          <span class="nav-label">Pricing</span>
+        </button>
         <button class="nav-item" id="nav-portal" type="button" title="Portal">
           <span class="nav-icon">P</span>
           <span class="nav-label">Portal</span>
@@ -14891,6 +15099,49 @@ app.get("/admin/ui", (req, res) => {
         </div>
       </section>
 
+      <section id="pricing-view" class="view" style="display:none;">
+        <div class="panel" style="--delay:.06s;">
+          <div class="panel-title">Pricing</div>
+          <div class="panel-sub">Costo estimado por llamada y modelos usados en cada entrevista.</div>
+          <div class="panel-filters">
+            <div class="grid">
+              <div>
+                <label>Local</label>
+                <select id="pricing-brand">
+                  <option value="">Todos</option>
+                </select>
+              </div>
+              <div>
+                <label>Buscar</label>
+                <input type="text" id="pricing-search" placeholder="Nombre o teléfono" />
+              </div>
+              <div style="display:flex; align-items:flex-end;">
+                <button class="secondary" id="pricing-refresh" type="button">Refresh</button>
+              </div>
+            </div>
+          </div>
+          <div class="analytics-grid" id="pricing-cards" style="margin-top:12px;"></div>
+          <div class="table-wrapper" style="margin-top:14px;">
+            <table class="results-table pricing-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Candidato</th>
+                  <th>Local</th>
+                  <th>Duración</th>
+                  <th>Modelos</th>
+                  <th>OpenAI</th>
+                  <th>Twilio</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody id="pricing-body"></tbody>
+            </table>
+          </div>
+          <div class="small" id="pricing-count" style="margin-top:8px;"></div>
+        </div>
+      </section>
+
       <section id="portal-view" class="view" style="display:none;">
         <div class="panel" style="--delay:.06s;">
           <div class="panel-title">Portal de aplicaciones</div>
@@ -15838,6 +16089,7 @@ app.get("/admin/ui", (req, res) => {
     const navCalendarEl = document.getElementById('nav-calendar');
     const navOnboardingEl = document.getElementById('nav-onboarding');
     const navAnalyticsEl = document.getElementById('nav-analytics');
+    const navPricingEl = document.getElementById('nav-pricing');
     const navPortalEl = document.getElementById('nav-portal');
     const navCallsBadgeEl = document.getElementById('nav-calls-badge');
     const navInterviewsBadgeEl = document.getElementById('nav-interviews-badge');
@@ -15854,6 +16106,7 @@ app.get("/admin/ui", (req, res) => {
     const calendarViewEl = document.getElementById('calendar-view');
     const onboardingViewEl = document.getElementById('onboarding-view');
     const analyticsViewEl = document.getElementById('analytics-view');
+    const pricingViewEl = document.getElementById('pricing-view');
     const portalViewEl = document.getElementById('portal-view');
     const brandViewEl = document.getElementById('brand-view');
     const loadBtnEl = document.getElementById('load');
@@ -16218,6 +16471,12 @@ app.get("/admin/ui", (req, res) => {
     const analyticsSourcesEl = document.getElementById('analytics-sources');
     const analyticsCallsBrandEl = document.getElementById('analytics-calls-brand');
     const analyticsCallsRoleEl = document.getElementById('analytics-calls-role');
+    const pricingBrandEl = document.getElementById('pricing-brand');
+    const pricingSearchEl = document.getElementById('pricing-search');
+    const pricingRefreshEl = document.getElementById('pricing-refresh');
+    const pricingCardsEl = document.getElementById('pricing-cards');
+    const pricingBodyEl = document.getElementById('pricing-body');
+    const pricingCountEl = document.getElementById('pricing-count');
     const onboardingBrandEl = document.getElementById('onboarding-brand');
     const onboardingSearchEl = document.getElementById('onboarding-search');
     const onboardingRefreshEl = document.getElementById('onboarding-refresh');
@@ -16273,6 +16532,8 @@ app.get("/admin/ui", (req, res) => {
     let lastResults = [];
     let lastCvFiltered = [];
     let lastResultsFiltered = [];
+    let pricingCallsRaw = [];
+    let pricingTimer = null;
     let cvViewMode = 'table';
     let resultsViewMode = 'table';
     let cvSwipeIndex = 0;
@@ -16424,6 +16685,7 @@ app.get("/admin/ui", (req, res) => {
     const VIEW_CALENDAR = '__calendar__';
     const VIEW_ONBOARDING = '__onboarding__';
     const VIEW_ANALYTICS = '__analytics__';
+    const VIEW_PRICING = '__pricing__';
     const VIEW_PORTAL = '__portal__';
 
     if (window.pdfjsLib) {
@@ -17084,6 +17346,7 @@ app.get("/admin/ui", (req, res) => {
       if (navMessagesEl) navMessagesEl.style.display = canWrite ? '' : 'none';
       if (navPortalEl) navPortalEl.style.display = isAdmin ? '' : 'none';
       if (navAnalyticsEl) navAnalyticsEl.style.display = canPermission('analytics_view') ? '' : 'none';
+      if (navPricingEl) navPricingEl.style.display = canPermission('analytics_view') ? '' : 'none';
       if (navOnboardingEl) navOnboardingEl.style.display = canPermission('onboarding_manage') ? '' : 'none';
       if (brandListEl) brandListEl.style.display = isAdmin ? '' : 'none';
       if (addBrandEl) addBrandEl.style.display = isAdmin ? '' : 'none';
@@ -21339,6 +21602,7 @@ app.get("/admin/ui", (req, res) => {
       if (navCalendarEl) navCalendarEl.classList.toggle('active', activeView === 'calendar');
       if (navOnboardingEl) navOnboardingEl.classList.toggle('active', activeView === 'onboarding');
       if (navAnalyticsEl) navAnalyticsEl.classList.toggle('active', activeView === 'analytics');
+      if (navPricingEl) navPricingEl.classList.toggle('active', activeView === 'pricing');
       if (navPortalEl) navPortalEl.classList.toggle('active', activeView === 'portal');
       brandListEl.querySelectorAll('.nav-item').forEach((btn) => {
         btn.classList.toggle('active', activeView === 'brand' && btn.dataset.brandKey === activeBrandKey);
@@ -21356,6 +21620,7 @@ app.get("/admin/ui", (req, res) => {
         key !== VIEW_INTERVIEWS &&
         key !== VIEW_CALENDAR &&
         key !== VIEW_ANALYTICS &&
+        key !== VIEW_PRICING &&
         !(key === VIEW_ONBOARDING && canOnboarding)
       ) {
         key = VIEW_CALLS;
@@ -21378,6 +21643,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (key === VIEW_ANALYTICS) {
         activeView = canAnalytics ? 'analytics' : 'calls';
         activeBrandKey = '';
+      } else if (key === VIEW_PRICING) {
+        activeView = canAnalytics ? 'pricing' : 'calls';
+        activeBrandKey = '';
       } else if (key === VIEW_PORTAL) {
         activeView = 'portal';
         activeBrandKey = '';
@@ -21395,6 +21663,7 @@ app.get("/admin/ui", (req, res) => {
       if (calendarViewEl) calendarViewEl.style.display = activeView === 'calendar' ? 'block' : 'none';
       if (onboardingViewEl) onboardingViewEl.style.display = activeView === 'onboarding' ? 'block' : 'none';
       if (analyticsViewEl) analyticsViewEl.style.display = activeView === 'analytics' ? 'block' : 'none';
+      if (pricingViewEl) pricingViewEl.style.display = activeView === 'pricing' ? 'block' : 'none';
       if (portalViewEl) portalViewEl.style.display = activeView === 'portal' ? 'block' : 'none';
       brandViewEl.style.display = activeView === 'brand' ? 'block' : 'none';
       getBrandCards().forEach((card) => {
@@ -21422,6 +21691,9 @@ app.get("/admin/ui", (req, res) => {
       } else if (activeView === 'analytics') {
         viewTitleEl.textContent = 'Analytics';
         viewLabelEl.textContent = 'Métricas';
+      } else if (activeView === 'pricing') {
+        viewTitleEl.textContent = 'Pricing';
+        viewLabelEl.textContent = 'Costos';
       } else if (activeView === 'portal') {
         viewTitleEl.textContent = 'Portal';
         viewLabelEl.textContent = 'Aplicaciones';
@@ -21468,6 +21740,9 @@ app.get("/admin/ui", (req, res) => {
       }
       if (activeView === 'analytics') {
         loadAnalytics();
+      }
+      if (activeView === 'pricing') {
+        loadPricingCalls();
       }
       if (window.matchMedia && window.matchMedia('(max-width: 980px)').matches) {
         setSidebarCollapsed(true);
@@ -21628,6 +21903,21 @@ app.get("/admin/ui", (req, res) => {
           messagesBrandEl.value = '';
         }
       }
+      if (pricingBrandEl) {
+        const pricingPrev = pricingBrandEl.value;
+        pricingBrandEl.innerHTML = '<option value="">Todos</option>';
+        options.forEach((opt) => {
+          const option = document.createElement('option');
+          option.value = opt.key;
+          option.textContent = opt.display;
+          pricingBrandEl.appendChild(option);
+        });
+        if (pricingPrev && options.some((opt) => opt.key === pricingPrev)) {
+          pricingBrandEl.value = pricingPrev;
+        } else {
+          pricingBrandEl.value = '';
+        }
+      }
     }
 
     function updateResultsRoleOptions() {
@@ -21753,6 +22043,10 @@ app.get("/admin/ui", (req, res) => {
         setActiveView(VIEW_INTERVIEWS);
       } else if (activeView === 'calendar') {
         setActiveView(VIEW_CALENDAR);
+      } else if (activeView === 'pricing') {
+        setActiveView(VIEW_PRICING);
+      } else if (activeView === 'analytics') {
+        setActiveView(VIEW_ANALYTICS);
       } else {
         setActiveView('');
       }
@@ -24525,10 +24819,155 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    function setPricingCount(msg) {
+      if (!pricingCountEl) return;
+      pricingCountEl.textContent = msg || '';
+    }
+
+    function formatPricingDuration(seconds) {
+      const sec = Number(seconds);
+      if (!Number.isFinite(sec) || sec <= 0) return '—';
+      const mins = Math.floor(sec / 60);
+      const rem = sec % 60;
+      return mins + ':' + String(rem).padStart(2, '0');
+    }
+
+    function formatUsdUi(value) {
+      const num = Number(value);
+      if (!Number.isFinite(num) || num <= 0) return '—';
+      return new Intl.NumberFormat('en-US', {
+        style: 'currency',
+        currency: 'USD',
+        minimumFractionDigits: num < 0.1 ? 4 : 2,
+        maximumFractionDigits: num < 0.1 ? 4 : 2
+      }).format(num);
+    }
+
+    function pricingMeta(item) {
+      const meta = item && item.cost_meta && typeof item.cost_meta === 'object' ? item.cost_meta : {};
+      return meta || {};
+    }
+
+    function pricingModelText(meta) {
+      const parts = [];
+      if (meta.realtime_model) parts.push('RT: ' + meta.realtime_model);
+      if (meta.scoring_model) parts.push('Score: ' + meta.scoring_model);
+      if (meta.transcription_model) parts.push('STT: ' + meta.transcription_model);
+      return parts.length ? parts.join(' · ') : '—';
+    }
+
+    function pricingOpenAiDetail(meta) {
+      const parts = [];
+      if (Number(meta.realtime_cost_usd || 0) > 0) parts.push('RT ' + formatUsdUi(meta.realtime_cost_usd));
+      if (Number(meta.scoring_cost_usd || 0) > 0) parts.push('Score ' + formatUsdUi(meta.scoring_cost_usd));
+      if (Number(meta.transcription_cost_usd || 0) > 0) parts.push('STT ' + formatUsdUi(meta.transcription_cost_usd));
+      return parts.length ? parts.join(' · ') : '';
+    }
+
+    function renderPricingCards(items) {
+      if (!pricingCardsEl) return;
+      const list = Array.isArray(items) ? items : [];
+      const totals = list.reduce((acc, item) => {
+        const meta = pricingMeta(item);
+        acc.calls += 1;
+        acc.openai += Number(meta.openai_total_usd || 0);
+        acc.twilio += Number(meta.twilio_voice_cost_usd || 0);
+        acc.total += Number(meta.total_cost_usd || 0);
+        return acc;
+      }, { calls: 0, openai: 0, twilio: 0, total: 0 });
+      const avg = totals.calls ? totals.total / totals.calls : 0;
+      const cards = [
+        { label: 'Llamadas', value: String(totals.calls) },
+        { label: 'OpenAI', value: formatUsdUi(totals.openai) },
+        { label: 'Twilio', value: formatUsdUi(totals.twilio) },
+        { label: 'Total', value: formatUsdUi(totals.total) },
+        { label: 'Promedio', value: formatUsdUi(avg) }
+      ];
+      pricingCardsEl.innerHTML = '';
+      cards.forEach((card) => {
+        const div = document.createElement('div');
+        div.className = 'analytics-card';
+        const label = document.createElement('div');
+        label.className = 'analytics-label';
+        label.textContent = card.label;
+        const value = document.createElement('div');
+        value.className = 'analytics-value';
+        value.textContent = card.value;
+        div.appendChild(label);
+        div.appendChild(value);
+        pricingCardsEl.appendChild(div);
+      });
+    }
+
+    function renderPricingCalls(items) {
+      if (!pricingBodyEl) return;
+      const list = Array.isArray(items) ? items : [];
+      pricingCallsRaw = list.slice();
+      pricingBodyEl.innerHTML = '';
+      renderPricingCards(list);
+      if (!list.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 8;
+        td.textContent = 'Sin llamadas todavía.';
+        tr.appendChild(td);
+        pricingBodyEl.appendChild(tr);
+        setPricingCount('0 llamadas');
+        return;
+      }
+      list.forEach((item) => {
+        const meta = pricingMeta(item);
+        const tr = document.createElement('tr');
+        const addCell = (value, label, className, title) => {
+          const td = document.createElement('td');
+          td.dataset.label = label || '';
+          td.textContent = value || '—';
+          if (className) td.className = className;
+          if (title) td.title = title;
+          tr.appendChild(td);
+        };
+        addCell(formatDate(item.created_at), 'Fecha', 'cell-compact', formatDate(item.created_at));
+        addCell(item.applicant || 'Sin nombre', 'Candidato', 'cell-compact', item.applicant || item.phone || '');
+        addCell(item.brand || '—', 'Local', 'cell-compact', item.brand || '');
+        addCell(formatPricingDuration(item.duration_sec), 'Duración', 'cell-compact');
+        addCell(pricingModelText(meta), 'Modelos', '', pricingModelText(meta));
+        addCell(formatUsdUi(meta.openai_total_usd), 'OpenAI', 'cell-compact', pricingOpenAiDetail(meta));
+        addCell(formatUsdUi(meta.twilio_voice_cost_usd), 'Twilio', 'cell-compact');
+        addCell(formatUsdUi(meta.total_cost_usd), 'Total', 'cell-compact', meta.estimated ? 'Estimado' : '');
+        pricingBodyEl.appendChild(tr);
+      });
+      setPricingCount(String(list.length) + ' llamadas · costos estimados en USD');
+    }
+
+    async function loadPricingCalls() {
+      if (activeView !== 'pricing') return;
+      try {
+        setPricingCount('Cargando...');
+        const params = new URLSearchParams();
+        params.set('limit', '500');
+        if (pricingBrandEl && pricingBrandEl.value) params.set('brand', pricingBrandEl.value);
+        if (pricingSearchEl && pricingSearchEl.value) params.set('q', pricingSearchEl.value);
+        const resp = await fetch('/admin/calls?' + params.toString(), {
+          headers: { Authorization: 'Bearer ' + tokenEl.value }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'calls failed');
+        renderPricingCalls(data.calls || []);
+      } catch (err) {
+        setPricingCount('Error: ' + err.message);
+      }
+    }
+
     function scheduleResultsLoad() {
       if (activeView !== 'interviews' && activeView !== 'calendar') return;
       if (resultsTimer) clearTimeout(resultsTimer);
       resultsTimer = setTimeout(loadResults, 300);
+    }
+
+    function schedulePricingLoad() {
+      if (activeView !== 'pricing') return;
+      if (pricingTimer) clearTimeout(pricingTimer);
+      pricingTimer = setTimeout(loadPricingCalls, 260);
     }
 
     function scheduleCvLoad() {
@@ -26290,6 +26729,7 @@ app.get("/admin/ui", (req, res) => {
     if (navCalendarEl) navCalendarEl.onclick = () => setActiveView(VIEW_CALENDAR);
     if (navOnboardingEl) navOnboardingEl.onclick = () => setActiveView(VIEW_ONBOARDING);
     if (navAnalyticsEl) navAnalyticsEl.onclick = () => setActiveView(VIEW_ANALYTICS);
+    if (navPricingEl) navPricingEl.onclick = () => setActiveView(VIEW_PRICING);
     if (navPortalEl) navPortalEl.onclick = () => setActiveView(VIEW_PORTAL);
     if (portalNewEl) {
       portalNewEl.onclick = () => {
@@ -26501,6 +26941,9 @@ app.get("/admin/ui", (req, res) => {
       el.addEventListener('change', scheduleResultsLoad);
     });
     resultsSearchEl.addEventListener('input', scheduleResultsLoad);
+    if (pricingRefreshEl) pricingRefreshEl.onclick = loadPricingCalls;
+    if (pricingBrandEl) pricingBrandEl.addEventListener('change', schedulePricingLoad);
+    if (pricingSearchEl) pricingSearchEl.addEventListener('input', schedulePricingLoad);
     cvRefreshEl.onclick = loadCvList;
     cvFilterBrandEl.addEventListener('change', scheduleCvLoad);
     cvFilterSearchEl.addEventListener('input', scheduleCvLoad);
@@ -26751,6 +27194,8 @@ app.get("/admin/ui", (req, res) => {
         pendingView = VIEW_CALENDAR;
       } else if (viewParam === 'onboarding') {
         pendingView = VIEW_ONBOARDING;
+      } else if (viewParam === 'pricing') {
+        pendingView = VIEW_PRICING;
       } else if (viewParam === 'analytics') {
         pendingView = VIEW_ANALYTICS;
       } else if (viewParam === 'candidates' || viewParam === 'calls') {
@@ -27371,7 +27816,13 @@ app.post("/call-status", express.urlencoded({ extended: false }), async (req, re
       address: resolveAddress(DEFAULT_BRAND, null),
       userSpoke: false,
       outcome: null,
-      noAnswerReason: null
+      noAnswerReason: null,
+      realtimeModel: OPENAI_MODEL_REALTIME,
+      scoringModel: OPENAI_MODEL_SCORING,
+      transcriptionModel: "",
+      realtimeUsage: null,
+      scoringUsage: null,
+      costMeta: null
     };
 
     if (answeredBy) call.answeredBy = answeredBy;
@@ -27656,6 +28107,12 @@ wss.on("connection", (twilioWs, req) => {
     recordingStarted: false,
     transcriptText: "",
     scoring: null,
+    realtimeModel: OPENAI_MODEL_REALTIME,
+    scoringModel: OPENAI_MODEL_SCORING,
+    transcriptionModel: "",
+    realtimeUsage: null,
+    scoringUsage: null,
+    costMeta: null,
     recordingPath: null,
     recordingToken: null,
     whatsappSent: false,
@@ -27934,6 +28391,13 @@ DECÍ ESTO Y CALLATE:
     }
 
     if (evt.type === "response.done") {
+      const responseModel = String(evt.response?.model || evt.model || "").trim();
+      if (responseModel) call.realtimeModel = responseModel;
+      const nextUsage = normalizeRealtimeUsage(evt.response?.usage || evt.usage || null);
+      if (nextUsage) {
+        call.realtimeUsage = mergeRealtimeUsage(call.realtimeUsage, nextUsage);
+      }
+      call.costMeta = buildCallCostMeta(call);
       call.responseInFlight = false;
       return;
     }
@@ -28222,7 +28686,7 @@ async function transcribeAudio(filePath) {
   const audioBuf = await fs.promises.readFile(filePath);
   const form = new FormData();
   form.append("file", new Blob([audioBuf]), path.basename(filePath));
-  form.append("model", "whisper-1");
+  form.append("model", TRANSCRIPTION_MODEL);
   const resp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
@@ -28299,10 +28763,11 @@ async function scoreTranscript(call, transcriptText) {
   if (!resp.ok) throw new Error(`scoring failed ${resp.status}`);
   const data = await resp.json();
   const text = data.choices?.[0]?.message?.content || "{}";
+  const usage = normalizeTextUsage(data?.usage || null);
   try {
-    return JSON.parse(text);
+    return { result: JSON.parse(text), usage };
   } catch {
-    return null;
+    return { result: null, usage };
   }
 }
 
@@ -28368,7 +28833,8 @@ function buildCallHistoryEntry(call) {
     cv_url: call.cvUrl || "",
     notes: call.notes || "",
     alt_brand_key: call.alt_brand_key || call.altBrandKey || "",
-    alt_role_key: call.alt_role_key || call.altRoleKey || ""
+    alt_role_key: call.alt_role_key || call.altRoleKey || "",
+    cost_meta: buildCallCostMeta(call) || call.cost_meta || null
   };
 }
 
@@ -28385,6 +28851,7 @@ function recordCallHistory(call) {
     const prevTrialAt = existing.trial_at || "";
     const prevFollowStatus = existing.trial_follow_up_status || "";
     const prevFollowAt = existing.trial_follow_up_at || "";
+    const prevCostMeta = existing.cost_meta || null;
     Object.assign(existing, entry);
     if (!existing.notes && prevNotes) existing.notes = prevNotes;
     if (!existing.alt_brand_key && prevAltBrand) existing.alt_brand_key = prevAltBrand;
@@ -28396,6 +28863,7 @@ function recordCallHistory(call) {
     if ((!existing.trial_follow_up_at || existing.trial_follow_up_at === "") && prevFollowAt) {
       existing.trial_follow_up_at = prevFollowAt;
     }
+    if (!existing.cost_meta && prevCostMeta) existing.cost_meta = prevCostMeta;
     scheduleCallHistorySave();
     if (dbPool) {
       upsertCallDb(existing).catch((err) => console.error("[call-history] db upsert failed", err));
@@ -28564,6 +29032,9 @@ async function upsertCallDb(entry) {
   if (!dbPool || !entry) return;
   const callId = entry.callId || entry._key || randomToken();
   const notesValue = entry.notes === undefined ? null : entry.notes;
+  const costMetaValue = entry.cost_meta !== undefined
+    ? entry.cost_meta
+    : (entry.costMeta !== undefined ? entry.costMeta : buildCallCostMeta(entry));
   const altBrandValue = entry.alt_brand_key === undefined
     ? (entry.altBrandKey === undefined ? null : entry.altBrandKey)
     : entry.alt_brand_key;
@@ -28576,13 +29047,13 @@ async function upsertCallDb(entry) {
       score, recommendation, summary, warmth, fluency, english, english_detail,
       experience, area, availability, salary, trial, trial_at, trial_follow_up_status, trial_follow_up_at, stay_plan, stay_detail,
       mobility, outcome, outcome_detail, duration_sec, audio_url,
-      english_required, cv_id, cv_text, cv_url, notes, decision, onboarding_id, alt_brand_key, alt_role_key
+      english_required, cv_id, cv_text, cv_url, notes, decision, onboarding_id, alt_brand_key, alt_role_key, cost_meta
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,
       $9,$10,$11,$12,$13,$14,$15,
       $16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
       $26,$27,$28,$29,$30,
-      $31,$32,$33,$34,$35,$36,$37,$38,$39
+      $31,$32,$33,$34,$35,$36,$37,$38,$39,$40
     )
     ON CONFLICT (call_sid) DO UPDATE SET
       brand = EXCLUDED.brand,
@@ -28621,7 +29092,8 @@ async function upsertCallDb(entry) {
       decision = COALESCE(EXCLUDED.decision, calls.decision),
       onboarding_id = COALESCE(EXCLUDED.onboarding_id, calls.onboarding_id),
       alt_brand_key = COALESCE(EXCLUDED.alt_brand_key, calls.alt_brand_key),
-      alt_role_key = COALESCE(EXCLUDED.alt_role_key, calls.alt_role_key)
+      alt_role_key = COALESCE(EXCLUDED.alt_role_key, calls.alt_role_key),
+      cost_meta = COALESCE(EXCLUDED.cost_meta, calls.cost_meta)
   `;
   const values = [
     callId,
@@ -28662,7 +29134,8 @@ async function upsertCallDb(entry) {
     entry.decision || "",
     entry.onboarding_id || "",
     altBrandValue,
-    altRoleValue
+    altRoleValue,
+    costMetaValue ? JSON.stringify(costMetaValue) : null
   ];
   await dbQuery(sql, values);
 }
@@ -28771,6 +29244,7 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
+      c.cost_meta,
       COALESCE(c.onboarding_id, cv.onboarding_id) AS onboarding_id,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
@@ -28831,7 +29305,8 @@ async function fetchCallsFromDb({ brandParam, roleParam, recParam, qParam, minSc
       notes: row.notes || "",
       onboarding_id: row.onboarding_id || "",
       alt_brand_key: row.alt_brand_key || "",
-      alt_role_key: row.alt_role_key || ""
+      alt_role_key: row.alt_role_key || "",
+      cost_meta: row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null
     });
   }
   return mapped;
@@ -28881,6 +29356,7 @@ async function fetchCallById(callId) {
       c.notes,
       c.alt_brand_key,
       c.alt_role_key,
+      c.cost_meta,
       COALESCE(c.onboarding_id, cv.onboarding_id) AS onboarding_id,
       COALESCE(cv.decision, '') AS decision,
       COALESCE(cv.source, '') AS source,
@@ -28939,7 +29415,8 @@ async function fetchCallById(callId) {
     notes: row.notes || "",
     onboarding_id: row.onboarding_id || "",
     alt_brand_key: row.alt_brand_key || "",
-    alt_role_key: row.alt_role_key || ""
+    alt_role_key: row.alt_role_key || "",
+    cost_meta: row.cost_meta && typeof row.cost_meta === "object" ? row.cost_meta : null
   };
 }
 
@@ -29992,6 +30469,7 @@ async function maybeScoreAndSend(call) {
   let transcriptText = call.transcriptText || "";
   if (!transcriptText && call.recordingPath) {
     try {
+      call.transcriptionModel = TRANSCRIPTION_MODEL;
       transcriptText = await transcribeAudio(call.recordingPath);
       call.transcriptText = transcriptText;
     } catch (err) {
@@ -30009,11 +30487,15 @@ async function maybeScoreAndSend(call) {
     console.warn("[scoring] skipped: transcript unusable");
   } else {
     try {
-      call.scoring = await scoreTranscript(call, transcriptText);
+      call.scoringModel = OPENAI_MODEL_SCORING;
+      const scoringResult = await scoreTranscript(call, transcriptText);
+      call.scoring = scoringResult?.result || null;
+      call.scoringUsage = scoringResult?.usage || null;
     } catch (err) {
       console.error("[scoring] failed", err);
     }
   }
+  call.costMeta = buildCallCostMeta(call);
   if (call.scoring && !call.pushNotified) {
     try {
       await notifyInterviewCompleted({ call, scoring: call.scoring });
