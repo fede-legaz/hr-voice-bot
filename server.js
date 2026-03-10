@@ -3131,6 +3131,8 @@ function attachActiveCall(entry, activeIndex) {
 const CALL_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const NO_ANSWER_CONTEXT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const SCHEDULED_CALL_POLL_MS = Math.max(15000, Number(process.env.SCHEDULED_CALL_POLL_MS) || 60000);
+const SCHEDULED_CALL_RETRY_MS = Math.max(60000, Number(process.env.SCHEDULED_CALL_RETRY_MS) || 5 * 60 * 1000);
 const callsByStream = new Map(); // streamSid -> call
 const callsByCallSid = new Map(); // callSid -> call
 const lastCallByNumber = new Map(); // toNumber -> { payload, expiresAt }
@@ -3157,6 +3159,7 @@ const cvStore = [];
 const cvStoreById = new Map();
 let cvStoreSaveTimer = null;
 let cvStoreSaving = false;
+let scheduledCallRunnerBusy = false;
 const pushSubscriptions = new Map();
 const ACTIVE_CALL_STATUSES = new Set(["queued", "initiated", "ringing", "answered", "in-progress", "in progress"]);
 let roleConfig = null;
@@ -3827,6 +3830,125 @@ async function dbQuery(sql, params = []) {
   return dbPool.query(sql, params);
 }
 
+function applyScheduledCallState(ids, scheduledCallAt) {
+  const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+  if (!list.length) return;
+  for (const id of list) {
+    const entry = cvStoreById.get(id);
+    if (entry) entry.scheduled_call_at = scheduledCallAt || "";
+  }
+  for (const item of cvStore) {
+    if (item && item.id && list.includes(item.id)) {
+      item.scheduled_call_at = scheduledCallAt || "";
+    }
+  }
+  scheduleCvStoreSave();
+}
+
+async function claimDueScheduledCvs(limit = 5) {
+  if (!dbPool) return [];
+  const client = await dbPool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query(
+      `SELECT
+          id,
+          brand,
+          role,
+          applicant,
+          phone,
+          cv_text,
+          cv_url,
+          custom_question,
+          custom_question_mode,
+          scheduled_call_at
+       FROM cvs
+       WHERE scheduled_call_at IS NOT NULL
+         AND scheduled_call_at <= NOW()
+       ORDER BY scheduled_call_at ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED`,
+      [Math.max(1, Number(limit) || 5)]
+    );
+    const rows = result?.rows || [];
+    if (rows.length) {
+      await client.query(
+        "UPDATE cvs SET scheduled_call_at = NULL WHERE id = ANY($1)",
+        [rows.map((row) => row.id)]
+      );
+    }
+    await client.query("COMMIT");
+    return rows;
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch {}
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+async function restoreScheduledCvCall(cvId, scheduledCallAt) {
+  if (!cvId || !scheduledCallAt) return;
+  const normalized = normalizeIso(scheduledCallAt);
+  if (!normalized) return;
+  applyScheduledCallState([cvId], normalized);
+  if (!dbPool) return;
+  try {
+    await dbQuery("UPDATE cvs SET scheduled_call_at = $2 WHERE id = $1", [cvId, normalized]);
+  } catch (err) {
+    console.error("[scheduled-call] restore failed", { cvId, error: err.message });
+  }
+}
+
+async function runScheduledCallWorker() {
+  if (!dbPool || scheduledCallRunnerBusy) return;
+  scheduledCallRunnerBusy = true;
+  try {
+    const dueRows = await claimDueScheduledCvs(5);
+    for (const row of dueRows) {
+      const cvId = String(row.id || "").trim();
+      const originalScheduledAt = normalizeIso(row.scheduled_call_at || "");
+      applyScheduledCallState([cvId], "");
+      try {
+        const payload = {
+          to: row.phone || "",
+          brand: row.brand || DEFAULT_BRAND,
+          role: row.role || DEFAULT_ROLE,
+          applicant: row.applicant || "",
+          cv_id: cvId,
+          cv_text: row.cv_text || "",
+          cv_summary: truncateText(row.cv_text || "", CV_CHAR_LIMIT),
+          resume_url: row.cv_url || "",
+          custom_question: row.custom_question || "",
+          custom_question_mode: row.custom_question_mode || "exact"
+        };
+        if (!payload.to || !payload.cv_summary) {
+          throw new Error("missing phone or cv text");
+        }
+        const resp = await placeOutboundCall(payload);
+        console.log("[scheduled-call] queued", {
+          cvId,
+          callSid: resp?.sid || "",
+          scheduled_call_at: originalScheduledAt || ""
+        });
+      } catch (err) {
+        const retryAt = new Date(Date.now() + SCHEDULED_CALL_RETRY_MS).toISOString();
+        console.error("[scheduled-call] failed", {
+          cvId,
+          scheduled_call_at: originalScheduledAt || "",
+          retry_at: retryAt,
+          error: err.message
+        });
+        await restoreScheduledCvCall(cvId, retryAt);
+      }
+    }
+  } catch (err) {
+    console.error("[scheduled-call] worker failed", err);
+  } finally {
+    scheduledCallRunnerBusy = false;
+  }
+}
+
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -4451,6 +4573,12 @@ async function initDb() {
   }
 }
 initDb();
+setTimeout(() => {
+  runScheduledCallWorker().catch((err) => console.error("[scheduled-call] initial run failed", err));
+}, 15000).unref();
+setInterval(() => {
+  runScheduledCallWorker().catch((err) => console.error("[scheduled-call] poll failed", err));
+}, SCHEDULED_CALL_POLL_MS).unref();
 
 function getSpacesPublicBaseUrl() {
   if (SPACES_PUBLIC_URL) return SPACES_PUBLIC_URL;
@@ -30134,10 +30262,14 @@ async function placeOutboundCall(payload) {
     cv_summary = "",
     cv_text = "",
     cv_id: cvIdRaw = "",
-    resume_url = ""
+    resume_url = "",
+    custom_question = "",
+    custom_question_mode = "exact"
   } = data;
   const cvSummary = (cv_summary || cv_text || "").trim();
   let cvId = cvIdRaw || "";
+  const customQuestion = String(custom_question || "").trim();
+  const customQuestionMode = String(custom_question_mode || "").trim() === "ai" ? "ai" : "exact";
 
   const toNorm = normalizePhone(to);
   const fromNorm = normalizePhone(from);
@@ -30155,25 +30287,46 @@ async function placeOutboundCall(payload) {
       id: cvId,
       brand,
       role: roleClean,
-      applicant,
-      phone: toNorm,
-      cv_text: cv_text || cvSummary,
-      resume_url
-    });
-    recordCvEntry(cvEntry);
-  }
+        applicant,
+        phone: toNorm,
+        cv_text: cv_text || cvSummary,
+        resume_url,
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
+      });
+      recordCvEntry(cvEntry);
+    }
   if (!cvId && cvSummary && dbPool) {
     const cvEntry = buildCvEntry({
       brand,
       role: roleClean,
+        applicant,
+        phone: toNorm,
+        cv_text: cv_text || cvSummary,
+        resume_url,
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
+      });
+      recordCvEntry(cvEntry);
+      cvId = cvEntry.id;
+    }
+  lastCallByNumber.set(toNorm, {
+    payload: {
+      to: toNorm,
+      from: fromNorm,
+      brand,
+      role: roleClean,
+      englishRequired: englishReqBool ? "1" : "0",
+      address: resolvedAddress,
       applicant,
-      phone: toNorm,
-      cv_text: cv_text || cvSummary,
-      resume_url
-    });
-    recordCvEntry(cvEntry);
-    cvId = cvEntry.id;
-  }
+      cv_summary: cvSummary,
+      cv_id: cvId,
+      resume_url,
+      custom_question: customQuestion,
+      custom_question_mode: customQuestionMode
+    },
+    expiresAt: Date.now() + CALL_TTL_MS
+  });
   const voiceToken = randomToken();
   voiceCtxByToken.set(voiceToken, {
     payload: {
@@ -30186,7 +30339,9 @@ async function placeOutboundCall(payload) {
       applicant,
       cv_summary: cvSummary,
       cv_id: cvId,
-      resume_url
+      resume_url,
+      custom_question: customQuestion,
+      custom_question_mode: customQuestionMode
     },
     expiresAt: Date.now() + CALL_TTL_MS
   });
@@ -30226,7 +30381,9 @@ async function placeOutboundCall(payload) {
         applicant,
         cv_summary: cvSummary,
         cv_id: cvId,
-        resume_url
+        resume_url,
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
       },
       { callSid: respData.sid, to: toNorm }
     );
