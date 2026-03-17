@@ -2896,6 +2896,7 @@ function buildInstructions(ctx) {
   const speechTone = resolveSpeechTone(metaCfg);
   const hasSpeechToneSlot = /\{speech_tone(?:_line)?\}/.test(promptTemplate);
   const speechToneLine = speechTone && !hasSpeechToneSlot ? `Tono solicitado: ${speechTone}` : "";
+  const postConsentRule = "La apertura y el consentimiento ya ocurrieron antes de entrar al audio. No vuelvas a saludar, presentarte ni repetir que llamás por la aplicación; empezá directo con la primera pregunta útil.";
   const promptVars = {
     name: firstName,
     first_name: firstName,
@@ -2954,7 +2955,7 @@ function buildInstructions(ctx) {
   });
   const runtimeExtraRaw = (metaCfg.runtime_instructions || "").trim();
   const runtimeExtra = runtimeExtraRaw ? renderPromptTemplate(runtimeExtraRaw, promptVars).trim() : "";
-  return [rendered, speechToneLine, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
+  return [rendered, speechToneLine, postConsentRule, mandatoryBlock, runtimeExtra].filter(Boolean).join("\n\n").trim();
 }
 
 function getEnglishCheckQuestionEn() {
@@ -28386,18 +28387,11 @@ const openaiWs = new WebSocket(
     if (!call.twilioReady || !call.openaiReady) return;
     call.started = true;
     flushAudio();
-    const firstName = (call.applicant || "").split(/\s+/)[0] || "";
     const spokenRole = call.spokenRole || displayRole(call.role || "", call.brand);
-    const openerLine = buildMetaOpener({
-      brand: call.brand || DEFAULT_BRAND,
-      role: call.role || DEFAULT_ROLE,
-      applicant: call.applicant || "",
-      lang: call.lang === "en" ? "en" : "es"
-    });
-    const introAfterYes =
+    const firstQuestion =
       call.lang === "en"
-        ? `Great. You applied for ${spokenRole}. Can you tell me about your experience in this position?`
-        : `Perfecto, aplicaste para ${spokenRole}. ¿Podés contarme un poco tu experiencia en esta posición?`;
+        ? `Tell me a bit about your experience for ${spokenRole}.`
+        : `Contame un poco tu experiencia para ${spokenRole}.`;
     setTimeout(() => {
       if (call.heardSpeech || call.responseInFlight) return;
       openaiWs.send(JSON.stringify({
@@ -28409,13 +28403,13 @@ const openaiWs = new WebSocket(
             type: "input_text",
             text: `
 INSTRUCCIONES PARA VOS (no las digas):
-- Primer turno: decí solo el opener, sin agregar "claro", "sí", "tengo tiempo" ni responder tu propia pregunta.
-- Cuando el candidato confirme que puede hablar, tu siguiente turno debe ser: "${introAfterYes}"
+- La apertura y el consentimiento ya ocurrieron. No vuelvas a saludar, presentarte ni repetir que llamás por la aplicación.
+- Primer turno: empezá directo con esta pregunta exacta: "${firstQuestion}"
 - No actúes como candidato. Vos preguntás y esperás.
 - Si hay silencio/ruido, esperá la respuesta; no rellenes.
 
 DECÍ ESTO Y CALLATE:
-"${openerLine}"
+"${firstQuestion}"
 `.trim()
           }]
         }
