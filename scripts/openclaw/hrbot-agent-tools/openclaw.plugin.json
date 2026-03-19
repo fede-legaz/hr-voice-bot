@@ -1,0 +1,10 @@
+{
+  "id": "hrbot-agent-tools",
+  "name": "HRBOT Agent Tools",
+  "description": "Agent tools for reading candidates, calls, and capabilities from HRBOT.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
