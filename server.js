@@ -64,6 +64,7 @@ const TWILIO_ONBOARDING_SMS_FROM = process.env.TWILIO_ONBOARDING_SMS_FROM || "+1
 const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
+const OPENCLAW_AGENT_TOKEN = process.env.OPENCLAW_AGENT_TOKEN || "";
 const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
 const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
 const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
@@ -138,6 +139,108 @@ const DEFAULT_ROLE_PERMISSIONS = {
     analytics_view: false
   }
 };
+
+const OPENCLAW_OWNER_CAPABILITIES = [
+  {
+    group: "auth",
+    routes: [
+      { method: "GET", path: "/openclaw/me", description: "Verify the OpenClaw token and inspect owner-level access." },
+      { method: "GET", path: "/openclaw/capabilities", description: "List the owner routes OpenClaw can call." }
+    ]
+  },
+  {
+    group: "users_and_config",
+    routes: [
+      { method: "GET", path: "/admin/me", description: "Read the authenticated profile context." },
+      { method: "GET", path: "/admin/users", description: "List admin users." },
+      { method: "POST", path: "/admin/users", description: "Create an admin/interviewer/viewer user." },
+      { method: "PUT", path: "/admin/users/:id", description: "Update an existing user." },
+      { method: "DELETE", path: "/admin/users/:id", description: "Delete an existing user." },
+      { method: "GET", path: "/admin/config", description: "Read the recruiter/brand config." },
+      { method: "POST", path: "/admin/config", description: "Update the recruiter/brand config." },
+      { method: "GET", path: "/admin/analytics", description: "Read recruiting analytics." },
+      { method: "POST", path: "/admin/preview", description: "Preview the generated recruiter prompt for a role." }
+    ]
+  },
+  {
+    group: "prompts_and_ai",
+    routes: [
+      { method: "GET", path: "/admin/system-prompt", description: "Read the owner-only system prompt." },
+      { method: "POST", path: "/admin/system-prompt", description: "Update the owner-only system prompt." },
+      { method: "GET", path: "/admin/system-prompt/store", description: "Read stored prompt templates/history." },
+      { method: "POST", path: "/admin/system-prompt/templates", description: "Create a reusable prompt template." },
+      { method: "DELETE", path: "/admin/system-prompt/templates/:id", description: "Delete a reusable prompt template." },
+      { method: "POST", path: "/admin/system-prompt/assist", description: "Ask AI to rewrite the system prompt." },
+      { method: "POST", path: "/admin/assistant/chat", description: "Chat against admin data context." }
+    ]
+  },
+  {
+    group: "calls",
+    routes: [
+      { method: "GET", path: "/admin/calls", description: "List interviews/calls with filters." },
+      { method: "GET", path: "/openclaw/calls/:callId", description: "Fetch one interview/call by ID." },
+      { method: "POST", path: "/admin/calls/:callId/notes", description: "Save call notes and alternate classification." },
+      { method: "POST", path: "/admin/calls/:callId/trial", description: "Schedule a trial for a call." },
+      { method: "POST", path: "/admin/calls/:callId/trial-review", description: "Mark trial review result for a call." },
+      { method: "POST", path: "/admin/calls/:callId/whatsapp", description: "Send the interview summary to WhatsApp." },
+      { method: "GET", path: "/admin/calls/:callId/audio", description: "Download interview audio." },
+      { method: "DELETE", path: "/admin/calls/:callId", description: "Delete an interview/call." }
+    ]
+  },
+  {
+    group: "candidates",
+    routes: [
+      { method: "GET", path: "/admin/cv", description: "List candidates/CVs with filters." },
+      { method: "GET", path: "/openclaw/cv/:id", description: "Fetch one candidate/CV by ID." },
+      { method: "POST", path: "/admin/cv", description: "Create or upload a candidate/CV." },
+      { method: "POST", path: "/admin/cv/status", description: "Update candidate decision/status in bulk." },
+      { method: "POST", path: "/admin/cv/:id/phone", description: "Update candidate phone." },
+      { method: "POST", path: "/admin/cv/question", description: "Set a custom interview question." },
+      { method: "POST", path: "/admin/cv/:id/scheduled-call", description: "Schedule a call for a candidate." },
+      { method: "POST", path: "/admin/cv/:id/trial", description: "Schedule a trial for a candidate." },
+      { method: "POST", path: "/admin/cv/:id/trial-review", description: "Mark trial review result for a candidate." },
+      { method: "DELETE", path: "/admin/cv/:id", description: "Delete a candidate/CV." },
+      { method: "POST", path: "/admin/ocr", description: "Extract CV text from document images/files." },
+      { method: "POST", path: "/admin/extract-contact", description: "Extract contact info from CV text." },
+      { method: "POST", path: "/admin/face-detect", description: "Detect if a candidate photo contains a face." },
+      { method: "POST", path: "/admin/cv-photo", description: "Process/store a candidate photo." }
+    ]
+  },
+  {
+    group: "messages",
+    routes: [
+      { method: "GET", path: "/admin/messages/conversations", description: "List SMS conversations." },
+      { method: "GET", path: "/admin/messages/thread", description: "Read one SMS thread by phone or cv_id." },
+      { method: "POST", path: "/admin/messages/send", description: "Send an outbound SMS." }
+    ]
+  },
+  {
+    group: "onboarding",
+    routes: [
+      { method: "GET", path: "/admin/onboarding/config", description: "Read onboarding config." },
+      { method: "POST", path: "/admin/onboarding/config", description: "Update onboarding config." },
+      { method: "POST", path: "/admin/onboarding/create", description: "Create onboarding from a call/CV or manually." },
+      { method: "GET", path: "/admin/onboarding/list", description: "List onboarding profiles." },
+      { method: "GET", path: "/admin/onboarding/:id", description: "Fetch one onboarding profile." },
+      { method: "POST", path: "/admin/onboarding/:id/profile", description: "Update onboarding profile fields." },
+      { method: "POST", path: "/admin/onboarding/:id/docs-sync", description: "Regenerate onboarding required docs." },
+      { method: "POST", path: "/admin/onboarding/:id/send-sms", description: "Send the onboarding link by SMS." },
+      { method: "POST", path: "/admin/onboarding/:id/doc", description: "Upload an onboarding document." },
+      { method: "GET", path: "/admin/onboarding/:id/doc/:docId", description: "Open one onboarding document." },
+      { method: "DELETE", path: "/admin/onboarding/:id/doc/:docId", description: "Delete one onboarding document." },
+      { method: "GET", path: "/admin/onboarding/:id/packet", description: "Render/download the onboarding packet." }
+    ]
+  },
+  {
+    group: "portal",
+    routes: [
+      { method: "GET", path: "/admin/portal/pages", description: "List portal pages." },
+      { method: "POST", path: "/admin/portal/pages", description: "Create or update a portal page." },
+      { method: "DELETE", path: "/admin/portal/pages/:slug", description: "Delete a portal page." },
+      { method: "GET", path: "/admin/portal/applications", description: "List portal applications." }
+    ]
+  }
+];
 
 const ROLE_NOTES = {
   server: "Requiere inglés conversacional. Calidez con clientes, servicio de salón, manejo de POS/bandeja.",
@@ -3678,9 +3781,25 @@ function extractBearerToken(authHeader) {
   return match ? match[1].trim() : "";
 }
 
+function buildOpenClawAuthContext() {
+  return { role: "admin", allowedBrands: null, email: "", authType: "openclaw" };
+}
+
 function isConfigAuth(authHeader) {
   if (!CONFIG_TOKEN) return false;
   return authHeader === `Bearer ${CONFIG_TOKEN}`;
+}
+
+function isOpenClawAuth(authHeader) {
+  if (!OPENCLAW_AGENT_TOKEN) return false;
+  return authHeader === `Bearer ${OPENCLAW_AGENT_TOKEN}`;
+}
+
+function applyAuthContext(req, ctx) {
+  req.userRole = ctx?.role || "viewer";
+  req.allowedBrands = ctx?.allowedBrands === null ? null : (ctx?.allowedBrands || []);
+  req.userEmail = ctx?.email || "";
+  req.authType = ctx?.authType || "";
 }
 
 function createUserSession({ email, role, allowedBrands }) {
@@ -3707,14 +3826,17 @@ function getUserSession(authHeader) {
 }
 
 function resolveAuthContext(authHeader) {
+  if (isOpenClawAuth(authHeader)) {
+    return buildOpenClawAuthContext();
+  }
   if (isConfigAuth(authHeader)) {
-    return { role: "admin", allowedBrands: null, email: null };
+    return { role: "admin", allowedBrands: null, email: "", authType: "config" };
   }
   const session = getUserSession(authHeader);
   if (!session) return null;
   const role = normalizeUserRole(session.role);
   const allowedBrands = role === "admin" ? null : normalizeAllowedBrands(session.allowedBrands);
-  return { role, allowedBrands, email: session.email || "" };
+  return { role, allowedBrands, email: session.email || "", authType: "session" };
 }
 
 function resolveAuthContextFromRequest(req) {
@@ -3740,9 +3862,7 @@ function requireConfigOrViewer(req, res, next) {
   const auth = req.headers.authorization || "";
   const ctx = resolveAuthContext(auth);
   if (ctx) {
-    req.userRole = ctx.role;
-    req.allowedBrands = ctx.allowedBrands;
-    req.userEmail = ctx.email || "";
+    applyAuthContext(req, ctx);
     return next();
   }
   if (!CONFIG_TOKEN && !VIEWER_EMAIL && !dbPool) {
@@ -3762,9 +3882,7 @@ function requireWrite(req, res, next) {
   if (ctx.role === "viewer") {
     return res.status(403).json({ error: "forbidden" });
   }
-  req.userRole = ctx.role;
-  req.allowedBrands = ctx.allowedBrands;
-  req.userEmail = ctx.email || "";
+  applyAuthContext(req, ctx);
   next();
 }
 
@@ -3780,9 +3898,7 @@ function requirePermission(permission) {
     if (!hasRolePermission(ctx.role, permission)) {
       return res.status(403).json({ error: "forbidden" });
     }
-    req.userRole = ctx.role;
-    req.allowedBrands = ctx.allowedBrands;
-    req.userEmail = ctx.email || "";
+    applyAuthContext(req, ctx);
     next();
   };
 }
@@ -3798,17 +3914,32 @@ function requireAdminUser(req, res, next) {
   if (ctx.role !== "admin") {
     return res.status(403).json({ error: "forbidden" });
   }
-  req.userRole = ctx.role;
-  req.allowedBrands = null;
-  req.userEmail = ctx.email || "";
+  applyAuthContext(req, { ...ctx, allowedBrands: null });
   next();
 }
 
 function requireAdmin(req, res, next) {
-  if (!ADMIN_TOKEN) return res.status(403).json({ error: "admin token not set" });
   const auth = req.headers.authorization || "";
+  if (isOpenClawAuth(auth)) {
+    applyAuthContext(req, buildOpenClawAuthContext());
+    return next();
+  }
+  if (!ADMIN_TOKEN) return res.status(403).json({ error: "admin token not set" });
   const expected = `Bearer ${ADMIN_TOKEN}`;
   if (auth !== expected) return res.status(401).json({ error: "unauthorized" });
+  applyAuthContext(req, { role: "admin", allowedBrands: null, email: "", authType: "admin_token" });
+  next();
+}
+
+function requireOpenClawAgent(req, res, next) {
+  if (!OPENCLAW_AGENT_TOKEN) {
+    return res.status(403).json({ error: "openclaw token not set" });
+  }
+  const ctx = resolveAuthContextFromRequest(req);
+  if (!ctx || ctx.authType !== "openclaw") {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  applyAuthContext(req, ctx);
   next();
 }
 
@@ -6906,6 +7037,76 @@ app.post("/admin/assistant/chat", requireConfigOrViewer, async (req, res) => {
   } catch (err) {
     console.error("[assistant/chat] failed", err);
     return res.status(400).json({ error: "assistant_failed", detail: err.message });
+  }
+});
+
+app.get("/openclaw/me", requireOpenClawAgent, async (req, res) => {
+  return res.json({
+    ok: true,
+    provider: "openclaw",
+    role: req.userRole || "admin",
+    access_level: "owner",
+    allowed_brands: req.allowedBrands || null,
+    admin_api_base: "/admin",
+    openclaw_api_base: "/openclaw",
+    capabilities_url: "/openclaw/capabilities",
+    server_time: new Date().toISOString()
+  });
+});
+
+app.get("/openclaw/capabilities", requireOpenClawAgent, async (req, res) => {
+  return res.json({
+    ok: true,
+    provider: "openclaw",
+    access_level: "owner",
+    auth: {
+      header: "Authorization: Bearer <OPENCLAW_AGENT_TOKEN>",
+      token_env: "OPENCLAW_AGENT_TOKEN"
+    },
+    bases: {
+      admin: "/admin",
+      openclaw: "/openclaw"
+    },
+    notes: [
+      "OpenClaw can call the listed /admin routes directly with the OpenClaw bearer token.",
+      "Use /openclaw/calls/:callId and /openclaw/cv/:id for direct single-record reads.",
+      "System prompt routes are owner-level and accept the OpenClaw bearer token."
+    ],
+    capabilities: OPENCLAW_OWNER_CAPABILITIES
+  });
+});
+
+app.get("/openclaw/calls/:callId", requireOpenClawAgent, async (req, res) => {
+  try {
+    const callId = String(req.params?.callId || "").trim();
+    if (!callId) return res.status(400).json({ error: "missing_call_id" });
+    const call = await fetchCallDetail(callId);
+    if (!call) return res.status(404).json({ error: "call_not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, call.brand || call.brandKey || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    return res.json({ ok: true, call });
+  } catch (err) {
+    console.error("[openclaw/calls] fetch failed", err);
+    return res.status(400).json({ error: "call_fetch_failed", detail: err.message });
+  }
+});
+
+app.get("/openclaw/cv/:id", requireOpenClawAgent, async (req, res) => {
+  try {
+    const cvId = String(req.params?.id || "").trim();
+    if (!cvId) return res.status(400).json({ error: "missing_cv_id" });
+    const cv = await fetchCvById(cvId);
+    if (!cv) return res.status(404).json({ error: "cv_not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, cv.brand || cv.brandKey || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    return res.json({ ok: true, cv });
+  } catch (err) {
+    console.error("[openclaw/cv] fetch failed", err);
+    return res.status(400).json({ error: "cv_fetch_failed", detail: err.message });
   }
 });
 
@@ -29813,6 +30014,81 @@ async function fetchCallById(callId) {
   };
 }
 
+async function fetchCallDetail(callId) {
+  const id = String(callId || "").trim();
+  if (!id) return null;
+  if (dbPool) {
+    return fetchCallById(id);
+  }
+  let entry = callsByCallSid.get(id);
+  if (!entry) {
+    entry = callHistory.find((item) => item && (item.callId === id || item.callSid === id));
+  }
+  if (!entry) return null;
+  const linkedCvId = String(entry.cv_id || entry.cvId || "").trim();
+  const cvEntry = linkedCvId ? cvStoreById.get(linkedCvId) : null;
+  const audioUrl = await resolveStoredUrl(entry.audio_url || "");
+  const cvUrl = await resolveStoredUrl(entry.cv_url || cvEntry?.cv_url || "");
+  const durationValue = Number(entry.duration_sec ?? entry.durationSec);
+  const scoreValue = Number(entry.score);
+  const warmthValue = Number(entry.warmth);
+  const fluencyValue = Number(entry.fluency);
+  const storedCostMeta = entry.cost_meta && typeof entry.cost_meta === "object" ? entry.cost_meta : null;
+  const derivedCostMeta = storedCostMeta || buildStoredCallCostMeta({
+    duration_sec: Number.isFinite(durationValue) ? durationValue : null,
+    audio_url: entry.audio_url || "",
+    score: Number.isFinite(scoreValue) ? scoreValue : null,
+    summary: entry.summary || "",
+    recommendation: entry.recommendation || ""
+  });
+  return {
+    callId: entry.callId || entry.callSid || id,
+    brand: entry.brand || "",
+    brandKey: entry.brandKey || brandKey(entry.brand || ""),
+    role: entry.role || "",
+    roleKey: entry.roleKey || normalizeKey(entry.role || ""),
+    applicant: entry.applicant || cvEntry?.applicant || "",
+    phone: entry.phone || entry.to || cvEntry?.phone || "",
+    score: Number.isFinite(scoreValue) ? scoreValue : null,
+    recommendation: entry.recommendation || null,
+    summary: entry.summary || "",
+    warmth: Number.isFinite(warmthValue) ? warmthValue : null,
+    fluency: Number.isFinite(fluencyValue) ? fluencyValue : null,
+    english: entry.english || "",
+    english_detail: entry.english_detail || "",
+    experience: entry.experience || "",
+    area: entry.area || "",
+    availability: entry.availability || "",
+    salary: entry.salary || "",
+    trial: entry.trial || "",
+    trial_at: normalizeIso(entry.trial_at || entry.trialAt || "") || "",
+    trial_follow_up_status: entry.trial_follow_up_status || "",
+    trial_follow_up_at: normalizeIso(entry.trial_follow_up_at || entry.trial_follow_upAt || "") || "",
+    cv_trial_at: cvEntry?.trial_at || "",
+    cv_trial_follow_up_status: cvEntry?.trial_follow_up_status || "",
+    cv_trial_follow_up_at: cvEntry?.trial_follow_up_at || "",
+    stay_plan: entry.stay_plan || "",
+    stay_detail: entry.stay_detail || "",
+    mobility: entry.mobility || "",
+    outcome: entry.outcome || "",
+    outcome_detail: entry.outcome_detail || "",
+    duration_sec: Number.isFinite(durationValue) ? durationValue : null,
+    created_at: normalizeIso(entry.created_at || entry.createdAt || "") || "",
+    audio_url: audioUrl || entry.audio_url || "",
+    english_required: !!entry.english_required,
+    cv_id: linkedCvId,
+    decision: cvEntry?.decision || entry.decision || "",
+    source: cvEntry?.source || entry.source || "",
+    cv_text: entry.cv_text || cvEntry?.cv_text || "",
+    cv_url: cvUrl || entry.cv_url || cvEntry?.cv_url || "",
+    notes: entry.notes || "",
+    onboarding_id: entry.onboarding_id || cvEntry?.onboarding_id || "",
+    alt_brand_key: entry.alt_brand_key || "",
+    alt_role_key: entry.alt_role_key || "",
+    cost_meta: derivedCostMeta
+  };
+}
+
 async function fetchLastNoAnswerByPhone(phone) {
   if (!dbPool || !phone) return null;
   const sql = `
@@ -29986,6 +30262,207 @@ async function fetchCvFromDb({ brandParam, roleParam, qParam, limit, allowedBran
     });
   }
   return mapped;
+}
+
+async function fetchCvCallStatsFromDb({ cvId, phone, brandKeyValue }) {
+  if (!dbPool) {
+    return {
+      call_count: 0,
+      last_call_at: "",
+      last_outcome: "",
+      last_outcome_detail: "",
+      last_audio_url: "",
+      last_call_sid: ""
+    };
+  }
+  const normalizeStatsRow = async (row) => {
+    if (!row) {
+      return {
+        call_count: 0,
+        last_call_at: "",
+        last_outcome: "",
+        last_outcome_detail: "",
+        last_audio_url: "",
+        last_call_sid: ""
+      };
+    }
+    const lastAudioUrl = await resolveStoredUrl(row.last_audio_url || "");
+    return {
+      call_count: Number(row.call_count) || 0,
+      last_call_at: row.last_call_at ? new Date(row.last_call_at).toISOString() : "",
+      last_outcome: row.last_outcome || "",
+      last_outcome_detail: row.last_outcome_detail || "",
+      last_audio_url: lastAudioUrl || "",
+      last_call_sid: row.last_call_sid || ""
+    };
+  };
+
+  let row = null;
+  if (cvId) {
+    const result = await dbQuery(
+      `
+      SELECT
+        COUNT(*)::int AS call_count,
+        MAX(created_at) AS last_call_at,
+        (ARRAY_AGG(outcome ORDER BY created_at DESC))[1] AS last_outcome,
+        (ARRAY_AGG(outcome_detail ORDER BY created_at DESC))[1] AS last_outcome_detail,
+        (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
+        (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
+      FROM calls
+      WHERE cv_id = $1
+      `,
+      [cvId]
+    );
+    row = result?.rows?.[0] || null;
+  }
+  if ((Number(row?.call_count) || 0) > 0) {
+    return normalizeStatsRow(row);
+  }
+  if (!phone || !brandKeyValue) {
+    return normalizeStatsRow(row);
+  }
+  const phoneResult = await dbQuery(
+    `
+    SELECT
+      COUNT(*)::int AS call_count,
+      MAX(created_at) AS last_call_at,
+      (ARRAY_AGG(outcome ORDER BY created_at DESC))[1] AS last_outcome,
+      (ARRAY_AGG(outcome_detail ORDER BY created_at DESC))[1] AS last_outcome_detail,
+      (ARRAY_AGG(audio_url ORDER BY created_at DESC))[1] AS last_audio_url,
+      (ARRAY_AGG(call_sid ORDER BY created_at DESC))[1] AS last_call_sid
+    FROM calls
+    WHERE phone = $1 AND brand_key = $2
+    `,
+    [phone, brandKeyValue]
+  );
+  return normalizeStatsRow(phoneResult?.rows?.[0] || row);
+}
+
+async function fetchCvById(cvId) {
+  const id = String(cvId || "").trim();
+  if (!id) return null;
+  if (dbPool) {
+    const result = await dbQuery(
+      `
+      SELECT
+        id, created_at, brand, brand_key, role, role_key, applicant, phone, cv_text, cv_url, cv_photo_url,
+        scheduled_call_at, trial_at, trial_follow_up_status, trial_follow_up_at,
+        custom_question, custom_question_mode, decision, onboarding_id, source
+      FROM cvs
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [id]
+    );
+    const row = result?.rows?.[0];
+    if (!row) return null;
+    const cvUrl = await resolveStoredUrl(row.cv_url || "");
+    const cvPhotoUrl = await resolveStoredUrl(row.cv_photo_url || "");
+    const stats = await fetchCvCallStatsFromDb({
+      cvId: row.id,
+      phone: row.phone || "",
+      brandKeyValue: row.brand_key || ""
+    });
+    const activeIndex = collectActiveCalls([]);
+    return attachActiveCall({
+      id: row.id,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : "",
+      brand: row.brand || "",
+      brandKey: row.brand_key || "",
+      role: row.role || "",
+      roleKey: row.role_key || "",
+      applicant: row.applicant || "",
+      phone: row.phone || "",
+      cv_text: row.cv_text || "",
+      cv_url: cvUrl || "",
+      cv_photo_url: cvPhotoUrl || "",
+      scheduled_call_at: row.scheduled_call_at ? new Date(row.scheduled_call_at).toISOString() : "",
+      trial_at: row.trial_at ? new Date(row.trial_at).toISOString() : "",
+      trial_follow_up_status: row.trial_follow_up_status || "",
+      trial_follow_up_at: row.trial_follow_up_at ? new Date(row.trial_follow_up_at).toISOString() : "",
+      custom_question: row.custom_question || "",
+      custom_question_mode: row.custom_question_mode || "exact",
+      decision: row.decision || "",
+      onboarding_id: row.onboarding_id || "",
+      source: row.source || "",
+      call_count: stats.call_count,
+      last_call_at: stats.last_call_at,
+      last_outcome: stats.last_outcome,
+      last_outcome_detail: stats.last_outcome_detail,
+      last_audio_url: stats.last_audio_url,
+      last_call_sid: stats.last_call_sid
+    }, activeIndex);
+  }
+
+  const entry = cvStoreById.get(id);
+  if (!entry) return null;
+  const brandKeyValue = entry.brandKey || brandKey(entry.brand || "");
+  const phoneValue = normalizePhone(entry.phone || "");
+  let matches = callHistory.filter((call) => {
+    if (!call) return false;
+    const linkedCvId = String(call.cv_id || call.cvId || "").trim();
+    return linkedCvId === id;
+  });
+  if (!matches.length && phoneValue && brandKeyValue) {
+    matches = callHistory.filter((call) => {
+      if (!call) return false;
+      const callPhone = normalizePhone(call.phone || call.to || "");
+      const callBrandKey = call.brandKey || brandKey(call.brand || "");
+      return callPhone === phoneValue && callBrandKey === brandKeyValue;
+    });
+  }
+  const stats = {
+    call_count: matches.length,
+    last_call_at: "",
+    last_outcome: "",
+    last_outcome_detail: "",
+    last_audio_url: "",
+    last_call_sid: ""
+  };
+  let latestTime = 0;
+  for (const call of matches) {
+    const createdAt = normalizeIso(call.created_at || call.createdAt || "") || "";
+    const ts = createdAt ? new Date(createdAt).getTime() : 0;
+    if (ts >= latestTime) {
+      latestTime = ts;
+      stats.last_call_at = createdAt;
+      stats.last_outcome = call.outcome || "";
+      stats.last_outcome_detail = call.outcome_detail || "";
+      stats.last_audio_url = await resolveStoredUrl(call.audio_url || "") || call.audio_url || "";
+      stats.last_call_sid = call.callId || call.callSid || "";
+    }
+  }
+  const cvUrl = await resolveStoredUrl(entry.cv_url || "");
+  const cvPhotoUrl = await resolveStoredUrl(entry.cv_photo_url || "");
+  const activeIndex = collectActiveCalls([]);
+  return attachActiveCall({
+    id: entry.id,
+    created_at: entry.created_at || "",
+    brand: entry.brand || "",
+    brandKey: brandKeyValue,
+    role: entry.role || "",
+    roleKey: entry.roleKey || normalizeKey(entry.role || ""),
+    applicant: entry.applicant || "",
+    phone: entry.phone || "",
+    cv_text: entry.cv_text || "",
+    cv_url: cvUrl || entry.cv_url || "",
+    cv_photo_url: cvPhotoUrl || entry.cv_photo_url || "",
+    scheduled_call_at: entry.scheduled_call_at || "",
+    trial_at: entry.trial_at || "",
+    trial_follow_up_status: entry.trial_follow_up_status || "",
+    trial_follow_up_at: entry.trial_follow_up_at || "",
+    custom_question: entry.custom_question || "",
+    custom_question_mode: entry.custom_question_mode || "exact",
+    decision: entry.decision || "",
+    onboarding_id: entry.onboarding_id || "",
+    source: entry.source || "",
+    call_count: stats.call_count,
+    last_call_at: stats.last_call_at,
+    last_outcome: stats.last_outcome,
+    last_outcome_detail: stats.last_outcome_detail,
+    last_audio_url: stats.last_audio_url,
+    last_call_sid: stats.last_call_sid
+  }, activeIndex);
 }
 
 async function fetchOnboardingProfile(profileId) {
