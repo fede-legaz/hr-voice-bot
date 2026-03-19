@@ -2708,6 +2708,9 @@ Reglas:
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
 - No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
 - No repitas literal lo que dijo; si necesitás, resumí en tus palabras de forma breve.
+- No repitas información que vos ya dijiste hace un momento (nombre del local, puesto, que llamó por la aplicación, instrucciones o contexto) salvo que el candidato pida aclaración explícita.
+- Si el candidato ya respondió un dato clave (zona, disponibilidad, salario, permanencia, inglés, experiencia), no lo vuelvas a preguntar. Avanzá al siguiente punto pendiente.
+- No reformules la misma pregunta dos veces seguidas. Si no entendiste, hacé una sola aclaración breve y seguí.
 - No encadenes ni superpongas preguntas: hacé UNA pregunta, esperá la respuesta completa. Solo si no queda clara, pedí una aclaración breve y recién después pasá al siguiente tema.
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
 - Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
@@ -2718,6 +2721,8 @@ Reglas:
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en {address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
 - Si inglés es requerido ({english_required}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, no evalúes nivel de inglés.
 - Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
+- Máximo un bloque de inglés por llamada: si ya preguntaste una vez en inglés y el candidato respondió en inglés, considerá el chequeo cubierto y no vuelvas a pedir nivel ni otra prueba de inglés.
+- Si el candidato ya respondió una pregunta completa en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
 - Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
@@ -2896,7 +2901,7 @@ function buildInstructions(ctx) {
   const speechTone = resolveSpeechTone(metaCfg);
   const hasSpeechToneSlot = /\{speech_tone(?:_line)?\}/.test(promptTemplate);
   const speechToneLine = speechTone && !hasSpeechToneSlot ? `Tono solicitado: ${speechTone}` : "";
-  const postConsentRule = "La apertura y el consentimiento ya ocurrieron antes de entrar al audio. No vuelvas a saludar, presentarte ni repetir que llamás por la aplicación; empezá directo con la primera pregunta útil.";
+  const postConsentRule = "La apertura y el consentimiento ya ocurrieron antes de entrar al audio. No vuelvas a saludar, presentarte ni repetir que llamás por la aplicación. No repitas información que vos mismo acabás de decir ni respuestas que el candidato ya dio; empezá directo con la primera pregunta útil pendiente.";
   const promptVars = {
     name: firstName,
     first_name: firstName,
@@ -9682,8 +9687,10 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
     const body = req.body || {};
     const cvId = (body.cv_id || body.cvId || "").toString().trim();
     const callSid = (body.call_sid || body.callId || body.callSid || "").toString().trim();
+    const manual = !!body.manual;
     const requestedOnboardingType = normalizeOnboardingType(body.onboarding_type || body.onboardingType || "");
-    if (!cvId && !callSid) return res.status(400).json({ error: "missing_target" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (!cvId && !callSid && !manual) return res.status(400).json({ error: "missing_target" });
     let profile = await findOnboardingProfile({ cvId, callSid });
     const config = getOnboardingConfig();
 
@@ -9723,17 +9730,29 @@ app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), asy
 
     if (!profile) {
       const candidate = findCandidate() || {};
-      const brand = (body.brand || candidate.brand || DEFAULT_BRAND).toString().trim();
-      const role = (body.role || candidate.role || DEFAULT_ROLE).toString().trim();
+      const targetless = !cvId && !callSid;
+      const brand = (body.brand || candidate.brand || (targetless ? "" : DEFAULT_BRAND)).toString().trim();
+      if (brand && allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+      const role = (body.role || candidate.role || (targetless ? "" : DEFAULT_ROLE)).toString().trim();
+      const requestedName = (body.name || candidate.name || "").toString().trim();
+      const requestedEmail = (body.email || "").toString().trim();
+      const requestedPhone = (body.phone || candidate.phone || "").toString().trim();
+      if (!cvId && !callSid) {
+        if (!requestedName) return res.status(400).json({ error: "missing_name" });
+        if (!brand) return res.status(400).json({ error: "missing_brand" });
+        if (!role) return res.status(400).json({ error: "missing_role" });
+      }
       const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
       const roleNotesEn = getRoleConfig(brand, role)?.notes_en || config.role_notes_en || "";
       const onboardingDocTypes = resolveOnboardingConfigDocTypesByType(requestedOnboardingType, brand, config.doc_types);
       profile = await createOnboardingProfile({
         cv_id: cvId || candidate.cv_id || "",
         call_sid: callSid || candidate.call_sid || "",
-        name: body.name || candidate.name || "",
-        email: body.email || "",
-        phone: body.phone || candidate.phone || "",
+        name: requestedName,
+        email: requestedEmail,
+        phone: requestedPhone,
         brand,
         role,
         dress_code: config.dress_code,
@@ -9888,19 +9907,38 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
     if (!id) return res.status(400).json({ error: "missing_profile_id" });
     const existing = await fetchOnboardingProfile(id);
     if (!existing) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
     const startDateValue = req.body?.start_date !== undefined ? req.body.start_date : req.body?.startDate;
     const patch = {
+      name: typeof req.body?.name === "string" ? req.body.name.trim() : req.body?.name,
+      email: typeof req.body?.email === "string" ? req.body.email.trim() : req.body?.email,
+      phone: typeof req.body?.phone === "string" ? req.body.phone.trim() : req.body?.phone,
+      brand: typeof req.body?.brand === "string" ? req.body.brand.trim() : req.body?.brand,
+      role: typeof req.body?.role === "string" ? req.body.role.trim() : req.body?.role,
       pay_rate: typeof req.body?.pay_rate === "string" ? req.body.pay_rate : req.body?.payRate,
       pay_unit: typeof req.body?.pay_unit === "string" ? req.body.pay_unit : req.body?.payUnit,
       start_date: startDateValue !== undefined ? startDateValue : undefined,
       admin_notes: typeof req.body?.admin_notes === "string" ? req.body.admin_notes : req.body?.adminNotes
     };
+    const nextBrand = patch.brand !== undefined ? patch.brand : (existing.brand || "");
+    const nextRole = patch.role !== undefined ? patch.role : (existing.role || "");
+    if (nextBrand && allowedBrands.length && !isBrandAllowed(allowedBrands, nextBrand)) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const config = getOnboardingConfig();
     const onboardingTypeInput = req.body?.onboarding_type ?? req.body?.onboardingType;
+    const nextOnboardingType = normalizeOnboardingType(
+      onboardingTypeInput !== undefined ? onboardingTypeInput : (existing.onboarding_type || "")
+    );
+    if (patch.brand !== undefined || patch.role !== undefined) {
+      patch.role_notes = getRoleConfig(nextBrand, nextRole)?.notes || ROLE_NOTES[normalizeKey(nextRole)] || "";
+      patch.role_notes_en = getRoleConfig(nextBrand, nextRole)?.notes_en || config.role_notes_en || "";
+    }
     if (onboardingTypeInput !== undefined) {
-      const config = getOnboardingConfig();
-      const onboardingType = normalizeOnboardingType(onboardingTypeInput);
-      patch.onboarding_type = onboardingType;
-      patch.doc_types = resolveOnboardingConfigDocTypesByType(onboardingType, existing.brand || "", config.doc_types);
+      patch.onboarding_type = nextOnboardingType;
+    }
+    if (onboardingTypeInput !== undefined || patch.brand !== undefined) {
+      patch.doc_types = resolveOnboardingConfigDocTypesByType(nextOnboardingType, nextBrand, config.doc_types);
     }
     const updated = await updateOnboardingProfile(id, patch);
     return res.json({ ok: true, profile: updated });
@@ -15142,7 +15180,8 @@ app.get("/admin/ui", (req, res) => {
                 <label>Buscar</label>
                 <input id="onboarding-search" type="text" placeholder="Nombre o teléfono" />
               </div>
-              <div style="display:flex; align-items:flex-end;">
+              <div style="display:flex; align-items:flex-end; gap:8px; justify-content:flex-end;">
+                <button id="onboarding-new" type="button">Nuevo onboarding</button>
                 <button class="secondary" id="onboarding-refresh" type="button">Refresh</button>
               </div>
             </div>
@@ -16110,6 +16149,28 @@ app.get("/admin/ui", (req, res) => {
           </select>
         </div>
       </div>
+      <div class="grid two" style="margin-top:12px;">
+        <div>
+          <label>Nombre</label>
+          <input type="text" id="onboarding-name-input" placeholder="Nombre y apellido" />
+        </div>
+        <div>
+          <label>Email</label>
+          <input type="email" id="onboarding-email-input" placeholder="email@ejemplo.com" />
+        </div>
+        <div>
+          <label>Local</label>
+          <select id="onboarding-brand-input">
+            <option value="">Seleccionar local</option>
+          </select>
+        </div>
+        <div>
+          <label>Posición</label>
+          <select id="onboarding-role-input">
+            <option value="">Seleccionar posición</option>
+          </select>
+        </div>
+      </div>
       <div class="row">
         <label>Portal para el empleado</label>
         <div class="onboarding-link-row">
@@ -16544,6 +16605,10 @@ app.get("/admin/ui", (req, res) => {
     const onboardingNameEl = document.getElementById('onboarding-name');
     const onboardingRoleEl = document.getElementById('onboarding-role');
     const onboardingTypeEl = document.getElementById('onboarding-type');
+    const onboardingNameInputEl = document.getElementById('onboarding-name-input');
+    const onboardingEmailInputEl = document.getElementById('onboarding-email-input');
+    const onboardingBrandInputEl = document.getElementById('onboarding-brand-input');
+    const onboardingRoleInputEl = document.getElementById('onboarding-role-input');
     const onboardingPhoneInputEl = document.getElementById('onboarding-phone-input');
     const onboardingPhoneSaveEl = document.getElementById('onboarding-phone-save');
     const onboardingLinkEl = document.getElementById('onboarding-link');
@@ -16641,6 +16706,7 @@ app.get("/admin/ui", (req, res) => {
     const pricingCountEl = document.getElementById('pricing-count');
     const onboardingBrandEl = document.getElementById('onboarding-brand');
     const onboardingSearchEl = document.getElementById('onboarding-search');
+    const onboardingNewEl = document.getElementById('onboarding-new');
     const onboardingRefreshEl = document.getElementById('onboarding-refresh');
     const onboardingTabsEl = document.getElementById('onboarding-tabs');
     const onboardingBodyEl = document.getElementById('onboarding-body');
@@ -16733,6 +16799,7 @@ app.get("/admin/ui", (req, res) => {
     let onboardingConfigState = null;
     let onboardingProfile = null;
     let onboardingDocs = [];
+    let onboardingDraftTarget = null;
     let pendingOnboardingDocType = '';
     let analyticsCache = null;
     let onboardingList = [];
@@ -25932,9 +25999,137 @@ app.get("/admin/ui", (req, res) => {
       onboardingDocStatusEl.style.color = isError ? '#b42318' : 'var(--primary-dark)';
     }
 
+    function refreshOnboardingBrandInputOptions(selectedValue) {
+      if (!onboardingBrandInputEl) return;
+      const selected = (selectedValue || '').trim();
+      const options = listBrandOptions().filter((brand) => {
+        if (!Array.isArray(authBrands) || !authBrands.length) return true;
+        return authBrands.includes(brand.key);
+      });
+      onboardingBrandInputEl.innerHTML = '<option value="">Seleccionar local</option>';
+      options.forEach((brand) => {
+        const opt = document.createElement('option');
+        opt.value = brand.key;
+        opt.textContent = brand.display;
+        onboardingBrandInputEl.appendChild(opt);
+      });
+      if (selected && !options.some((brand) => brand.key === selected)) {
+        const fallback = document.createElement('option');
+        fallback.value = selected;
+        fallback.textContent = selected;
+        onboardingBrandInputEl.appendChild(fallback);
+      }
+      onboardingBrandInputEl.value = selected || '';
+    }
+
+    function refreshOnboardingRoleInputOptions(brandKey, selectedRole) {
+      if (!onboardingRoleInputEl) return;
+      const brand = (brandKey || '').trim();
+      const selected = (selectedRole || '').trim();
+      const roles = brand ? listRolesForBrand(brand) : [];
+      onboardingRoleInputEl.innerHTML = '<option value="">Seleccionar posición</option>';
+      roles.forEach((role) => {
+        const opt = document.createElement('option');
+        opt.value = role.key;
+        opt.textContent = role.display;
+        onboardingRoleInputEl.appendChild(opt);
+      });
+      if (selected && !roles.some((role) => role.key === selected)) {
+        const fallback = document.createElement('option');
+        fallback.value = selected;
+        fallback.textContent = selected;
+        onboardingRoleInputEl.appendChild(fallback);
+      }
+      onboardingRoleInputEl.value = selected || '';
+    }
+
+    function syncOnboardingSummary() {
+      const draftName = (onboardingNameInputEl?.value || '').trim();
+      const draftBrand = (onboardingBrandInputEl?.value || '').trim()
+        ? (onboardingBrandInputEl?.selectedOptions?.[0]?.textContent || '')
+        : (onboardingProfile?.brand || '');
+      const draftRole = (onboardingRoleInputEl?.value || '').trim()
+        ? (onboardingRoleInputEl?.selectedOptions?.[0]?.textContent || '')
+        : (onboardingProfile?.role || '');
+      if (onboardingNameEl) onboardingNameEl.textContent = draftName || onboardingProfile?.name || '—';
+      if (onboardingRoleEl) {
+        onboardingRoleEl.textContent = [draftBrand, draftRole].filter(Boolean).join(' • ') || '—';
+      }
+    }
+
+    function updateOnboardingActionState() {
+      const hasProfile = !!(onboardingProfile && onboardingProfile.id);
+      const hasLink = !!(onboardingLinkEl?.value || '').trim();
+      const hasPhone = !!(onboardingPhoneInputEl?.value || '').trim();
+      if (onboardingCopyEl) onboardingCopyEl.disabled = !hasLink;
+      if (onboardingOpenEl) onboardingOpenEl.disabled = !hasLink;
+      if (onboardingSmsEl) onboardingSmsEl.disabled = !(hasProfile && hasPhone);
+      if (onboardingSyncDocsEl) onboardingSyncDocsEl.disabled = !hasProfile;
+      if (onboardingExportEl) onboardingExportEl.disabled = !hasProfile;
+      if (onboardingSaveProfileEl) onboardingSaveProfileEl.textContent = hasProfile ? 'Guardar datos' : 'Crear onboarding';
+    }
+
+    function fillOnboardingModal(profile, docs, url) {
+      onboardingProfile = profile || null;
+      onboardingDocs = Array.isArray(docs) ? docs : [];
+      onboardingDraftTarget = null;
+      const nextBrand = profile?.brand || '';
+      const nextRole = profile?.role || '';
+      refreshOnboardingBrandInputOptions(nextBrand);
+      refreshOnboardingRoleInputOptions(nextBrand, nextRole);
+      if (onboardingNameInputEl) onboardingNameInputEl.value = profile?.name || '';
+      if (onboardingEmailInputEl) onboardingEmailInputEl.value = profile?.email || '';
+      if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(profile?.onboarding_type || 'w2');
+      if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = profile?.phone || profile?.last_sms_phone || '';
+      if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
+      if (onboardingLinkEl) onboardingLinkEl.value = url || '';
+      if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
+      if (onboardingPayRateEl) onboardingPayRateEl.value = profile?.pay_rate || '';
+      if (onboardingPayUnitEl) onboardingPayUnitEl.value = profile?.pay_unit || '';
+      if (onboardingStartDateEl) {
+        const start = profile?.start_date || '';
+        onboardingStartDateEl.value = start ? start.slice(0, 10) : '';
+      }
+      if (onboardingAdminNotesEl) onboardingAdminNotesEl.value = profile?.admin_notes || '';
+      syncOnboardingSummary();
+      renderOnboardingDocList();
+      updateOnboardingActionState();
+    }
+
+    function beginManualOnboardingDraft(target) {
+      onboardingProfile = null;
+      onboardingDocs = [];
+      onboardingDraftTarget = target || {};
+      const nextBrand = (target?.brand || '').trim();
+      const nextRole = (target?.role || '').trim();
+      refreshOnboardingBrandInputOptions(nextBrand);
+      refreshOnboardingRoleInputOptions(nextBrand, nextRole);
+      if (onboardingNameInputEl) onboardingNameInputEl.value = target?.name || target?.applicant || '';
+      if (onboardingEmailInputEl) onboardingEmailInputEl.value = target?.email || '';
+      if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(target?.onboarding_type || 'w2');
+      if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = target?.phone || '';
+      if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
+      if (onboardingLinkEl) onboardingLinkEl.value = '';
+      if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
+      if (onboardingPayRateEl) onboardingPayRateEl.value = target?.pay_rate || '';
+      if (onboardingPayUnitEl) onboardingPayUnitEl.value = target?.pay_unit || '';
+      if (onboardingStartDateEl) onboardingStartDateEl.value = target?.start_date || '';
+      if (onboardingAdminNotesEl) onboardingAdminNotesEl.value = target?.admin_notes || '';
+      syncOnboardingSummary();
+      renderOnboardingDocList();
+      updateOnboardingActionState();
+    }
+
     function renderOnboardingDocList() {
       if (!onboardingDocListEl) return;
       onboardingDocListEl.innerHTML = '';
+      if (!onboardingProfile?.id) {
+        const empty = document.createElement('div');
+        empty.className = 'small';
+        empty.textContent = 'Guardá el onboarding para habilitar link, documentos y SMS.';
+        onboardingDocListEl.appendChild(empty);
+        return;
+      }
       const profile = onboardingProfile || {};
       const docTypes = Array.isArray(profile.doc_types) && profile.doc_types.length
         ? profile.doc_types
@@ -26014,6 +26209,7 @@ app.get("/admin/ui", (req, res) => {
       setOnboardingDocStatus('Cargando...');
       onboardingProfile = null;
       onboardingDocs = [];
+      onboardingDraftTarget = null;
       try {
         const existingId = target?.onboardingId || target?.onboarding_id || target?.profileId || target?.id || '';
         if (existingId) {
@@ -26022,24 +26218,12 @@ app.get("/admin/ui", (req, res) => {
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_failed');
-          onboardingProfile = data.profile || null;
-          onboardingDocs = data.docs || [];
-          if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
-          if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
-          if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || 'w2');
-          if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
-          if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
-          if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
-          if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
-          if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
-          if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
-          if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
-          if (onboardingStartDateEl) {
-            const start = onboardingProfile?.start_date || '';
-            onboardingStartDateEl.value = start ? start.slice(0, 10) : '';
-          }
-          if (onboardingAdminNotesEl) onboardingAdminNotesEl.value = onboardingProfile?.admin_notes || '';
-          renderOnboardingDocList();
+          fillOnboardingModal(data.profile || null, data.docs || [], data.url || '');
+          setOnboardingDocStatus('');
+          return;
+        }
+        if (target?.manual) {
+          beginManualOnboardingDraft(target);
           setOnboardingDocStatus('');
           return;
         }
@@ -26059,25 +26243,9 @@ app.get("/admin/ui", (req, res) => {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_failed');
-        onboardingProfile = data.profile || null;
-        onboardingDocs = data.docs || [];
-        if (onboardingNameEl) onboardingNameEl.textContent = onboardingProfile?.name || '—';
-        if (onboardingRoleEl) onboardingRoleEl.textContent = [onboardingProfile?.brand, onboardingProfile?.role].filter(Boolean).join(' • ');
-        if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || payload.onboarding_type || 'w2');
-        if (onboardingPhoneInputEl) onboardingPhoneInputEl.value = onboardingProfile?.phone || onboardingProfile?.last_sms_phone || '';
-        if (onboardingPhoneSaveEl) onboardingPhoneSaveEl.checked = false;
-        if (onboardingLinkEl) onboardingLinkEl.value = data.url || '';
-        if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = '';
-        if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
-        if (onboardingPayRateEl) onboardingPayRateEl.value = onboardingProfile?.pay_rate || '';
-        if (onboardingPayUnitEl) onboardingPayUnitEl.value = onboardingProfile?.pay_unit || '';
-        if (onboardingStartDateEl) {
-          const start = onboardingProfile?.start_date || '';
-          onboardingStartDateEl.value = start ? start.slice(0, 10) : '';
-        }
-        if (onboardingAdminNotesEl) onboardingAdminNotesEl.value = onboardingProfile?.admin_notes || '';
-        renderOnboardingDocList();
+        fillOnboardingModal(data.profile || null, data.docs || [], data.url || '');
         setOnboardingDocStatus('');
+        loadOnboardingList().catch(() => {});
       } catch (err) {
         setOnboardingDocStatus('Error: ' + err.message, true);
       }
@@ -26088,6 +26256,7 @@ app.get("/admin/ui", (req, res) => {
       onboardingModalEl.style.display = 'none';
       onboardingProfile = null;
       onboardingDocs = [];
+      onboardingDraftTarget = null;
       pendingOnboardingDocType = '';
       if (onboardingDocFileEl) onboardingDocFileEl.value = '';
     }
@@ -26111,31 +26280,60 @@ app.get("/admin/ui", (req, res) => {
         onboardingDocs = data.docs || onboardingDocs;
         renderOnboardingDocList();
         setOnboardingDocStatus('Documento cargado');
+        loadOnboardingList().catch(() => {});
       } catch (err) {
         setOnboardingDocStatus('Error: ' + err.message, true);
       }
     }
 
     async function saveOnboardingProfileFields() {
-      if (!onboardingProfile || !onboardingProfile.id) return;
       if (!canPermission('onboarding_manage')) return;
+      const name = (onboardingNameInputEl?.value || '').trim();
+      const email = (onboardingEmailInputEl?.value || '').trim();
+      const phone = (onboardingPhoneInputEl?.value || '').trim();
+      const brand = (onboardingBrandInputEl?.value || '').trim();
+      const role = (onboardingRoleInputEl?.value || '').trim();
+      const onboardingType = normalizeOnboardingTypeUi(onboardingTypeEl?.value || 'w2');
+      if (!name) {
+        setOnboardingDocStatus('Ingresá nombre.', true);
+        return;
+      }
+      if (!brand) {
+        setOnboardingDocStatus('Seleccioná local.', true);
+        return;
+      }
+      if (!role) {
+        setOnboardingDocStatus('Seleccioná posición.', true);
+        return;
+      }
       setOnboardingDocStatus('Guardando datos...');
       try {
         const payload = {
+          name,
+          email,
+          phone,
+          brand,
+          role,
+          onboarding_type: onboardingType,
           pay_rate: (onboardingPayRateEl?.value || '').trim(),
           pay_unit: onboardingPayUnitEl?.value || '',
           start_date: onboardingStartDateEl?.value || '',
           admin_notes: (onboardingAdminNotesEl?.value || '').trim()
         };
-        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/profile', {
+        const isCreate = !(onboardingProfile && onboardingProfile.id);
+        const url = isCreate
+          ? '/admin/onboarding/create'
+          : '/admin/onboarding/' + encodeURIComponent(onboardingProfile.id) + '/profile';
+        const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(isCreate ? { ...payload, manual: true } : payload)
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) throw new Error(data.detail || data.error || 'profile_failed');
-        onboardingProfile = data.profile || onboardingProfile;
-        setOnboardingDocStatus('Datos guardados');
+        if (!resp.ok) throw new Error(data.detail || data.error || (isCreate ? 'onboarding_create_failed' : 'profile_failed'));
+        fillOnboardingModal(data.profile || onboardingProfile, data.docs || onboardingDocs, data.url || onboardingLinkEl?.value || '');
+        setOnboardingDocStatus(isCreate ? 'Onboarding creado' : 'Datos guardados');
+        loadOnboardingList().catch(() => {});
         setTimeout(() => setOnboardingDocStatus(''), 2000);
       } catch (err) {
         setOnboardingDocStatus('Error: ' + err.message, true);
@@ -26143,9 +26341,14 @@ app.get("/admin/ui", (req, res) => {
     }
 
     async function updateOnboardingType(nextValue) {
-      if (!onboardingProfile || !onboardingProfile.id) return;
       if (!canPermission('onboarding_manage')) return;
       const nextType = normalizeOnboardingTypeUi(nextValue);
+      if (!onboardingProfile || !onboardingProfile.id) {
+        if (onboardingTypeEl) onboardingTypeEl.value = nextType;
+        renderOnboardingDocList();
+        updateOnboardingActionState();
+        return;
+      }
       const currentType = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || 'w2');
       if (nextType === currentType) return;
       setOnboardingDocStatus('Actualizando tipo de onboarding...');
@@ -26157,10 +26360,10 @@ app.get("/admin/ui", (req, res) => {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_type_failed');
-        onboardingProfile = data.profile || onboardingProfile;
+        fillOnboardingModal(data.profile || onboardingProfile, onboardingDocs, onboardingLinkEl?.value || '');
         if (onboardingTypeEl) onboardingTypeEl.value = normalizeOnboardingTypeUi(onboardingProfile?.onboarding_type || nextType);
-        renderOnboardingDocList();
         setOnboardingDocStatus('Tipo actualizado');
+        loadOnboardingList().catch(() => {});
         setTimeout(() => setOnboardingDocStatus(''), 2000);
       } catch (err) {
         if (onboardingTypeEl) onboardingTypeEl.value = currentType;
@@ -26190,6 +26393,7 @@ app.get("/admin/ui", (req, res) => {
         onboardingDocs = data.docs || onboardingDocs;
         renderOnboardingDocList();
         setOnboardingDocStatus('Documentos actualizados');
+        loadOnboardingList().catch(() => {});
         setTimeout(() => setOnboardingDocStatus(''), 2000);
       } catch (err) {
         setOnboardingDocStatus('Error: ' + err.message, true);
@@ -26210,6 +26414,7 @@ app.get("/admin/ui", (req, res) => {
         onboardingDocs = data.docs || onboardingDocs.filter((d) => d.id !== docId);
         renderOnboardingDocList();
         setOnboardingDocStatus('Documento eliminado');
+        loadOnboardingList().catch(() => {});
       } catch (err) {
         setOnboardingDocStatus('Error: ' + err.message, true);
       }
@@ -26802,9 +27007,18 @@ app.get("/admin/ui", (req, res) => {
     }
     if (onboardingPhoneInputEl) {
       onboardingPhoneInputEl.addEventListener('input', () => {
-        if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl.value || '').trim());
+        updateOnboardingActionState();
       });
     }
+    if (onboardingNameInputEl) onboardingNameInputEl.addEventListener('input', syncOnboardingSummary);
+    if (onboardingEmailInputEl) onboardingEmailInputEl.addEventListener('input', updateOnboardingActionState);
+    if (onboardingBrandInputEl) {
+      onboardingBrandInputEl.addEventListener('change', () => {
+        refreshOnboardingRoleInputOptions(onboardingBrandInputEl.value || '', '');
+        syncOnboardingSummary();
+      });
+    }
+    if (onboardingRoleInputEl) onboardingRoleInputEl.addEventListener('change', syncOnboardingSummary);
     if (onboardingTypeEl) {
       onboardingTypeEl.addEventListener('change', () => {
         updateOnboardingType(onboardingTypeEl.value).catch(() => {});
@@ -26825,12 +27039,12 @@ app.get("/admin/ui", (req, res) => {
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok) throw new Error(data.detail || data.error || 'sms_failed');
-          if (data.profile) onboardingProfile = data.profile;
+          if (data.profile) fillOnboardingModal(data.profile, onboardingDocs, onboardingLinkEl?.value || '');
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'SMS enviado.';
         } catch (err) {
           if (onboardingLinkStatusEl) onboardingLinkStatusEl.textContent = 'Error: ' + err.message;
         } finally {
-          if (onboardingSmsEl) onboardingSmsEl.disabled = !((onboardingPhoneInputEl?.value || '').trim());
+          updateOnboardingActionState();
         }
       };
     }
@@ -26847,6 +27061,12 @@ app.get("/admin/ui", (req, res) => {
     if (onboardingSaveProfileEl) onboardingSaveProfileEl.onclick = saveOnboardingProfileFields;
     if (onboardingSyncDocsEl) onboardingSyncDocsEl.onclick = syncOnboardingDocs;
     if (onboardingExportEl) onboardingExportEl.onclick = exportOnboardingPacket;
+    if (onboardingNewEl) {
+      onboardingNewEl.onclick = () => {
+        const brand = onboardingBrandEl?.value || '';
+        openOnboardingModal({ manual: true, brand, onboarding_type: 'w2' });
+      };
+    }
     if (onboardingRefreshEl) onboardingRefreshEl.onclick = loadOnboardingList;
     if (onboardingBrandEl) onboardingBrandEl.onchange = renderOnboardingList;
     if (onboardingSearchEl) onboardingSearchEl.oninput = renderOnboardingList;
@@ -28404,6 +28624,8 @@ const openaiWs = new WebSocket(
             text: `
 INSTRUCCIONES PARA VOS (no las digas):
 - La apertura y el consentimiento ya ocurrieron. No vuelvas a saludar, presentarte ni repetir que llamás por la aplicación.
+- No repitas marca, puesto, nombre ni ningún dato que vos mismo ya dijiste, salvo que el candidato te pida aclararlo.
+- Si el candidato ya respondió algo, no lo reformules ni lo vuelvas a preguntar; seguí al siguiente punto pendiente.
 - Primer turno: empezá directo con esta pregunta exacta: "${firstQuestion}"
 - No actúes como candidato. Vos preguntás y esperás.
 - Si hay silencio/ruido, esperá la respuesta; no rellenes.
@@ -28487,8 +28709,8 @@ DECÍ ESTO Y CALLATE:
         const q = String(getEnglishCheckQuestionEn() || "").trim();
         if (q) {
           const forceLine = call.lang === "en"
-            ? `Ask this question now in English (exact wording), wait for the answer, then continue the interview: "${q}"`
-            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y luego continuá la entrevista: "${q}"`;
+            ? `Ask this question now in English (exact wording), wait for the answer, then continue the interview. This already counts as the English check for this call, so do not ask for English level or another English test later: "${q}"`
+            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y luego continuá la entrevista. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
           const guard = call.lang === "en"
             ? "Do not schedule or confirm appointments. Follow all guardrails and the original instructions."
             : "No coordines ni confirmes citas. Seguí todos los guardrails y las instrucciones originales.";
