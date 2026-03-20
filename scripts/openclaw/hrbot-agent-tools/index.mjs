@@ -5,7 +5,9 @@ import {
   hr_list_candidates,
   hr_get_candidate,
   hr_list_calls,
-  hr_get_call
+  hr_get_call,
+  hr_send_onboarding_sms,
+  hr_send_candidate_sms
 } from './hrbot-owner-tools.mjs';
 
 const handlers = {
@@ -13,7 +15,9 @@ const handlers = {
   hr_list_candidates,
   hr_get_candidate,
   hr_list_calls,
-  hr_get_call
+  hr_get_call,
+  hr_send_onboarding_sms,
+  hr_send_candidate_sms
 };
 
 function toLabel(name) {
@@ -36,7 +40,9 @@ const allowedTools = [
   'hr_list_candidates',
   'hr_get_candidate',
   'hr_list_calls',
-  'hr_get_call'
+  'hr_get_call',
+  'hr_send_onboarding_sms',
+  'hr_send_candidate_sms'
 ];
 
 const toolDefs = TOOLS.filter((tool) => allowedTools.includes(tool.name));
@@ -44,7 +50,7 @@ const toolDefs = TOOLS.filter((tool) => allowedTools.includes(tool.name));
 const plugin = {
   id: 'hrbot-agent-tools',
   name: 'HRBOT Agent Tools',
-  description: 'Read owner-level recruiting data from HRBOT through the native OpenClaw plugin system.',
+  description: 'Read recruiting data from HRBOT and send onboarding or candidate SMS through the native OpenClaw plugin system.',
   configSchema: {
     type: 'object',
     additionalProperties: false,

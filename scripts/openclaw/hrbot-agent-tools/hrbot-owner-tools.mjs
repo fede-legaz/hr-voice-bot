@@ -105,7 +105,7 @@ function summarizeError(error) {
 
 export const OPENCLAW_HRBOT_AGENT_INSTRUCTIONS = [
   'Usá HRBOT como sistema maestro para recruiting.',
-  'Estas tools son solo de lectura: capabilities, candidatos y calls.',
+  'Estas tools permiten leer capabilities, candidatos y calls, y mandar SMS de onboarding o a candidatos cuando te lo pidan explícitamente.',
   'Si necesitás más contexto, empezá por hr_get_capabilities.',
   'Para detalle puntual, usá hr_get_candidate o hr_get_call con IDs reales devueltos por los listados.',
   'Respondé corto, operativo y sin inventar datos.'
@@ -173,6 +173,34 @@ export const TOOLS = [
         callId: { type: 'string' }
       },
       required: ['callId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'hr_send_onboarding_sms',
+    description: 'Envía el link de onboarding por SMS a un onboarding existente.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        onboardingId: { type: 'string' },
+        phone: { type: 'string' },
+        savePhone: { type: 'boolean' }
+      },
+      required: ['onboardingId'],
+      additionalProperties: false
+    }
+  },
+  {
+    name: 'hr_send_candidate_sms',
+    description: 'Envía un SMS a un candidato usando candidateId o phone.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        candidateId: { type: 'string' },
+        phone: { type: 'string' },
+        message: { type: 'string' }
+      },
+      required: ['message'],
       additionalProperties: false
     }
   }
@@ -259,6 +287,80 @@ export async function hr_get_call(input = {}) {
     return {
       ok: true,
       call: result?.call || null
+    };
+  } catch (error) {
+    return summarizeError(error);
+  }
+}
+
+export async function hr_send_onboarding_sms(input = {}) {
+  try {
+    const onboardingId = requiredString(
+      input.onboardingId ?? input.id,
+      'onboardingId'
+    );
+    let result;
+    try {
+      result = await hrbotRequest(
+        `/openclaw/onboarding/${encodeURIComponent(onboardingId)}/send-sms`,
+        {
+          method: 'POST',
+          body: {
+            phone: optionalString(input.phone, 'phone'),
+            save_phone: input.savePhone === undefined ? undefined : input.savePhone === true
+          }
+        }
+      );
+    } catch (error) {
+      if (Number(error?.status || 0) !== 404) throw error;
+      result = await hrbotRequest(
+        `/admin/onboarding/${encodeURIComponent(onboardingId)}/send-sms`,
+        {
+          method: 'POST',
+          body: {
+            phone: optionalString(input.phone, 'phone'),
+            save_phone: input.savePhone === undefined ? undefined : input.savePhone === true
+          }
+        }
+      );
+    }
+    return {
+      ok: true,
+      onboarding: result?.onboarding || result?.profile || null
+    };
+  } catch (error) {
+    return summarizeError(error);
+  }
+}
+
+export async function hr_send_candidate_sms(input = {}) {
+  try {
+    const candidateId = optionalString(
+      input.candidateId ?? input.cv_id ?? input.cvId ?? input.id,
+      'candidateId'
+    );
+    const phone = optionalString(input.phone, 'phone');
+    const smsBody = requiredString(input.message ?? input.body, 'message');
+
+    if (!candidateId && !phone) {
+      throw new Error('Falta candidateId o phone.');
+    }
+
+    const result = await hrbotRequest('/admin/messages/send', {
+      method: 'POST',
+      body: {
+        cv_id: candidateId || undefined,
+        phone: phone || undefined,
+        body: smsBody
+      }
+    });
+
+    return {
+      ok: true,
+      phone: result?.phone || phone || null,
+      contact: result?.contact || null,
+      guard: result?.guard || null,
+      message: result?.message || null
     };
   } catch (error) {
     return summarizeError(error);

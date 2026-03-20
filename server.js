@@ -228,7 +228,14 @@ const OPENCLAW_OWNER_CAPABILITIES = [
       { method: "POST", path: "/admin/onboarding/:id/doc", description: "Upload an onboarding document." },
       { method: "GET", path: "/admin/onboarding/:id/doc/:docId", description: "Open one onboarding document." },
       { method: "DELETE", path: "/admin/onboarding/:id/doc/:docId", description: "Delete one onboarding document." },
-      { method: "GET", path: "/admin/onboarding/:id/packet", description: "Render/download the onboarding packet." }
+      { method: "GET", path: "/admin/onboarding/:id/packet", description: "Render/download the onboarding packet." },
+      { method: "GET", path: "/openclaw/onboarding/config", description: "Read external onboarding webhook config." },
+      { method: "POST", path: "/openclaw/onboarding/config", description: "Update external onboarding webhook config." },
+      { method: "POST", path: "/openclaw/onboarding", description: "Create onboarding for a candidate and return the public link." },
+      { method: "GET", path: "/openclaw/onboarding", description: "List onboardings with real completion progress." },
+      { method: "GET", path: "/openclaw/onboarding/:id", description: "Fetch one onboarding with docs and completion progress." },
+      { method: "POST", path: "/openclaw/onboarding/:id/send-sms", description: "Send the onboarding link by SMS." },
+      { method: "POST", path: "/openclaw/onboarding/:id/resend-completion", description: "Force resend the completion webhook for a completed onboarding." }
     ]
   },
   {
@@ -266,6 +273,9 @@ const DEFAULT_ONBOARDING_CONFIG = {
   policy_text: "Confirmo que leí y entiendo la política de renuncia y los lineamientos internos.",
   policy_text_en: "I confirm I have read and understand the resignation policy and internal guidelines.",
   role_notes_en: "",
+  completion_webhook_url: "",
+  completion_webhook_bearer_token: "",
+  completion_webhook_event: "onboarding.completed",
   doc_types: [
     { key: "id", label: "ID / Licencia", mode: "upload", template_url: "" },
     { key: "i9", label: "I-9", mode: "form", template_url: "" },
@@ -3475,6 +3485,41 @@ function getOnboardingConfig() {
   };
 }
 
+function normalizeOnboardingConfigPayload(raw = {}) {
+  const normalized = {
+    dress_code: String(raw.dress_code || raw.dressCode || DEFAULT_ONBOARDING_CONFIG.dress_code || "").trim(),
+    dress_code_en: String(raw.dress_code_en || raw.dressCodeEn || DEFAULT_ONBOARDING_CONFIG.dress_code_en || "").trim(),
+    instructions: String(raw.instructions || DEFAULT_ONBOARDING_CONFIG.instructions || "").trim(),
+    instructions_en: String(raw.instructions_en || raw.instructionsEn || DEFAULT_ONBOARDING_CONFIG.instructions_en || "").trim(),
+    policy_title: String(raw.policy_title || raw.policyTitle || DEFAULT_ONBOARDING_CONFIG.policy_title || "").trim(),
+    policy_title_en: String(raw.policy_title_en || raw.policyTitleEn || DEFAULT_ONBOARDING_CONFIG.policy_title_en || "").trim(),
+    policy_text: String(raw.policy_text || raw.policyText || DEFAULT_ONBOARDING_CONFIG.policy_text || "").trim(),
+    policy_text_en: String(raw.policy_text_en || raw.policyTextEn || DEFAULT_ONBOARDING_CONFIG.policy_text_en || "").trim(),
+    role_notes_en: String(raw.role_notes_en || raw.roleNotesEn || DEFAULT_ONBOARDING_CONFIG.role_notes_en || "").trim(),
+    completion_webhook_url: String(
+      raw.completion_webhook_url
+      || raw.completionWebhookUrl
+      || DEFAULT_ONBOARDING_CONFIG.completion_webhook_url
+      || ""
+    ).trim(),
+    completion_webhook_bearer_token: String(
+      raw.completion_webhook_bearer_token
+      || raw.completionWebhookBearerToken
+      || DEFAULT_ONBOARDING_CONFIG.completion_webhook_bearer_token
+      || ""
+    ).trim(),
+    completion_webhook_event: String(
+      raw.completion_webhook_event
+      || raw.completionWebhookEvent
+      || DEFAULT_ONBOARDING_CONFIG.completion_webhook_event
+      || "onboarding.completed"
+    ).trim() || "onboarding.completed",
+    doc_types: Array.isArray(raw.doc_types) ? raw.doc_types : (Array.isArray(raw.docTypes) ? raw.docTypes : [])
+  };
+  if (!normalized.doc_types.length) normalized.doc_types = DEFAULT_ONBOARDING_CONFIG.doc_types.slice();
+  return normalized;
+}
+
 function normalizePromptStore(store) {
   return {
     templates: Array.isArray(store?.templates) ? store.templates : [],
@@ -4552,6 +4597,10 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS onboarding_type TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_phone TEXT;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS last_sms_sent_at TIMESTAMPTZ;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS external_ref TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completion_notified_at TIMESTAMPTZ;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completion_notify_error TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_token ON onboarding_profiles (public_token);`);
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS onboarding_docs (
@@ -7107,6 +7156,143 @@ app.get("/openclaw/cv/:id", requireOpenClawAgent, async (req, res) => {
   } catch (err) {
     console.error("[openclaw/cv] fetch failed", err);
     return res.status(400).json({ error: "cv_fetch_failed", detail: err.message });
+  }
+});
+
+app.get("/openclaw/onboarding/config", requireOpenClawAgent, async (req, res) => {
+  if (dbPool) {
+    await loadOnboardingConfigFromDb();
+  }
+  const config = getOnboardingConfig();
+  return res.json({
+    ok: true,
+    config: {
+      completion_webhook_url: config.completion_webhook_url || "",
+      completion_webhook_event: config.completion_webhook_event || "onboarding.completed",
+      has_completion_webhook_bearer_token: !!String(config.completion_webhook_bearer_token || "").trim()
+    }
+  });
+});
+
+app.post("/openclaw/onboarding/config", requireOpenClawAgent, async (req, res) => {
+  try {
+    const raw = req.body?.config ?? req.body ?? {};
+    const merged = {
+      ...getOnboardingConfig(),
+      ...normalizeOnboardingConfigPayload({
+        ...getOnboardingConfig(),
+        ...raw
+      })
+    };
+    const saved = dbPool ? await saveOnboardingConfigToDb(merged) : false;
+    if (!saved) onboardingConfig = merged;
+    const config = getOnboardingConfig();
+    return res.json({
+      ok: true,
+      config: {
+        completion_webhook_url: config.completion_webhook_url || "",
+        completion_webhook_event: config.completion_webhook_event || "onboarding.completed",
+        has_completion_webhook_bearer_token: !!String(config.completion_webhook_bearer_token || "").trim()
+      }
+    });
+  } catch (err) {
+    console.error("[openclaw/onboarding/config] save failed", err);
+    return res.status(400).json({ error: "onboarding_config_failed", detail: err.message });
+  }
+});
+
+app.post("/openclaw/onboarding", requireOpenClawAgent, async (req, res) => {
+  try {
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const created = await createOnboardingFromPayload(req.body || {}, allowedBrands);
+    const detail = buildOnboardingEnvelope(created.profile, created.docs);
+    return res.json({
+      ok: true,
+      onboarding: detail.onboarding,
+      docs: detail.docs,
+      progress: detail.progress
+    });
+  } catch (err) {
+    console.error("[openclaw/onboarding] create failed", err);
+    return res.status(Number(err.statusCode) || 400).json({ error: "onboarding_create_failed", detail: err.message });
+  }
+});
+
+app.get("/openclaw/onboarding", requireOpenClawAgent, async (req, res) => {
+  try {
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const items = await listOnboardingForApi({
+      allowedBrands,
+      brand: String(req.query?.brand || "").trim(),
+      q: String(req.query?.q || "").trim(),
+      status: String(req.query?.status || "").trim(),
+      limit: Number(req.query?.limit) || 50
+    });
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error("[openclaw/onboarding] list failed", err);
+    return res.status(400).json({ error: "onboarding_list_failed", detail: err.message });
+  }
+});
+
+app.get("/openclaw/onboarding/:id", requireOpenClawAgent, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const docs = await fetchOnboardingDocs(id);
+    const detail = buildOnboardingEnvelope(profile, docs);
+    return res.json(detail);
+  } catch (err) {
+    console.error("[openclaw/onboarding] fetch failed", err);
+    return res.status(400).json({ error: "onboarding_fetch_failed", detail: err.message });
+  }
+});
+
+app.post("/openclaw/onboarding/:id/send-sms", requireOpenClawAgent, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const updated = await sendOnboardingLinkSms(id, req.body || {});
+    return res.json({ ok: true, onboarding: updated });
+  } catch (err) {
+    console.error("[openclaw/onboarding] send sms failed", err);
+    return res.status(Number(err.statusCode) || 400).json({ error: "onboarding_sms_failed", detail: err.message });
+  }
+});
+
+app.post("/openclaw/onboarding/:id/resend-completion", requireOpenClawAgent, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const synced = await syncOnboardingCompletionState(id, {
+      forceNotify: true,
+      reason: "openclaw_manual_resend"
+    });
+    if (!synced?.progress?.is_complete) {
+      return res.status(400).json({ error: "onboarding_not_complete" });
+    }
+    return res.json(synced);
+  } catch (err) {
+    console.error("[openclaw/onboarding] resend completion failed", err);
+    return res.status(400).json({ error: "onboarding_resend_failed", detail: err.message });
   }
 });
 
@@ -9859,19 +10045,7 @@ app.get("/admin/onboarding/config", requirePermission("onboarding_manage"), asyn
 app.post("/admin/onboarding/config", requirePermission("onboarding_manage"), async (req, res) => {
   try {
     const raw = req.body?.config ?? req.body ?? {};
-    const normalized = {
-      dress_code: String(raw.dress_code || raw.dressCode || DEFAULT_ONBOARDING_CONFIG.dress_code || "").trim(),
-      dress_code_en: String(raw.dress_code_en || raw.dressCodeEn || DEFAULT_ONBOARDING_CONFIG.dress_code_en || "").trim(),
-      instructions: String(raw.instructions || DEFAULT_ONBOARDING_CONFIG.instructions || "").trim(),
-      instructions_en: String(raw.instructions_en || raw.instructionsEn || DEFAULT_ONBOARDING_CONFIG.instructions_en || "").trim(),
-      policy_title: String(raw.policy_title || raw.policyTitle || DEFAULT_ONBOARDING_CONFIG.policy_title || "").trim(),
-      policy_title_en: String(raw.policy_title_en || raw.policyTitleEn || DEFAULT_ONBOARDING_CONFIG.policy_title_en || "").trim(),
-      policy_text: String(raw.policy_text || raw.policyText || DEFAULT_ONBOARDING_CONFIG.policy_text || "").trim(),
-      policy_text_en: String(raw.policy_text_en || raw.policyTextEn || DEFAULT_ONBOARDING_CONFIG.policy_text_en || "").trim(),
-      role_notes_en: String(raw.role_notes_en || raw.roleNotesEn || DEFAULT_ONBOARDING_CONFIG.role_notes_en || "").trim(),
-      doc_types: Array.isArray(raw.doc_types) ? raw.doc_types : (Array.isArray(raw.docTypes) ? raw.docTypes : [])
-    };
-    if (!normalized.doc_types.length) normalized.doc_types = DEFAULT_ONBOARDING_CONFIG.doc_types.slice();
+    const normalized = normalizeOnboardingConfigPayload(raw);
     const saved = dbPool ? await saveOnboardingConfigToDb(normalized) : false;
     if (!saved) {
       onboardingConfig = normalized;
@@ -9885,105 +10059,12 @@ app.post("/admin/onboarding/config", requirePermission("onboarding_manage"), asy
 
 app.post("/admin/onboarding/create", requirePermission("onboarding_manage"), async (req, res) => {
   try {
-    const body = req.body || {};
-    const cvId = (body.cv_id || body.cvId || "").toString().trim();
-    const callSid = (body.call_sid || body.callId || body.callSid || "").toString().trim();
-    const manual = !!body.manual;
-    const requestedOnboardingType = normalizeOnboardingType(body.onboarding_type || body.onboardingType || "");
     const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
-    if (!cvId && !callSid && !manual) return res.status(400).json({ error: "missing_target" });
-    let profile = await findOnboardingProfile({ cvId, callSid });
-    const config = getOnboardingConfig();
-
-    const findCandidate = () => {
-      if (cvId) {
-        const cv = cvStoreById.get(cvId);
-        if (cv) return {
-          name: cv.applicant,
-          phone: cv.phone,
-          brand: cv.brand,
-          role: cv.role,
-          cv_id: cv.id
-        };
-      }
-      if (callSid) {
-        const tracked = callsByCallSid.get(callSid);
-        if (tracked) return {
-          name: tracked.applicant,
-          phone: tracked.phone || tracked.to,
-          brand: tracked.brand,
-          role: tracked.role,
-          call_sid: tracked.callSid || callSid,
-          cv_id: tracked.cv_id || ""
-        };
-        const fromHistory = callHistory.find((c) => c && (c.callId === callSid || c.callSid === callSid));
-        if (fromHistory) return {
-          name: fromHistory.applicant,
-          phone: fromHistory.phone || fromHistory.to,
-          brand: fromHistory.brand,
-          role: fromHistory.role,
-          call_sid: fromHistory.callId || fromHistory.callSid || callSid,
-          cv_id: fromHistory.cv_id || ""
-        };
-      }
-      return null;
-    };
-
-    if (!profile) {
-      const candidate = findCandidate() || {};
-      const targetless = !cvId && !callSid;
-      const brand = (body.brand || candidate.brand || (targetless ? "" : DEFAULT_BRAND)).toString().trim();
-      if (brand && allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
-        return res.status(403).json({ error: "brand_not_allowed" });
-      }
-      const role = (body.role || candidate.role || (targetless ? "" : DEFAULT_ROLE)).toString().trim();
-      const requestedName = (body.name || candidate.name || "").toString().trim();
-      const requestedEmail = (body.email || "").toString().trim();
-      const requestedPhone = (body.phone || candidate.phone || "").toString().trim();
-      if (!cvId && !callSid) {
-        if (!requestedName) return res.status(400).json({ error: "missing_name" });
-        if (!brand) return res.status(400).json({ error: "missing_brand" });
-        if (!role) return res.status(400).json({ error: "missing_role" });
-      }
-      const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
-      const roleNotesEn = getRoleConfig(brand, role)?.notes_en || config.role_notes_en || "";
-      const onboardingDocTypes = resolveOnboardingConfigDocTypesByType(requestedOnboardingType, brand, config.doc_types);
-      profile = await createOnboardingProfile({
-        cv_id: cvId || candidate.cv_id || "",
-        call_sid: callSid || candidate.call_sid || "",
-        name: requestedName,
-        email: requestedEmail,
-        phone: requestedPhone,
-        brand,
-        role,
-        dress_code: config.dress_code,
-        dress_code_en: config.dress_code_en,
-        instructions: config.instructions,
-        instructions_en: config.instructions_en,
-        role_notes: roleNotes,
-        role_notes_en: roleNotesEn,
-        policy_title: config.policy_title,
-        policy_title_en: config.policy_title_en,
-        policy_text: config.policy_text,
-        policy_text_en: config.policy_text_en,
-        doc_types: onboardingDocTypes,
-        onboarding_type: requestedOnboardingType,
-        status: "pending"
-      });
-    } else {
-      if (!profile.public_token) {
-        profile = await updateOnboardingProfile(profile.id, { public_token: randomToken() });
-      }
-    }
-
-    if (!profile) return res.status(404).json({ error: "profile_not_found" });
-    await attachOnboardingToRecords(profile);
-    const docs = await fetchOnboardingDocs(profile.id);
-    const url = `${PUBLIC_BASE_URL}/onboard/${profile.public_token}`;
+    const { profile, docs, url } = await createOnboardingFromPayload(req.body || {}, allowedBrands);
     return res.json({ ok: true, profile, docs, url });
   } catch (err) {
     console.error("[admin/onboarding] create failed", err);
-    return res.status(400).json({ error: "onboarding_create_failed", detail: err.message });
+    return res.status(Number(err.statusCode) || 400).json({ error: "onboarding_create_failed", detail: err.message });
   }
 });
 
@@ -10055,50 +10136,11 @@ app.post("/admin/onboarding/:id/send-sms", requirePermission("onboarding_manage"
   try {
     const id = (req.params?.id || "").trim();
     if (!id) return res.status(400).json({ error: "missing_profile_id" });
-    let profile = await fetchOnboardingProfile(id);
-    if (!profile) return res.status(404).json({ error: "not_found" });
-    if (!profile.public_token) {
-      await updateOnboardingProfile(id, { public_token: randomToken() });
-      profile = await fetchOnboardingProfile(id);
-    }
-    const requestedPhone = typeof req.body?.phone === "string" ? req.body.phone.trim() : "";
-    const savePhone = !!(req.body?.save_phone || req.body?.savePhone);
-    const phoneToUse = requestedPhone || profile.phone || "";
-    if (!phoneToUse) return res.status(400).json({ error: "missing_phone" });
-    const normalized = normalizePhone(phoneToUse) || phoneToUse;
-    const pin = last4Digits(normalized);
-    if (!pin || pin.length < 4) return res.status(400).json({ error: "missing_pin" });
-    const url = profile.public_token ? `${PUBLIC_BASE_URL}/onboard/${profile.public_token}` : "";
-    if (!url) return res.status(400).json({ error: "missing_link" });
-    const message = `Yes Restaurants: tu link de onboarding: ${url} Clave: ${pin}`;
-    const smsData = await sendOnboardingSms(normalized, message);
-    await recordSmsMessage({
-      phone: normalized,
-      direction: "outbound",
-      channel: "sms",
-      body: message,
-      status: smsData?.status || "queued",
-      provider_sid: smsData?.sid || "",
-      provider_status: smsData?.status || "",
-      cv_id: profile.cv_id || "",
-      call_sid: profile.call_sid || "",
-      brand: profile.brand || "",
-      role: profile.role || "",
-      candidate_name: profile.name || "",
-      metadata: { source: "onboarding" }
-    });
-    const patch = {
-      last_sms_phone: normalized,
-      last_sms_sent_at: new Date().toISOString()
-    };
-    if (savePhone && requestedPhone) {
-      patch.phone = normalized;
-    }
-    profile = await updateOnboardingProfile(id, patch);
+    const profile = await sendOnboardingLinkSms(id, req.body || {});
     return res.json({ ok: true, profile });
   } catch (err) {
     console.error("[admin/onboarding] sms failed", err);
-    return res.status(400).json({ error: "onboarding_sms_failed", detail: err.message });
+    return res.status(Number(err.statusCode) || 400).json({ error: "onboarding_sms_failed", detail: err.message });
   }
 });
 
@@ -10116,6 +10158,7 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
       phone: typeof req.body?.phone === "string" ? req.body.phone.trim() : req.body?.phone,
       brand: typeof req.body?.brand === "string" ? req.body.brand.trim() : req.body?.brand,
       role: typeof req.body?.role === "string" ? req.body.role.trim() : req.body?.role,
+      external_ref: typeof req.body?.external_ref === "string" ? req.body.external_ref.trim() : req.body?.externalRef,
       pay_rate: typeof req.body?.pay_rate === "string" ? req.body.pay_rate : req.body?.payRate,
       pay_unit: typeof req.body?.pay_unit === "string" ? req.body.pay_unit : req.body?.payUnit,
       start_date: startDateValue !== undefined ? startDateValue : undefined,
@@ -10142,7 +10185,8 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
       patch.doc_types = resolveOnboardingConfigDocTypesByType(nextOnboardingType, nextBrand, config.doc_types);
     }
     const updated = await updateOnboardingProfile(id, patch);
-    return res.json({ ok: true, profile: updated });
+    const synced = await syncOnboardingCompletionState(id, { reason: "admin_profile_update" });
+    return res.json({ ok: true, profile: synced?.onboarding || updated, progress: synced?.progress || null, webhook: synced?.webhook || null });
   } catch (err) {
     console.error("[admin/onboarding] profile update failed", err);
     return res.status(400).json({ error: "onboarding_profile_failed", detail: err.message });
@@ -10164,7 +10208,8 @@ app.post("/admin/onboarding/:id/docs-sync", requirePermission("onboarding_manage
     const updated = await updateOnboardingProfile(id, { onboarding_type: onboardingType, doc_types: nextDocTypes });
     if (!updated) return res.status(404).json({ error: "not_found" });
     const docs = await fetchOnboardingDocs(id);
-    return res.json({ ok: true, profile: updated, docs });
+    const synced = await syncOnboardingCompletionState(id, { reason: "admin_docs_sync" });
+    return res.json({ ok: true, profile: synced?.onboarding || updated, docs, progress: synced?.progress || null, webhook: synced?.webhook || null });
   } catch (err) {
     console.error("[admin/onboarding] docs sync failed", err);
     return res.status(400).json({ error: "onboarding_docs_sync_failed", detail: err.message });
@@ -10278,7 +10323,8 @@ app.post("/admin/onboarding/:id/doc", requirePermission("onboarding_manage"), as
       uploadedBy: req.userEmail || req.userRole || "admin"
     });
     const docs = await fetchOnboardingDocs(profileId);
-    return res.json({ ok: true, docs });
+    const synced = await syncOnboardingCompletionState(profileId, { reason: "admin_doc_upload" });
+    return res.json({ ok: true, docs, progress: synced?.progress || null, webhook: synced?.webhook || null });
   } catch (err) {
     console.error("[admin/onboarding] doc upload failed", err);
     return res.status(400).json({ error: "onboarding_doc_failed", detail: err.message });
@@ -10447,7 +10493,8 @@ app.post("/onboard/:token/upload", async (req, res) => {
       uploadedBy: "candidate"
     });
     const docs = await fetchOnboardingDocs(profile.id);
-    return res.json({ ok: true, docs });
+    const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_upload" });
+    return res.json({ ok: true, docs, progress: synced?.progress || null });
   } catch (err) {
     console.error("[onboard] upload failed", err);
     return res.status(400).json({ error: "onboard_upload_failed", detail: err.message });
@@ -10485,7 +10532,8 @@ app.post("/onboard/:token/form", async (req, res) => {
       uploadedBy: "candidate"
     });
     const docs = await fetchOnboardingDocs(profile.id);
-    return res.json({ ok: true, docs });
+    const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_form" });
+    return res.json({ ok: true, docs, progress: synced?.progress || null });
   } catch (err) {
     console.error("[onboard] form failed", err);
     return res.status(400).json({ error: "onboard_form_failed", detail: err.message });
@@ -10574,7 +10622,8 @@ app.post("/onboard/:token/pdf", async (req, res) => {
       uploadedBy: "candidate"
     });
     const docs = await fetchOnboardingDocs(profile.id);
-    return res.json({ ok: true, docs });
+    const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_pdf" });
+    return res.json({ ok: true, docs, progress: synced?.progress || null });
   } catch (err) {
     console.error("[onboard] pdf fill failed", err);
     return res.status(400).json({ error: "onboard_pdf_failed", detail: err.message });
@@ -10632,7 +10681,8 @@ app.post("/onboard/:token/ack", async (req, res) => {
     }
     const updated = await updateOnboardingPolicyAck(profile.id, { name });
     const docs = await fetchOnboardingDocs(profile.id);
-    return res.json({ ok: true, profile: updated, docs });
+    const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_policy_ack" });
+    return res.json({ ok: true, profile: synced?.onboarding || updated, docs, progress: synced?.progress || null });
   } catch (err) {
     console.error("[onboard] ack failed", err);
     return res.status(400).json({ error: "onboard_ack_failed", detail: err.message });
@@ -30470,7 +30520,7 @@ async function fetchOnboardingProfile(profileId) {
   const result = await dbQuery(
     `SELECT id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
             policy_title, policy_title_en, policy_text, policy_text_en, doc_types, onboarding_type, pay_rate, pay_unit, start_date, admin_notes,
-            status, last_sms_phone, last_sms_sent_at,
+            status, last_sms_phone, last_sms_sent_at, external_ref, completed_at, completion_notified_at, completion_notify_error,
             policy_ack, policy_ack_name, policy_ack_at, created_at, updated_at
      FROM onboarding_profiles WHERE id = $1 LIMIT 1`,
     [profileId]
@@ -30513,6 +30563,10 @@ async function fetchOnboardingProfile(profileId) {
     status: row.status || "",
     last_sms_phone: row.last_sms_phone || "",
     last_sms_sent_at: row.last_sms_sent_at ? new Date(row.last_sms_sent_at).toISOString() : "",
+    external_ref: row.external_ref || "",
+    completed_at: row.completed_at ? new Date(row.completed_at).toISOString() : "",
+    completion_notified_at: row.completion_notified_at ? new Date(row.completion_notified_at).toISOString() : "",
+    completion_notify_error: row.completion_notify_error || "",
     policy_ack: !!row.policy_ack,
     policy_ack_name: row.policy_ack_name || "",
     policy_ack_at: row.policy_ack_at ? new Date(row.policy_ack_at).toISOString() : "",
@@ -30586,9 +30640,13 @@ async function createOnboardingProfile(payload = {}) {
     pay_unit: payload.pay_unit || payload.payUnit || "",
     start_date: payload.start_date || payload.startDate || "",
     admin_notes: payload.admin_notes || payload.adminNotes || "",
+    external_ref: payload.external_ref || payload.externalRef || "",
     status: payload.status || "pending",
     last_sms_phone: payload.last_sms_phone || payload.lastSmsPhone || "",
     last_sms_sent_at: payload.last_sms_sent_at || payload.lastSmsSentAt || "",
+    completed_at: payload.completed_at || payload.completedAt || "",
+    completion_notified_at: payload.completion_notified_at || payload.completionNotifiedAt || "",
+    completion_notify_error: payload.completion_notify_error || payload.completionNotifyError || "",
     created_at: nowIso,
     updated_at: nowIso
   };
@@ -30602,10 +30660,11 @@ async function createOnboardingProfile(payload = {}) {
   await dbQuery(
     `INSERT INTO onboarding_profiles (
         id, public_token, cv_id, call_sid, name, email, photo_url, phone, brand, role, dress_code, dress_code_en, instructions, instructions_en, role_notes, role_notes_en,
-        policy_title, policy_title_en, policy_text, policy_text_en, doc_types, onboarding_type, pay_rate, pay_unit, start_date, admin_notes, status, last_sms_phone, last_sms_sent_at, created_at, updated_at
+        policy_title, policy_title_en, policy_text, policy_text_en, doc_types, onboarding_type, pay_rate, pay_unit, start_date, admin_notes, external_ref, status, last_sms_phone, last_sms_sent_at,
+        completed_at, completion_notified_at, completion_notify_error, created_at, updated_at
      ) VALUES (
         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-        $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31
+        $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35
      )`,
     [
       entry.id,
@@ -30634,9 +30693,13 @@ async function createOnboardingProfile(payload = {}) {
       entry.pay_unit,
       entry.start_date || null,
       entry.admin_notes,
+      entry.external_ref,
       entry.status,
       entry.last_sms_phone || null,
       entry.last_sms_sent_at || null,
+      entry.completed_at || null,
+      entry.completion_notified_at || null,
+      entry.completion_notify_error || null,
       entry.created_at,
       entry.updated_at
     ]
@@ -30681,11 +30744,15 @@ async function updateOnboardingProfile(profileId, patch = {}) {
     pay_unit: "pay_unit",
     start_date: "start_date",
     admin_notes: "admin_notes",
+    external_ref: "external_ref",
     status: "status",
     cv_id: "cv_id",
     call_sid: "call_sid",
     last_sms_phone: "last_sms_phone",
-    last_sms_sent_at: "last_sms_sent_at"
+    last_sms_sent_at: "last_sms_sent_at",
+    completed_at: "completed_at",
+    completion_notified_at: "completion_notified_at",
+    completion_notify_error: "completion_notify_error"
   };
   const sets = [];
   const values = [profileId];
@@ -30732,6 +30799,428 @@ async function fetchOnboardingDocs(profileId) {
     });
   }
   return mapped;
+}
+
+function buildOnboardingPublicUrl(profile) {
+  if (!profile?.public_token) return "";
+  return `${PUBLIC_BASE_URL}/onboard/${encodeURIComponent(profile.public_token)}`;
+}
+
+function buildOnboardingPacketUrl(profile) {
+  if (!profile?.id) return "";
+  return `${PUBLIC_BASE_URL}/admin/onboarding/${encodeURIComponent(profile.id)}/packet?download=1`;
+}
+
+function validateHttpUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    return parsed.toString();
+  } catch (err) {
+    return "";
+  }
+}
+
+function computeOnboardingCompletion(profile, docs = []) {
+  const requiredDocs = Array.isArray(profile?.doc_types) ? profile.doc_types : [];
+  const normalizedDocs = Array.isArray(docs) ? docs : [];
+  const latestByKey = new Map();
+
+  for (const doc of normalizedDocs) {
+    const key = normalizeDocTypeKey(doc?.doc_type);
+    if (!key || latestByKey.has(key)) continue;
+    latestByKey.set(key, doc);
+  }
+
+  const missing = [];
+  let requiredCount = 0;
+  let completedCount = 0;
+
+  for (const doc of requiredDocs) {
+    const key = normalizeDocTypeKey(doc?.key);
+    if (!key) continue;
+    requiredCount += 1;
+    const mode = String(doc?.mode || "").toLowerCase();
+    const isDone = mode === "policy"
+      ? (!!profile?.policy_ack || latestByKey.has(key))
+      : latestByKey.has(key);
+    if (isDone) {
+      completedCount += 1;
+    } else {
+      missing.push({
+        key: doc?.key || key,
+        label: doc?.label || doc?.key || key,
+        mode: mode || "upload"
+      });
+    }
+  }
+
+  return {
+    required_count: requiredCount,
+    completed_count: completedCount,
+    pending_count: Math.max(0, requiredCount - completedCount),
+    missing_docs: missing,
+    missing_doc_keys: missing.map((item) => item.key),
+    is_complete: requiredCount > 0 && completedCount >= requiredCount
+  };
+}
+
+function buildOnboardingEnvelope(profile, docs = [], extra = {}) {
+  const progress = extra.progress || computeOnboardingCompletion(profile, docs);
+  const derivedStatus = progress.is_complete ? "completed" : (String(profile?.status || "").toLowerCase() === "hired" ? "hired" : "pending");
+  return {
+    ok: true,
+    onboarding: {
+      ...profile,
+      status: derivedStatus,
+      public_url: buildOnboardingPublicUrl(profile),
+      packet_url: buildOnboardingPacketUrl(profile),
+      progress
+    },
+    docs,
+    progress,
+    webhook: extra.webhook || null
+  };
+}
+
+async function sendOnboardingCompletionWebhook({ profile, docs, progress, force = false, reason = "" }) {
+  const config = getOnboardingConfig();
+  const webhookUrl = validateHttpUrl(config.completion_webhook_url || "");
+  const eventName = String(config.completion_webhook_event || "onboarding.completed").trim() || "onboarding.completed";
+  if (!progress?.is_complete) {
+    return { ok: false, skipped: "not_complete" };
+  }
+  if (!webhookUrl) {
+    return { ok: false, skipped: "webhook_not_configured" };
+  }
+
+  const sentAt = new Date().toISOString();
+  const payload = {
+    ok: true,
+    event: eventName,
+    sent_at: sentAt,
+    force: !!force,
+    reason: String(reason || "").trim(),
+    onboarding: {
+      id: profile.id,
+      external_ref: profile.external_ref || "",
+      cv_id: profile.cv_id || "",
+      call_sid: profile.call_sid || "",
+      name: profile.name || "",
+      email: profile.email || "",
+      phone: profile.phone || "",
+      brand: profile.brand || "",
+      role: profile.role || "",
+      onboarding_type: profile.onboarding_type || "",
+      status: progress.is_complete ? "completed" : (profile.status || "pending"),
+      public_url: buildOnboardingPublicUrl(profile),
+      packet_url: buildOnboardingPacketUrl(profile),
+      completed_at: profile.completed_at || sentAt,
+      policy_ack: !!profile.policy_ack,
+      progress
+    },
+    docs: Array.isArray(docs) ? docs.map((doc) => ({
+      id: doc.id,
+      doc_type: doc.doc_type || "",
+      doc_url: doc.doc_url || "",
+      uploaded_by: doc.uploaded_by || "",
+      created_at: doc.created_at || ""
+    })) : []
+  };
+
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  const bearer = String(config.completion_webhook_bearer_token || "").trim();
+  if (bearer) headers.Authorization = `Bearer ${bearer}`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(webhookUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const bodyText = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      throw new Error(`webhook ${resp.status}${bodyText ? `: ${bodyText.slice(0, 300)}` : ""}`);
+    }
+    return { ok: true, sent_at: sentAt, status: resp.status };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function syncOnboardingCompletionState(profileId, options = {}) {
+  const reason = String(options.reason || "").trim();
+  const forceNotify = options.forceNotify === true;
+  let profile = await fetchOnboardingProfile(profileId);
+  if (!profile) return null;
+  const docs = await fetchOnboardingDocs(profileId);
+  const progress = computeOnboardingCompletion(profile, docs);
+
+  const patch = {};
+  if (progress.is_complete && !profile.completed_at) {
+    patch.completed_at = new Date().toISOString();
+    patch.status = "completed";
+  } else if (!profile.completed_at && profile.status !== "pending") {
+    patch.status = "pending";
+  }
+  if (Object.keys(patch).length) {
+    profile = await updateOnboardingProfile(profileId, patch);
+  }
+
+  let webhook = { ok: false, skipped: "not_attempted" };
+  if (progress.is_complete && (forceNotify || !profile.completion_notified_at)) {
+    try {
+      webhook = await sendOnboardingCompletionWebhook({
+        profile,
+        docs,
+        progress,
+        force: forceNotify,
+        reason
+      });
+      if (webhook.ok) {
+        profile = await updateOnboardingProfile(profileId, {
+          completion_notified_at: webhook.sent_at,
+          completion_notify_error: ""
+        });
+      } else if (!webhook.skipped) {
+        profile = await updateOnboardingProfile(profileId, {
+          completion_notify_error: webhook.message || webhook.error || "webhook_failed"
+        });
+      }
+    } catch (err) {
+      webhook = { ok: false, message: err.message || "webhook_failed" };
+      profile = await updateOnboardingProfile(profileId, {
+        completion_notify_error: webhook.message
+      });
+    }
+  }
+
+  return buildOnboardingEnvelope(profile, docs, { progress, webhook });
+}
+
+async function createOnboardingFromPayload(body = {}, allowedBrands = []) {
+  const cvId = (body.cv_id || body.cvId || "").toString().trim();
+  const callSid = (body.call_sid || body.callId || body.callSid || "").toString().trim();
+  const manual = !!body.manual;
+  const requestedOnboardingType = normalizeOnboardingType(body.onboarding_type || body.onboardingType || "");
+  const requestedExternalRef = (body.external_ref || body.externalRef || "").toString().trim();
+  if (!cvId && !callSid && !manual) {
+    throw new Error("missing_target");
+  }
+
+  let profile = await findOnboardingProfile({ cvId, callSid });
+  const config = getOnboardingConfig();
+
+  const findCandidate = () => {
+    if (cvId) {
+      const cv = cvStoreById.get(cvId);
+      if (cv) return {
+        name: cv.applicant,
+        phone: cv.phone,
+        brand: cv.brand,
+        role: cv.role,
+        cv_id: cv.id
+      };
+    }
+    if (callSid) {
+      const tracked = callsByCallSid.get(callSid);
+      if (tracked) return {
+        name: tracked.applicant,
+        phone: tracked.phone || tracked.to,
+        brand: tracked.brand,
+        role: tracked.role,
+        call_sid: tracked.callSid || callSid,
+        cv_id: tracked.cv_id || ""
+      };
+      const fromHistory = callHistory.find((c) => c && (c.callId === callSid || c.callSid === callSid));
+      if (fromHistory) return {
+        name: fromHistory.applicant,
+        phone: fromHistory.phone || fromHistory.to,
+        brand: fromHistory.brand,
+        role: fromHistory.role,
+        call_sid: fromHistory.callId || fromHistory.callSid || callSid,
+        cv_id: fromHistory.cv_id || ""
+      };
+    }
+    return null;
+  };
+
+  if (!profile) {
+    const candidate = findCandidate() || {};
+    const targetless = !cvId && !callSid;
+    const brand = (body.brand || candidate.brand || (targetless ? "" : DEFAULT_BRAND)).toString().trim();
+    if (brand && allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
+      const err = new Error("brand_not_allowed");
+      err.statusCode = 403;
+      throw err;
+    }
+    const role = (body.role || candidate.role || (targetless ? "" : DEFAULT_ROLE)).toString().trim();
+    const requestedName = (body.name || candidate.name || "").toString().trim();
+    const requestedEmail = (body.email || "").toString().trim();
+    const requestedPhone = (body.phone || candidate.phone || "").toString().trim();
+    if (!cvId && !callSid) {
+      if (!requestedName) throw new Error("missing_name");
+      if (!brand) throw new Error("missing_brand");
+      if (!role) throw new Error("missing_role");
+    }
+    const roleNotes = getRoleConfig(brand, role)?.notes || ROLE_NOTES[normalizeKey(role)] || "";
+    const roleNotesEn = getRoleConfig(brand, role)?.notes_en || config.role_notes_en || "";
+    const onboardingDocTypes = resolveOnboardingConfigDocTypesByType(requestedOnboardingType, brand, config.doc_types);
+    profile = await createOnboardingProfile({
+      cv_id: cvId || candidate.cv_id || "",
+      call_sid: callSid || candidate.call_sid || "",
+      name: requestedName,
+      email: requestedEmail,
+      phone: requestedPhone,
+      brand,
+      role,
+      dress_code: config.dress_code,
+      dress_code_en: config.dress_code_en,
+      instructions: config.instructions,
+      instructions_en: config.instructions_en,
+      role_notes: roleNotes,
+      role_notes_en: roleNotesEn,
+      policy_title: config.policy_title,
+      policy_title_en: config.policy_title_en,
+      policy_text: config.policy_text,
+      policy_text_en: config.policy_text_en,
+      doc_types: onboardingDocTypes,
+      onboarding_type: requestedOnboardingType,
+      external_ref: requestedExternalRef,
+      status: "pending"
+    });
+  } else {
+    const patch = {};
+    if (!profile.public_token) patch.public_token = randomToken();
+    if (requestedExternalRef && requestedExternalRef !== profile.external_ref) {
+      patch.external_ref = requestedExternalRef;
+    }
+    if (Object.keys(patch).length) {
+      profile = await updateOnboardingProfile(profile.id, patch);
+    }
+  }
+
+  if (!profile) {
+    throw new Error("profile_not_found");
+  }
+
+  await attachOnboardingToRecords(profile);
+  const docs = await fetchOnboardingDocs(profile.id);
+  return {
+    profile,
+    docs,
+    url: buildOnboardingPublicUrl(profile)
+  };
+}
+
+async function sendOnboardingLinkSms(profileId, body = {}) {
+  let profile = await fetchOnboardingProfile(profileId);
+  if (!profile) {
+    const err = new Error("not_found");
+    err.statusCode = 404;
+    throw err;
+  }
+  if (!profile.public_token) {
+    profile = await updateOnboardingProfile(profileId, { public_token: randomToken() });
+  }
+  const requestedPhone = typeof body?.phone === "string" ? body.phone.trim() : "";
+  const savePhone = !!(body?.save_phone || body?.savePhone);
+  const phoneToUse = requestedPhone || profile.phone || "";
+  if (!phoneToUse) {
+    const err = new Error("missing_phone");
+    err.statusCode = 400;
+    throw err;
+  }
+  const normalized = normalizePhone(phoneToUse) || phoneToUse;
+  const pin = last4Digits(normalized);
+  if (!pin || pin.length < 4) {
+    const err = new Error("missing_pin");
+    err.statusCode = 400;
+    throw err;
+  }
+  const url = buildOnboardingPublicUrl(profile);
+  if (!url) {
+    const err = new Error("missing_link");
+    err.statusCode = 400;
+    throw err;
+  }
+  const message = `Yes Restaurants: tu link de onboarding: ${url} Clave: ${pin}`;
+  const smsData = await sendOnboardingSms(normalized, message);
+  await recordSmsMessage({
+    phone: normalized,
+    direction: "outbound",
+    channel: "sms",
+    body: message,
+    status: smsData?.status || "queued",
+    provider_sid: smsData?.sid || "",
+    provider_status: smsData?.status || "",
+    cv_id: profile.cv_id || "",
+    call_sid: profile.call_sid || "",
+    brand: profile.brand || "",
+    role: profile.role || "",
+    candidate_name: profile.name || "",
+    metadata: { source: "onboarding" }
+  });
+  const patch = {
+    last_sms_phone: normalized,
+    last_sms_sent_at: new Date().toISOString()
+  };
+  if (savePhone && requestedPhone) {
+    patch.phone = normalized;
+  }
+  profile = await updateOnboardingProfile(profileId, patch);
+  return profile;
+}
+
+async function listOnboardingForApi({ allowedBrands = [], brand = "", q = "", status = "", limit = 50 } = {}) {
+  if (!dbPool) return [];
+  const result = await dbQuery(
+    `
+    SELECT
+      p.id,
+      COALESCE(c.decision, ca.decision, '') AS decision
+    FROM onboarding_profiles p
+    LEFT JOIN cvs c ON c.id = p.cv_id
+    LEFT JOIN calls ca ON ca.call_sid = p.call_sid
+    ORDER BY p.created_at DESC
+    LIMIT $1
+    `,
+    [Math.min(Math.max(Number(limit) || 50, 1), 100)]
+  );
+  const rows = result?.rows || [];
+  const out = [];
+  for (const row of rows) {
+    const profile = await fetchOnboardingProfile(row.id);
+    if (!profile) continue;
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand || "")) continue;
+    if (brand && brandKey(profile.brand || "") !== brandKey(brand)) continue;
+    const textQuery = String(q || "").trim().toLowerCase();
+    if (textQuery) {
+      const haystack = [profile.name, profile.phone, profile.email, profile.brand, profile.role, profile.external_ref]
+        .map((item) => String(item || "").toLowerCase())
+        .join(" ");
+      if (!haystack.includes(textQuery)) continue;
+    }
+    const docs = await fetchOnboardingDocs(profile.id);
+    const progress = computeOnboardingCompletion(profile, docs);
+    const normalizedStatus = String(status || "").trim().toLowerCase();
+    const isHired = String(row.decision || "").toLowerCase() === "hired";
+    if (normalizedStatus === "completed" && !progress.is_complete) continue;
+    if (normalizedStatus === "pending" && progress.is_complete) continue;
+    if (normalizedStatus === "hired" && !isHired) continue;
+    out.push({
+      ...buildOnboardingEnvelope(profile, docs, { progress }).onboarding,
+      decision: row.decision || ""
+    });
+  }
+  return out;
 }
 
 async function insertOnboardingDoc({ profileId, cvId, docType, docUrl, docData, uploadedBy }) {
