@@ -125,7 +125,7 @@ Response:
     "external_ref": "ocw-employee-123",
     "status": "pending",
     "public_url": "https://lobster-app-68eq9.ondigitalocean.app/onboard/...",
-    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/admin/onboarding/onb_123/packet?download=1",
+    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/openclaw/onboarding/onb_123/packet",
     "progress": {
       "required_count": 5,
       "completed_count": 0,
@@ -177,7 +177,7 @@ Response:
       "external_ref": "ocw-employee-123",
       "status": "pending",
       "public_url": "https://lobster-app-68eq9.ondigitalocean.app/onboard/...",
-      "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/admin/onboarding/onb_123/packet?download=1",
+      "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/openclaw/onboarding/onb_123/packet",
       "progress": {
         "required_count": 5,
         "completed_count": 2,
@@ -214,7 +214,7 @@ Response:
     "role": "Cashier",
     "status": "completed",
     "public_url": "https://lobster-app-68eq9.ondigitalocean.app/onboard/...",
-    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/admin/onboarding/onb_123/packet?download=1",
+    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/openclaw/onboarding/onb_123/packet",
     "progress": {
       "required_count": 5,
       "completed_count": 5,
@@ -243,7 +243,28 @@ Response:
 }
 ```
 
-### 6. Send onboarding SMS
+### 6. Export onboarding packet PDF
+
+`GET /openclaw/onboarding/:id/packet`
+
+This endpoint returns the onboarding packet as a PDF file.
+
+Example:
+
+```bash
+curl -L \
+  -H "Authorization: Bearer $OPENCLAW_AGENT_TOKEN" \
+  -o onboarding-onb_123.pdf \
+  "$HRBOT_BASE_URL/openclaw/onboarding/onb_123/packet"
+```
+
+Behavior:
+
+- always returns PDF
+- uses the same OpenClaw bearer token
+- respects brand access restrictions
+
+### 7. Send onboarding SMS
 
 `POST /openclaw/onboarding/:id/send-sms`
 
@@ -271,7 +292,7 @@ Response:
 }
 ```
 
-### 7. Force resend completion webhook
+### 8. Force resend completion webhook
 
 `POST /openclaw/onboarding/:id/resend-completion`
 
@@ -349,7 +370,7 @@ Authorization: Bearer <completion_webhook_bearer_token>
     "onboarding_type": "w2",
     "status": "completed",
     "public_url": "https://lobster-app-68eq9.ondigitalocean.app/onboard/...",
-    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/admin/onboarding/onb_123/packet?download=1",
+    "packet_url": "https://lobster-app-68eq9.ondigitalocean.app/openclaw/onboarding/onb_123/packet",
     "completed_at": "2026-03-20T12:20:00.000Z",
     "policy_ack": true,
     "progress": {
@@ -396,6 +417,7 @@ The new `/openclaw/onboarding/*` endpoints are just cleaner for external agents 
 - `hr_get_candidate` -> `GET /openclaw/cv/:id`
 - `hr_list_calls` -> `GET /admin/calls`
 - `hr_get_call` -> `GET /openclaw/calls/:callId`
+- `hr_get_onboarding_packet` -> `GET /openclaw/onboarding/:id/packet`
 - `hr_send_onboarding_sms` -> `POST /openclaw/onboarding/:id/send-sms`
 - `hr_send_candidate_sms` -> `POST /admin/messages/send`
 

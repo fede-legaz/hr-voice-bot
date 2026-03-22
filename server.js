@@ -234,6 +234,7 @@ const OPENCLAW_OWNER_CAPABILITIES = [
       { method: "POST", path: "/openclaw/onboarding", description: "Create onboarding for a candidate and return the public link." },
       { method: "GET", path: "/openclaw/onboarding", description: "List onboardings with real completion progress." },
       { method: "GET", path: "/openclaw/onboarding/:id", description: "Fetch one onboarding with docs and completion progress." },
+      { method: "GET", path: "/openclaw/onboarding/:id/packet", description: "Download the onboarding packet as PDF." },
       { method: "POST", path: "/openclaw/onboarding/:id/send-sms", description: "Send the onboarding link by SMS." },
       { method: "POST", path: "/openclaw/onboarding/:id/resend-completion", description: "Force resend the completion webhook for a completed onboarding." }
     ]
@@ -7254,6 +7255,23 @@ app.get("/openclaw/onboarding/:id", requireOpenClawAgent, async (req, res) => {
   }
 });
 
+app.get("/openclaw/onboarding/:id/packet", requireOpenClawAgent, async (req, res) => {
+  try {
+    const id = String(req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand || "")) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    await respondWithOnboardingPacket(req, res, profile, { forcePdf: true });
+  } catch (err) {
+    console.error("[openclaw/onboarding] packet failed", err);
+    return res.status(Number(err.statusCode) || 400).json({ error: "onboarding_packet_failed", detail: err.message });
+  }
+});
+
 app.post("/openclaw/onboarding/:id/send-sms", requireOpenClawAgent, async (req, res) => {
   try {
     const id = String(req.params?.id || "").trim();
@@ -10222,73 +10240,7 @@ app.get("/admin/onboarding/:id/packet", requirePermission("onboarding_manage"), 
     if (!id) return res.status(400).send("missing_profile_id");
     const profile = await fetchOnboardingProfile(id);
     if (!profile) return res.status(404).send("not_found");
-    const docs = await fetchOnboardingDocs(id);
-    const logoUrl = resolveBrandLogo(profile.brand);
-    const wantsPdf = req.query?.download === "1" || req.query?.format === "pdf";
-    if (wantsPdf) {
-      if (!PDFDocument) return res.status(400).send("pdf_unavailable");
-      const pdfBuffer = await buildOnboardingPacketPdf({ profile, docs, logoUrl });
-      const safeName = (profile.name || "onboarding").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="onboarding-${safeName || "packet"}.pdf"`);
-      return res.send(pdfBuffer);
-    }
-    const safe = (v) => String(v || "");
-    const safeAttr = (v) => String(v || "").replace(/"/g, "&quot;");
-    const isImageUrl = (url) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(url || "");
-    const isPdfUrl = (url) => /\.pdf($|\?)/i.test(url || "");
-    const renderFile = (url) => {
-      if (!url) return "";
-      if (isImageUrl(url)) {
-        return `<img class="doc-image" src="${safeAttr(url)}" alt="Documento" />`;
-      }
-      if (isPdfUrl(url)) {
-        return `<iframe class="doc-pdf" src="${safeAttr(url)}"></iframe>
-                <div><a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir PDF</a></div>`;
-      }
-      return `<a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir archivo</a>`;
-    };
-    const payLabel = profile.pay_rate ? `${profile.pay_rate}${profile.pay_unit ? " / " + profile.pay_unit : ""}` : "";
-    const startDate = profile.start_date ? new Date(profile.start_date).toLocaleDateString("en-US") : "";
-    const docRows = docs.map((doc) => {
-      const title = doc.doc_type || "documento";
-      const fileBlock = doc.doc_url ? renderFile(doc.doc_url) : "";
-      const dataBlock = doc.doc_data ? `<pre>${safe(JSON.stringify(doc.doc_data, null, 2))}</pre>` : "";
-      return `<div class="doc-card"><div class="doc-title">${safe(title)}</div>${fileBlock}${dataBlock}</div>`;
-    }).join("");
-    res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Paquete onboarding</title>
-      <style>
-        body{font-family:Inter,system-ui,sans-serif;background:#f7f4ee;margin:0;padding:24px;color:#1f1f1f;}
-        .card{background:#fff;border:1px solid #e7ddcc;border-radius:16px;padding:16px;margin-bottom:12px;}
-        .label{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6f6a63;}
-        pre{white-space:pre-wrap;background:#f9f6ef;border:1px solid #e7ddcc;border-radius:12px;padding:12px;}
-        .doc-card{margin-top:10px;padding:12px;border:1px dashed #e7ddcc;border-radius:12px;}
-        .doc-title{font-weight:700;margin-bottom:6px;}
-        .doc-image{max-width:100%;height:auto;border-radius:12px;border:1px solid #e7ddcc;display:block;}
-        .doc-pdf{width:100%;height:460px;border:1px solid #e7ddcc;border-radius:12px;background:#fff;}
-        .doc-link{display:inline-block;margin-top:6px;color:#1b7a8c;text-decoration:none;font-weight:600;}
-        .actions{position:fixed;right:24px;top:24px;}
-        @media print {.actions{display:none;} body{background:#fff;}}
-      </style></head><body>
-      <div class="actions"><button onclick="window.print()">Imprimir / Guardar PDF</button></div>
-      <div class="card">
-        <div class="label">Candidato</div>
-        <div style="font-weight:700;">${safe(profile.name)}</div>
-        <div>${[profile.brand, profile.role].filter(Boolean).join(" • ")}</div>
-        <div>${safe(profile.phone)}</div>
-      </div>
-      <div class="card">
-        <div class="label">Datos internos</div>
-        <div>Pago: ${payLabel || "—"}</div>
-        <div>Inicio: ${startDate || "—"}</div>
-        <div>Notas: ${safe(profile.admin_notes) || "—"}</div>
-        <div>Política firmada: ${profile.policy_ack ? "Sí" : "No"}</div>
-      </div>
-      <div class="card">
-        <div class="label">Documentos</div>
-        ${docRows || "<div>Sin documentos.</div>"}
-      </div>
-      </body></html>`);
+    await respondWithOnboardingPacket(req, res, profile);
   } catch (err) {
     console.error("[admin/onboarding] packet failed", err);
     res.status(400).send("error");
@@ -30808,7 +30760,85 @@ function buildOnboardingPublicUrl(profile) {
 
 function buildOnboardingPacketUrl(profile) {
   if (!profile?.id) return "";
-  return `${PUBLIC_BASE_URL}/admin/onboarding/${encodeURIComponent(profile.id)}/packet?download=1`;
+  return `${PUBLIC_BASE_URL}/openclaw/onboarding/${encodeURIComponent(profile.id)}/packet`;
+}
+
+async function respondWithOnboardingPacket(req, res, profile, options = {}) {
+  const docs = Array.isArray(options.docs) ? options.docs : await fetchOnboardingDocs(profile.id);
+  const logoUrl = resolveBrandLogo(profile.brand);
+  const forcePdf = options.forcePdf === true;
+  const wantsPdf = forcePdf || req.query?.download === "1" || req.query?.format === "pdf";
+
+  if (wantsPdf) {
+    if (!PDFDocument) {
+      const err = new Error("pdf_unavailable");
+      err.statusCode = 400;
+      throw err;
+    }
+    const pdfBuffer = await buildOnboardingPacketPdf({ profile, docs, logoUrl });
+    const safeName = (profile.name || "onboarding").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="onboarding-${safeName || "packet"}.pdf"`);
+    res.send(pdfBuffer);
+    return;
+  }
+
+  const safe = (v) => String(v || "");
+  const safeAttr = (v) => String(v || "").replace(/"/g, "&quot;");
+  const isImageUrl = (url) => /\.(png|jpe?g|gif|webp|bmp)$/i.test(url || "");
+  const isPdfUrl = (url) => /\.pdf($|\?)/i.test(url || "");
+  const renderFile = (url) => {
+    if (!url) return "";
+    if (isImageUrl(url)) {
+      return `<img class="doc-image" src="${safeAttr(url)}" alt="Documento" />`;
+    }
+    if (isPdfUrl(url)) {
+      return `<iframe class="doc-pdf" src="${safeAttr(url)}"></iframe>
+              <div><a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir PDF</a></div>`;
+    }
+    return `<a class="doc-link" href="${safeAttr(url)}" target="_blank" rel="noopener">Abrir archivo</a>`;
+  };
+  const payLabel = profile.pay_rate ? `${profile.pay_rate}${profile.pay_unit ? " / " + profile.pay_unit : ""}` : "";
+  const startDate = profile.start_date ? new Date(profile.start_date).toLocaleDateString("en-US") : "";
+  const docRows = docs.map((doc) => {
+    const title = doc.doc_type || "documento";
+    const fileBlock = doc.doc_url ? renderFile(doc.doc_url) : "";
+    const dataBlock = doc.doc_data ? `<pre>${safe(JSON.stringify(doc.doc_data, null, 2))}</pre>` : "";
+    return `<div class="doc-card"><div class="doc-title">${safe(title)}</div>${fileBlock}${dataBlock}</div>`;
+  }).join("");
+  res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Paquete onboarding</title>
+    <style>
+      body{font-family:Inter,system-ui,sans-serif;background:#f7f4ee;margin:0;padding:24px;color:#1f1f1f;}
+      .card{background:#fff;border:1px solid #e7ddcc;border-radius:16px;padding:16px;margin-bottom:12px;}
+      .label{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#6f6a63;}
+      pre{white-space:pre-wrap;background:#f9f6ef;border:1px solid #e7ddcc;border-radius:12px;padding:12px;}
+      .doc-card{margin-top:10px;padding:12px;border:1px dashed #e7ddcc;border-radius:12px;}
+      .doc-title{font-weight:700;margin-bottom:6px;}
+      .doc-image{max-width:100%;height:auto;border-radius:12px;border:1px solid #e7ddcc;display:block;}
+      .doc-pdf{width:100%;height:460px;border:1px solid #e7ddcc;border-radius:12px;background:#fff;}
+      .doc-link{display:inline-block;margin-top:6px;color:#1b7a8c;text-decoration:none;font-weight:600;}
+      .actions{position:fixed;right:24px;top:24px;}
+      @media print {.actions{display:none;} body{background:#fff;}}
+    </style></head><body>
+    <div class="actions"><button onclick="window.print()">Imprimir / Guardar PDF</button></div>
+    <div class="card">
+      <div class="label">Candidato</div>
+      <div style="font-weight:700;">${safe(profile.name)}</div>
+      <div>${[profile.brand, profile.role].filter(Boolean).join(" • ")}</div>
+      <div>${safe(profile.phone)}</div>
+    </div>
+    <div class="card">
+      <div class="label">Datos internos</div>
+      <div>Pago: ${payLabel || "—"}</div>
+      <div>Inicio: ${startDate || "—"}</div>
+      <div>Notas: ${safe(profile.admin_notes) || "—"}</div>
+      <div>Política firmada: ${profile.policy_ack ? "Sí" : "No"}</div>
+    </div>
+    <div class="card">
+      <div class="label">Documentos</div>
+      ${docRows || "<div>Sin documentos.</div>"}
+    </div>
+    </body></html>`);
 }
 
 function validateHttpUrl(value) {
