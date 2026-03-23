@@ -211,6 +211,7 @@ const OPENCLAW_OWNER_CAPABILITIES = [
     routes: [
       { method: "GET", path: "/admin/messages/conversations", description: "List SMS conversations." },
       { method: "GET", path: "/admin/messages/thread", description: "Read one SMS thread by phone or cv_id." },
+      { method: "POST", path: "/admin/messages/override", description: "Enable or disable manual anti-spam override for one phone." },
       { method: "POST", path: "/admin/messages/send", description: "Send an outbound SMS." }
     ]
   },
@@ -223,6 +224,7 @@ const OPENCLAW_OWNER_CAPABILITIES = [
       { method: "GET", path: "/admin/onboarding/list", description: "List onboarding profiles." },
       { method: "GET", path: "/admin/onboarding/:id", description: "Fetch one onboarding profile." },
       { method: "POST", path: "/admin/onboarding/:id/profile", description: "Update onboarding profile fields." },
+      { method: "POST", path: "/admin/onboarding/:id/hire", description: "Mark one onboarding as hired and sync analytics state." },
       { method: "POST", path: "/admin/onboarding/:id/docs-sync", description: "Regenerate onboarding required docs." },
       { method: "POST", path: "/admin/onboarding/:id/send-sms", description: "Send the onboarding link by SMS." },
       { method: "POST", path: "/admin/onboarding/:id/doc", description: "Upload an onboarding document." },
@@ -1922,6 +1924,104 @@ async function setSmsOptOut(phone, optedOut = true) {
   }
 }
 
+function mapSmsGuardOverrideRow(row) {
+  const phone = normalizePhone(row?.phone || "");
+  if (!phone) return null;
+  return {
+    phone,
+    cv_id: row?.cv_id ? String(row.cv_id) : "",
+    allow_pending_without_reply: !!row?.allow_pending_without_reply,
+    reason: row?.reason ? String(row.reason) : "",
+    created_by: row?.created_by ? String(row.created_by) : "",
+    updated_by: row?.updated_by ? String(row.updated_by) : "",
+    created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+    updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : ""
+  };
+}
+
+function rememberSmsGuardOverride(entry) {
+  const mapped = mapSmsGuardOverrideRow(entry);
+  if (!mapped) return null;
+  if (mapped.allow_pending_without_reply) {
+    smsGuardOverrideByPhone.set(mapped.phone, mapped);
+  } else {
+    smsGuardOverrideByPhone.delete(mapped.phone);
+  }
+  return mapped;
+}
+
+async function fetchSmsGuardOverride(phone) {
+  const norm = normalizePhone(phone);
+  if (!norm) return null;
+  if (!dbPool) {
+    return smsGuardOverrideByPhone.get(norm) || null;
+  }
+  const result = await dbQuery(
+    `SELECT phone, cv_id, allow_pending_without_reply, reason, created_by, updated_by, created_at, updated_at
+     FROM sms_guard_overrides
+     WHERE phone = $1
+     LIMIT 1`,
+    [norm]
+  );
+  return mapSmsGuardOverrideRow(result?.rows?.[0]);
+}
+
+function applySmsGuardOverride(guard, override) {
+  const base = guard && typeof guard === "object" ? guard : {};
+  const active = !!override?.allow_pending_without_reply;
+  const rawBlockedPending = !!base.blocked_pending;
+  return {
+    ...base,
+    raw_blocked_pending: rawBlockedPending,
+    blocked_pending: active ? false : rawBlockedPending,
+    override_pending_without_reply: active
+  };
+}
+
+async function setSmsGuardOverride({ phone, cv_id = "", enabled = false, reason = "", user_email = "" } = {}) {
+  const norm = normalizePhone(phone);
+  if (!norm) return null;
+  const existing = await fetchSmsGuardOverride(norm);
+  if (!enabled && !existing) return null;
+  const nextReason = String(reason !== undefined ? reason : (existing?.reason || "")).trim();
+  const nextCvId = String(cv_id || existing?.cv_id || "").trim();
+  if (!dbPool) {
+    return rememberSmsGuardOverride({
+      phone: norm,
+      cv_id: nextCvId,
+      allow_pending_without_reply: !!enabled,
+      reason: nextReason,
+      created_by: existing?.created_by || user_email || "",
+      updated_by: user_email || existing?.updated_by || "",
+      created_at: existing?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    });
+  }
+  const result = await dbQuery(
+    `INSERT INTO sms_guard_overrides (
+        phone, cv_id, allow_pending_without_reply, reason, created_by, updated_by, created_at, updated_at
+     ) VALUES (
+        $1, $2, $3, $4, $5, $6, NOW(), NOW()
+     )
+     ON CONFLICT (phone) DO UPDATE SET
+        cv_id = EXCLUDED.cv_id,
+        allow_pending_without_reply = EXCLUDED.allow_pending_without_reply,
+        reason = EXCLUDED.reason,
+        updated_by = EXCLUDED.updated_by,
+        updated_at = NOW()
+     RETURNING phone, cv_id, allow_pending_without_reply, reason, created_by, updated_by, created_at, updated_at`,
+    [
+      norm,
+      nextCvId || null,
+      !!enabled,
+      nextReason || null,
+      existing?.created_by || user_email || "",
+      user_email || existing?.updated_by || ""
+    ]
+  );
+  return rememberSmsGuardOverride(result?.rows?.[0]);
+}
+
 function normalizeSmsDirection(direction) {
   const value = String(direction || "").trim().toLowerCase();
   if (value === "inbound" || value === "outbound" || value === "system") return value;
@@ -3262,6 +3362,7 @@ const smsSentBySid = new Map(); // callSid -> expiresAt
 const noAnswerSentBySid = new Map(); // callSid -> expiresAt
 const smsOptOutSet = new Set();
 const smsMessagesByPhone = new Map(); // phone -> message[]
+const smsGuardOverrideByPhone = new Map(); // phone -> override state
 const tokens = new Map(); // token -> { path?, callSid?, expiresAt }
 const voiceCtxByToken = new Map(); // token -> { payload, expiresAt }
 const userSessions = new Map(); // token -> { email, role, allowedBrands, expiresAt }
@@ -4672,8 +4773,21 @@ async function initDb() {
         metadata JSONB
       );
     `);
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS sms_guard_overrides (
+        phone TEXT PRIMARY KEY,
+        cv_id TEXT,
+        allow_pending_without_reply BOOLEAN NOT NULL DEFAULT FALSE,
+        reason TEXT,
+        created_by TEXT,
+        updated_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_phone_created ON sms_messages (phone, created_at DESC);`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_sms_messages_cv_id ON sms_messages (cv_id);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_sms_guard_overrides_cv_id ON sms_guard_overrides (cv_id);`);
     try {
       const { rows } = await dbPool.query("SELECT phone FROM sms_opt_out");
       for (const row of rows) {
@@ -4685,6 +4799,32 @@ async function initDb() {
       }
     } catch (err) {
       console.error("[sms] failed to load opt-outs", err);
+    }
+    try {
+      const { rows } = await dbPool.query(
+        `SELECT phone, cv_id, allow_pending_without_reply, reason, created_by, updated_by, created_at, updated_at
+         FROM sms_guard_overrides
+         WHERE allow_pending_without_reply = TRUE`
+      );
+      for (const row of rows || []) {
+        const norm = normalizePhone(row?.phone || "");
+        if (!norm) continue;
+        smsGuardOverrideByPhone.set(norm, {
+          phone: norm,
+          cv_id: row?.cv_id || "",
+          allow_pending_without_reply: !!row?.allow_pending_without_reply,
+          reason: row?.reason || "",
+          created_by: row?.created_by || "",
+          updated_by: row?.updated_by || "",
+          created_at: row?.created_at ? new Date(row.created_at).toISOString() : "",
+          updated_at: row?.updated_at ? new Date(row.updated_at).toISOString() : ""
+        });
+      }
+      if (rows?.length) {
+        console.log("[sms] loaded guard overrides", rows.length);
+      }
+    } catch (err) {
+      console.error("[sms] failed to load guard overrides", err);
     }
 
     await dbPool.query(`
@@ -6790,6 +6930,7 @@ app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res
     let portalApps = [];
     let calls = [];
     let cvs = [];
+    let onboardingProfiles = [];
 
     if (dbPool) {
       const portalResp = await dbQuery(
@@ -6801,9 +6942,13 @@ app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res
       );
       calls = callsResp?.rows || [];
       const cvsResp = await dbQuery(
-        "SELECT brand, role, decision, trial_at FROM cvs ORDER BY created_at DESC LIMIT 10000"
+        "SELECT id, brand, role, decision, trial_at FROM cvs ORDER BY created_at DESC LIMIT 10000"
       );
       cvs = cvsResp?.rows || [];
+      const onboardingResp = await dbQuery(
+        "SELECT brand, cv_id, status FROM onboarding_profiles ORDER BY created_at DESC LIMIT 10000"
+      );
+      onboardingProfiles = onboardingResp?.rows || [];
     } else {
       portalApps = assistantReadJsonFile(PORTAL_APPS_PATH) || [];
       calls = Array.isArray(callHistory) ? callHistory.slice() : [];
@@ -6844,10 +6989,21 @@ app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res
     });
     analytics.totals.hours_saved = Number((totalDuration / 3600).toFixed(2));
 
+    const hiredCvIds = new Set();
     cvs.forEach((cv) => {
       if (!applyBrandFilter(cv.brand || "")) return;
       if (cv.trial_at) analytics.totals.trials += 1;
-      if (String(cv.decision || "") === "hired") analytics.totals.hired += 1;
+      if (String(cv.decision || "") === "hired") {
+        analytics.totals.hired += 1;
+        if (cv.id) hiredCvIds.add(String(cv.id));
+      }
+    });
+    onboardingProfiles.forEach((profile) => {
+      if (!applyBrandFilter(profile.brand || "")) return;
+      if (String(profile.status || "").toLowerCase() !== "hired") return;
+      const cvId = String(profile.cv_id || "").trim();
+      if (cvId && hiredCvIds.has(cvId)) return;
+      analytics.totals.hired += 1;
     });
 
     analytics.applications_by_brand = Array.from(brandCounts.entries())
@@ -8227,13 +8383,15 @@ app.get("/admin/messages/thread", requireConfigOrViewer, async (req, res) => {
       }
     }
     const messages = await fetchSmsMessagesByPhone(phone, limit);
-    const guard = await getSmsSendGuard(phone);
+    const override = await fetchSmsGuardOverride(phone);
+    const guard = applySmsGuardOverride(await getSmsSendGuard(phone), override);
     return res.json({
       ok: true,
       phone,
       opted_out: isSmsOptedOut(phone),
       contact,
       guard,
+      override,
       messages
     });
   } catch (err) {
@@ -8261,6 +8419,54 @@ app.get("/admin/messages/conversations", requireConfigOrViewer, async (req, res)
   } catch (err) {
     console.error("[admin/messages] conversations failed", err);
     return res.status(400).json({ error: "messages_conversations_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/messages/override", requirePermission("cvs_write"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const cvId = String(body.cv_id || body.cvId || "").trim();
+    const toRaw = String(body.to || body.phone || "").trim();
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    const enabledRaw = body.enabled ?? body.allow_pending_without_reply ?? body.allowPendingWithoutReply;
+    const enabled = enabledRaw === undefined
+      ? true
+      : enabledRaw === true
+        || enabledRaw === 1
+        || String(enabledRaw).trim().toLowerCase() === "true"
+        || String(enabledRaw).trim() === "1";
+    const reason = String(body.reason || "").trim();
+
+    const contact = await resolveSmsContactMeta({ phone: toRaw, cvId, allowedBrands });
+    const to = normalizePhone(contact.phone || toRaw || "");
+    if (!to) return res.status(400).json({ error: "missing_phone" });
+
+    if (allowedBrands.length) {
+      const brandRef = contact.brand_key || contact.brand || "";
+      if (!brandRef || !isBrandAllowed(allowedBrands, brandRef)) {
+        return res.status(403).json({ error: "brand_not_allowed" });
+      }
+    }
+
+    const previous = await fetchSmsGuardOverride(to);
+    const override = await setSmsGuardOverride({
+      phone: to,
+      cv_id: contact.cv_id || cvId || "",
+      enabled,
+      reason: reason || previous?.reason || "",
+      user_email: req.userEmail || req.userRole || ""
+    });
+    const guard = applySmsGuardOverride(await getSmsSendGuard(to), override);
+    return res.json({
+      ok: true,
+      phone: to,
+      contact,
+      guard,
+      override
+    });
+  } catch (err) {
+    console.error("[admin/messages] override failed", err);
+    return res.status(400).json({ error: "messages_override_failed", detail: err.message });
   }
 });
 
@@ -8292,19 +8498,22 @@ app.post("/admin/messages/send", requirePermission("cvs_write"), async (req, res
       return res.status(409).json({ error: "sms_opted_out" });
     }
 
-    const guard = await getSmsSendGuard(to);
+    const override = await fetchSmsGuardOverride(to);
+    const guard = applySmsGuardOverride(await getSmsSendGuard(to), override);
     if (guard.blocked_cooldown) {
       return res.status(429).json({
         error: "sms_cooldown",
         retry_after_ms: guard.cooldown_remaining_ms,
-        guard
+        guard,
+        override
       });
     }
     if (guard.blocked_pending) {
       return res.status(429).json({
         error: "sms_pending_limit",
         detail: "too_many_unanswered_messages",
-        guard
+        guard,
+        override
       });
     }
 
@@ -8327,13 +8536,14 @@ app.post("/admin/messages/send", requirePermission("cvs_write"), async (req, res
         user_role: req.userRole || ""
       }
     });
-    const nextGuard = await getSmsSendGuard(to);
+    const nextGuard = applySmsGuardOverride(await getSmsSendGuard(to), override);
     return res.json({
       ok: true,
       phone: to,
       opted_out: false,
       contact,
       guard: nextGuard,
+      override,
       message: saved
     });
   } catch (err) {
@@ -10208,6 +10418,29 @@ app.post("/admin/onboarding/:id/profile", requirePermission("onboarding_manage")
   } catch (err) {
     console.error("[admin/onboarding] profile update failed", err);
     return res.status(400).json({ error: "onboarding_profile_failed", detail: err.message });
+  }
+});
+
+app.post("/admin/onboarding/:id/hire", requirePermission("onboarding_manage"), async (req, res) => {
+  try {
+    const id = (req.params?.id || "").trim();
+    if (!id) return res.status(400).json({ error: "missing_profile_id" });
+    const profile = await fetchOnboardingProfile(id);
+    if (!profile) return res.status(404).json({ error: "not_found" });
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (profile.brand && allowedBrands.length && !isBrandAllowed(allowedBrands, profile.brand)) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+    const synced = await markOnboardingProfileHired(id);
+    return res.json({
+      ok: true,
+      profile: synced?.onboarding || profile,
+      progress: synced?.progress || null,
+      webhook: synced?.webhook || null
+    });
+  } catch (err) {
+    console.error("[admin/onboarding] hire failed", err);
+    return res.status(400).json({ error: "onboarding_hire_failed", detail: err.message });
   }
 });
 
@@ -16410,6 +16643,7 @@ app.get("/admin/ui", (req, res) => {
         </div>
       </div>
       <div class="inline" style="justify-content:flex-end; gap:8px; margin-top:8px;">
+        <button class="secondary btn-compact" id="onboarding-hire" type="button">Marcar contratado</button>
         <button class="secondary btn-compact" id="onboarding-save-profile" type="button">Guardar datos</button>
         <button class="secondary btn-compact" id="onboarding-sync-docs" type="button">Actualizar documentos</button>
         <button class="secondary btn-compact" id="onboarding-export" type="button">Exportar PDF</button>
@@ -16480,6 +16714,7 @@ app.get("/admin/ui", (req, res) => {
         <textarea id="candidate-chat-input" placeholder="Escribí un SMS..."></textarea>
         <div class="candidate-chat-compose-row">
           <div class="small">SMS directo al candidato</div>
+          <button class="secondary btn-compact" id="candidate-chat-override" type="button">Override anti-spam</button>
           <button id="candidate-chat-send" type="button">Enviar SMS</button>
         </div>
       </div>
@@ -16826,6 +17061,7 @@ app.get("/admin/ui", (req, res) => {
     const onboardingPayUnitEl = document.getElementById('onboarding-pay-unit');
     const onboardingStartDateEl = document.getElementById('onboarding-start-date');
     const onboardingAdminNotesEl = document.getElementById('onboarding-admin-notes');
+    const onboardingHireEl = document.getElementById('onboarding-hire');
     const onboardingSaveProfileEl = document.getElementById('onboarding-save-profile');
     const onboardingSyncDocsEl = document.getElementById('onboarding-sync-docs');
     const onboardingExportEl = document.getElementById('onboarding-export');
@@ -16858,6 +17094,7 @@ app.get("/admin/ui", (req, res) => {
     const candidateChatStatusEl = document.getElementById('candidate-chat-status');
     const candidateChatBodyEl = document.getElementById('candidate-chat-body');
     const candidateChatInputEl = document.getElementById('candidate-chat-input');
+    const candidateChatOverrideEl = document.getElementById('candidate-chat-override');
     const candidateChatSendEl = document.getElementById('candidate-chat-send');
     const candidateChatRefreshEl = document.getElementById('candidate-chat-refresh');
     const candidateChatMinEl = document.getElementById('candidate-chat-min');
@@ -19406,6 +19643,11 @@ app.get("/admin/ui", (req, res) => {
       if (candidateChatInputEl) {
         candidateChatInputEl.disabled = blocked;
       }
+      if (candidateChatOverrideEl) {
+        const overrideActive = !!thread?.override?.allow_pending_without_reply;
+        candidateChatOverrideEl.disabled = blocked;
+        candidateChatOverrideEl.textContent = overrideActive ? 'Quitar override' : 'Override anti-spam';
+      }
       if (candidateChatSendEl) {
         candidateChatSendEl.disabled = blocked || !hasBody;
       }
@@ -19546,9 +19788,13 @@ app.get("/admin/ui", (req, res) => {
             setCandidateChatStatus('Cooldown activo: esperá ' + Math.ceil(cooldown / 1000) + 's antes de enviar.', true);
           } else if (thread.guard.blocked_pending) {
             setCandidateChatStatus('Límite anti-spam: demasiados SMS sin respuesta.', true);
+          } else if (thread.override && thread.override.allow_pending_without_reply) {
+            setCandidateChatStatus('Override anti-spam activo para este número.');
           } else {
             setCandidateChatStatus('');
           }
+        } else if (thread.override && thread.override.allow_pending_without_reply) {
+          setCandidateChatStatus('Override anti-spam activo para este número.');
         } else {
           setCandidateChatStatus('');
         }
@@ -19630,6 +19876,7 @@ app.get("/admin/ui", (req, res) => {
         thread.messages = nextMessages;
         thread.opted_out = !!data.opted_out;
         thread.guard = data.guard || null;
+        thread.override = data.override || null;
         thread.last_loaded_at = Date.now();
         const latestNow = nextMessages.length
           ? new Date(nextMessages[nextMessages.length - 1].created_at || 0).getTime()
@@ -19692,6 +19939,7 @@ app.get("/admin/ui", (req, res) => {
           unread: 0,
           opted_out: false,
           guard: null,
+          override: null,
           last_loaded_at: 0
         };
       } else {
@@ -19751,6 +19999,47 @@ app.get("/admin/ui", (req, res) => {
       } catch (err) {
         setCandidateChatStatus('Error: ' + err.message, true);
       } finally {
+        updateCandidateChatComposerState();
+      }
+    }
+
+    async function toggleCandidateChatOverride() {
+      const thread = getActiveCandidateChatThread();
+      if (!thread || !canUseCandidateChat()) return;
+      const enabling = !(thread.override && thread.override.allow_pending_without_reply);
+      let reason = thread.override?.reason || '';
+      if (enabling) {
+        const typed = window.prompt('Motivo del override (opcional)', reason);
+        if (typed === null) return;
+        reason = String(typed || '').trim();
+      }
+      setCandidateChatStatus(enabling ? 'Activando override...' : 'Quitando override...');
+      if (candidateChatOverrideEl) candidateChatOverrideEl.disabled = true;
+      try {
+        const resp = await fetch('/admin/messages/override', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({
+            phone: thread.phone,
+            cv_id: thread.cv_id || '',
+            enabled: enabling,
+            reason
+          })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'messages_override_failed');
+        thread.guard = data.guard || thread.guard || null;
+        thread.override = data.override || null;
+        if (data.phone) thread.phone = data.phone;
+        if (data.contact) {
+          if (!thread.cv_id && data.contact.cv_id) thread.cv_id = data.contact.cv_id;
+          if (!thread.candidate_name && data.contact.candidate_name) thread.candidate_name = data.contact.candidate_name;
+          if (!thread.brand && data.contact.brand) thread.brand = data.contact.brand;
+          if (!thread.role && data.contact.role) thread.role = data.contact.role;
+        }
+        renderCandidateChatDock();
+      } catch (err) {
+        setCandidateChatStatus('Error: ' + err.message, true);
         updateCandidateChatComposerState();
       }
     }
@@ -26264,11 +26553,16 @@ app.get("/admin/ui", (req, res) => {
       const hasProfile = !!(onboardingProfile && onboardingProfile.id);
       const hasLink = !!(onboardingLinkEl?.value || '').trim();
       const hasPhone = !!(onboardingPhoneInputEl?.value || '').trim();
+      const isHired = String(onboardingProfile?.status || '').toLowerCase() === 'hired';
       if (onboardingCopyEl) onboardingCopyEl.disabled = !hasLink;
       if (onboardingOpenEl) onboardingOpenEl.disabled = !hasLink;
       if (onboardingSmsEl) onboardingSmsEl.disabled = !(hasProfile && hasPhone);
       if (onboardingSyncDocsEl) onboardingSyncDocsEl.disabled = !hasProfile;
       if (onboardingExportEl) onboardingExportEl.disabled = !hasProfile;
+      if (onboardingHireEl) {
+        onboardingHireEl.disabled = !hasProfile || isHired;
+        onboardingHireEl.textContent = isHired ? 'Contratado' : 'Marcar contratado';
+      }
       if (onboardingSaveProfileEl) onboardingSaveProfileEl.textContent = hasProfile ? 'Guardar datos' : 'Crear onboarding';
     }
 
@@ -26543,6 +26837,36 @@ app.get("/admin/ui", (req, res) => {
       }
     }
 
+    async function markOnboardingHired(onboardingId) {
+      if (!canPermission('onboarding_manage')) return;
+      const id = String(onboardingId || onboardingProfile?.id || '').trim();
+      if (!id) return;
+      const isCurrentModal = onboardingProfile && onboardingProfile.id === id;
+      if (isCurrentModal) setOnboardingDocStatus('Marcando contratado...');
+      try {
+        const resp = await fetch('/admin/onboarding/' + encodeURIComponent(id) + '/hire', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() }
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || 'onboarding_hire_failed');
+        if (isCurrentModal) {
+          fillOnboardingModal(data.profile || onboardingProfile, onboardingDocs, onboardingLinkEl?.value || '');
+          setOnboardingDocStatus('Marcado como contratado');
+        } else {
+          showToast('Marcado como contratado');
+        }
+        loadOnboardingList().catch(() => {});
+        loadAnalytics().catch(() => {});
+      } catch (err) {
+        if (isCurrentModal) {
+          setOnboardingDocStatus('Error: ' + err.message, true);
+        } else {
+          showToast('Error', err.message);
+        }
+      }
+    }
+
     async function updateOnboardingType(nextValue) {
       if (!canPermission('onboarding_manage')) return;
       const nextType = normalizeOnboardingTypeUi(nextValue);
@@ -26794,7 +27118,8 @@ app.get("/admin/ui", (req, res) => {
 
     function onboardingStatusMeta(item) {
       if (!item) return { text: '—', icon: '•', cls: 'status-empty' };
-      if (item.decision === 'hired') return { text: 'Contratado', icon: '★', cls: 'status-hired' };
+      const isHired = item.decision === 'hired' || String(item.status || '').toLowerCase() === 'hired';
+      if (isHired) return { text: 'Contratado', icon: '★', cls: 'status-hired' };
       if (item.docs_count && item.done_count >= item.docs_count) {
         return { text: 'Docs completos', icon: '✓', cls: 'status-complete' };
       }
@@ -26823,7 +27148,7 @@ app.get("/admin/ui", (req, res) => {
       } else if (onboardingFilterMode === 'complete') {
         filtered = filtered.filter((item) => item.docs_count > 0 && item.done_count >= item.docs_count);
       } else if (onboardingFilterMode === 'hired') {
-        filtered = filtered.filter((item) => item.decision === 'hired');
+        filtered = filtered.filter((item) => item.decision === 'hired' || String(item.status || '').toLowerCase() === 'hired');
       }
 
       onboardingBodyEl.innerHTML = '';
@@ -26886,6 +27211,19 @@ app.get("/admin/ui", (req, res) => {
           actionTd.dataset.label = 'Acción';
           const actionWrap = document.createElement('div');
           actionWrap.className = 'action-stack';
+          const isHired = item.decision === 'hired' || String(item.status || '').toLowerCase() === 'hired';
+          if (!isHired) {
+            const hireBtn = document.createElement('button');
+            hireBtn.type = 'button';
+            hireBtn.className = 'secondary btn-compact';
+            hireBtn.textContent = 'Contratar';
+            hireBtn.onclick = async (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              await markOnboardingHired(item.id);
+            };
+            actionWrap.appendChild(hireBtn);
+          }
           const openBtn = document.createElement('button');
           openBtn.type = 'button';
           openBtn.className = 'secondary btn-compact';
@@ -27262,6 +27600,7 @@ app.get("/admin/ui", (req, res) => {
       });
     }
     if (onboardingSaveProfileEl) onboardingSaveProfileEl.onclick = saveOnboardingProfileFields;
+    if (onboardingHireEl) onboardingHireEl.onclick = () => markOnboardingHired();
     if (onboardingSyncDocsEl) onboardingSyncDocsEl.onclick = syncOnboardingDocs;
     if (onboardingExportEl) onboardingExportEl.onclick = exportOnboardingPacket;
     if (onboardingNewEl) {
@@ -27723,6 +28062,7 @@ app.get("/admin/ui", (req, res) => {
       };
     }
     if (candidateChatSendEl) candidateChatSendEl.onclick = sendCandidateChatMessage;
+    if (candidateChatOverrideEl) candidateChatOverrideEl.onclick = toggleCandidateChatOverride;
     if (candidateChatInputEl) {
       candidateChatInputEl.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
@@ -28313,6 +28653,17 @@ async function handleSmsInbound(req, res) {
       });
     } catch (err) {
       console.error("[sms-inbound] save failed", err?.message || err);
+    }
+    try {
+      await setSmsGuardOverride({
+        phone: from,
+        cv_id: contact.cv_id || "",
+        enabled: false,
+        reason: "candidate_replied",
+        user_email: "system:sms_inbound"
+      });
+    } catch (err) {
+      console.error("[sms-inbound] guard override clear failed", err?.message || err);
     }
   };
 
@@ -30728,6 +31079,72 @@ async function updateOnboardingProfile(profileId, patch = {}) {
   return fetchOnboardingProfile(profileId);
 }
 
+async function markOnboardingProfileHired(profileId) {
+  const profile = await fetchOnboardingProfile(profileId);
+  if (!profile) return null;
+
+  const cvIds = new Set();
+  if (profile.cv_id) cvIds.add(profile.cv_id);
+
+  if (profile.call_sid) {
+    const tracked = callsByCallSid.get(profile.call_sid);
+    if (tracked) {
+      tracked.decision = "hired";
+      tracked.trial_follow_up_status = "hired";
+      if (tracked.cvId) cvIds.add(String(tracked.cvId));
+      if (tracked.cv_id) cvIds.add(String(tracked.cv_id));
+    }
+  }
+
+  if (dbPool && profile.call_sid) {
+    const linked = await dbQuery(
+      `SELECT cv_id FROM calls WHERE call_sid = $1 LIMIT 1`,
+      [profile.call_sid]
+    );
+    const linkedCvId = String(linked?.rows?.[0]?.cv_id || "").trim();
+    if (linkedCvId) cvIds.add(linkedCvId);
+  }
+
+  const cvIdList = Array.from(cvIds).filter(Boolean);
+  cvIdList.forEach((cvId) => {
+    const entry = cvStoreById.get(cvId);
+    if (entry) {
+      entry.decision = "hired";
+      entry.trial_follow_up_status = "hired";
+    }
+  });
+
+  if (dbPool && cvIdList.length) {
+    await dbQuery(
+      `UPDATE cvs
+       SET decision = 'hired',
+           trial_follow_up_status = 'hired'
+       WHERE id = ANY($1)`,
+      [cvIdList]
+    );
+    await dbQuery(
+      `UPDATE calls
+       SET decision = 'hired',
+           trial_follow_up_status = 'hired'
+       WHERE cv_id = ANY($1)`,
+      [cvIdList]
+    );
+  }
+
+  if (dbPool && profile.call_sid) {
+    await dbQuery(
+      `UPDATE calls
+       SET decision = 'hired',
+           trial_follow_up_status = 'hired'
+       WHERE call_sid = $1`,
+      [profile.call_sid]
+    );
+  }
+
+  await updateOnboardingProfile(profileId, { status: "hired" });
+  return syncOnboardingCompletionState(profileId, { reason: "admin_mark_hired" });
+}
+
 async function fetchOnboardingDocs(profileId) {
   if (!dbPool || !profileId) return [];
   const result = await dbQuery(
@@ -30897,9 +31314,16 @@ function computeOnboardingCompletion(profile, docs = []) {
   };
 }
 
+function deriveOnboardingStatus(profile, progress) {
+  const current = String(profile?.status || "").trim().toLowerCase();
+  if (current === "hired") return "hired";
+  if (progress?.is_complete) return "completed";
+  return "pending";
+}
+
 function buildOnboardingEnvelope(profile, docs = [], extra = {}) {
   const progress = extra.progress || computeOnboardingCompletion(profile, docs);
-  const derivedStatus = progress.is_complete ? "completed" : (String(profile?.status || "").toLowerCase() === "hired" ? "hired" : "pending");
+  const derivedStatus = deriveOnboardingStatus(profile, progress);
   return {
     ok: true,
     onboarding: {
@@ -30944,7 +31368,7 @@ async function sendOnboardingCompletionWebhook({ profile, docs, progress, force 
       brand: profile.brand || "",
       role: profile.role || "",
       onboarding_type: profile.onboarding_type || "",
-      status: progress.is_complete ? "completed" : (profile.status || "pending"),
+      status: deriveOnboardingStatus(profile, progress),
       public_url: buildOnboardingPublicUrl(profile),
       packet_url: buildOnboardingPacketUrl(profile),
       completed_at: profile.completed_at || sentAt,
@@ -30992,12 +31416,13 @@ async function syncOnboardingCompletionState(profileId, options = {}) {
   if (!profile) return null;
   const docs = await fetchOnboardingDocs(profileId);
   const progress = computeOnboardingCompletion(profile, docs);
+  const isHiredStatus = String(profile?.status || "").trim().toLowerCase() === "hired";
 
   const patch = {};
   if (progress.is_complete && !profile.completed_at) {
     patch.completed_at = new Date().toISOString();
-    patch.status = "completed";
-  } else if (!profile.completed_at && profile.status !== "pending") {
+    if (!isHiredStatus) patch.status = "completed";
+  } else if (!profile.completed_at && !isHiredStatus && profile.status !== "pending") {
     patch.status = "pending";
   }
   if (Object.keys(patch).length) {
@@ -31241,13 +31666,13 @@ async function listOnboardingForApi({ allowedBrands = [], brand = "", q = "", st
     const docs = await fetchOnboardingDocs(profile.id);
     const progress = computeOnboardingCompletion(profile, docs);
     const normalizedStatus = String(status || "").trim().toLowerCase();
-    const isHired = String(row.decision || "").toLowerCase() === "hired";
+    const isHired = String(row.decision || "").toLowerCase() === "hired" || String(profile.status || "").toLowerCase() === "hired";
     if (normalizedStatus === "completed" && !progress.is_complete) continue;
     if (normalizedStatus === "pending" && progress.is_complete) continue;
     if (normalizedStatus === "hired" && !isHired) continue;
     out.push({
       ...buildOnboardingEnvelope(profile, docs, { progress }).onboarding,
-      decision: row.decision || ""
+      decision: row.decision || (isHired ? "hired" : "")
     });
   }
   return out;
