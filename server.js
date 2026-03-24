@@ -41,6 +41,7 @@ const SPACES_PUBLIC = process.env.SPACES_PUBLIC === "1";
 const OPENAI_MODEL_REALTIME = process.env.OPENAI_MODEL_REALTIME || process.env.OPENAI_MODEL || "gpt-4o-mini-realtime-preview-2024-12-17";
 const OPENAI_MODEL_SCORING = process.env.OPENAI_MODEL_SCORING || "gpt-4o-mini";
 const OPENAI_MODEL_OCR = process.env.OPENAI_MODEL_OCR || "gpt-4o-mini";
+const OPENAI_MODEL_REALTIME_TRANSCRIPTION = process.env.OPENAI_MODEL_REALTIME_TRANSCRIPTION || "gpt-4o-mini-transcribe";
 const TRANSCRIPTION_MODEL = "whisper-1";
 const OCR_MAX_IMAGES = Number(process.env.OCR_MAX_IMAGES) || 3;
 const OCR_MAX_IMAGE_BYTES = Number(process.env.OCR_MAX_IMAGE_BYTES) || 2 * 1024 * 1024;
@@ -2839,9 +2840,10 @@ function withLateClosingQuestion(questions, brandK, brandName, roleK, langPref, 
   return list;
 }
 
-function withEnglishRequiredQuestions(questions, needsEnglish, levelQuestion, checkQuestion) {
+function withEnglishRequiredQuestions(questions, needsEnglish, levelQuestion, checkQuestion, langPref = "es") {
   const list = Array.isArray(questions) ? [...questions] : [];
   if (!needsEnglish) return list;
+  if (langPref === "en") return list;
   const levelQ = levelQuestion || ENGLISH_LEVEL_QUESTION;
   const checkQ = checkQuestion || ENGLISH_CHECK_QUESTION;
   const hasLevel = list.some((q) => {
@@ -2873,8 +2875,12 @@ function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosi
     lines.push(`- ${q}`);
   }
   if (needsEnglish) {
-    lines.push(`- ${englishLevelQuestion || (langPref === "en" ? ENGLISH_LEVEL_QUESTION_EN : ENGLISH_LEVEL_QUESTION)}`);
-    lines.push(`- ${englishCheckQuestion || ENGLISH_CHECK_QUESTION}`);
+    if (langPref === "en") {
+      lines.push("- The interview is already happening in English. Do not ask again about English level and do not run a separate English test.");
+    } else {
+      lines.push(`- ${englishLevelQuestion || ENGLISH_LEVEL_QUESTION}`);
+      lines.push(`- ${englishCheckQuestion || ENGLISH_CHECK_QUESTION}`);
+    }
   }
   if (Array.isArray(specificQs) && specificQs.length) {
     lines.push(langPref === "en"
@@ -2894,12 +2900,12 @@ function buildMandatoryBlock({ mustAsk, specificQs, needsEnglish, needsLateClosi
 }
 
 const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `
-Actuás como recruiter humano (HR) en una llamada corta. Tono cálido, profesional, español neutro (no voseo, nada de jerga). Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan ("dale", "bueno") pero sin ser argentino. Si inglés NO es requerido, no preguntes por el nivel de inglés ni hagas la pregunta de inglés; si el candidato prefiere inglés, hacé toda la entrevista en inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
+Actuás como recruiter humano (HR) en una llamada corta. Tono cálido y profesional. Si la entrevista está en español, usá español neutro (no voseo, nada de jerga). Si la entrevista está en inglés, usá inglés natural y profesional. Nunca mezcles idiomas dentro del mismo tramo de la llamada. Soná humano: frases cortas, acknowledges breves ("ok", "perfecto", "entiendo"), sin leer un guion. Usa muletillas suaves solo si ayudan, sin exagerar. Si inglés NO es requerido, no preguntes por el nivel de inglés ni hagas la pregunta de inglés. Usá exactamente el rol que recibís; si dice "Server/Runner", mencioná ambos, no sólo runner.
 No respondas por el candidato ni repitas literal; parafraseá en tus palabras solo si necesitas confirmar. No enumeres puntos ni suenes a checklist. Usa transiciones naturales entre temas. Si dice "chau", "bye" o que debe cortar, despedite breve y terminá. Nunca digas que no podés cumplir instrucciones ni des disculpas de IA; solo seguí el flujo.
 Si hay ruido de fondo o no entendés nada, no asumas que contestó: repreguntá con calma una sola vez o pedí que repita. Si no responde, cortá con un cierre amable. Ajustá tu calidez según el tono del candidato: si está seco/monosilábico, no lo marques como súper amigable.
-Nunca actúes como candidato. Tu PRIMER mensaje debe ser exactamente el opener y luego esperar. No agregues "sí" ni "claro" ni "tengo unos minutos". Vos preguntás y esperás.
-- Primer turno (bilingüe): "{opener_es}". Si responde en inglés o dice "English", repetí el opener en inglés: "{opener_en}". SIEMPRE menciona el restaurante. Si no es el postulante, preguntá si te lo puede pasar; si no puede, pedí un mejor momento y cortá.
-- Segundo turno (si es el postulante y puede hablar): "Perfecto, aplicaste para {spoken_role}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
+Nunca actúes como candidato. La apertura y el consentimiento ya ocurrieron antes de entrar al audio; no los repitas. Empezá directo con la primera pregunta útil pendiente y esperá la respuesta.
+- Si el candidato pide inglés o responde en inglés, cambiá de inmediato a inglés y mantené TODO el resto de la entrevista en inglés. No vuelvas a español salvo pedido explícito del candidato.
+- Si toda la entrevista ya está ocurriendo en inglés, eso ya cuenta como validación de inglés. No preguntes "qué nivel de inglés tenés" ni hagas una prueba separada de inglés.
 
 Contexto:
 - Restaurante: {brand}
@@ -2926,6 +2932,7 @@ Reglas:
 - Si el candidato ya respondió un dato clave (zona, disponibilidad, salario, permanencia, inglés, experiencia), no lo vuelvas a preguntar. Avanzá al siguiente punto pendiente.
 - No reformules la misma pregunta dos veces seguidas. Si no entendiste, hacé una sola aclaración breve y seguí.
 - No encadenes ni superpongas preguntas: hacé UNA pregunta, esperá la respuesta completa. Solo si no queda clara, pedí una aclaración breve y recién después pasá al siguiente tema.
+- Si el candidato ya respondió sobre su último trabajo, tareas o experiencia, no le pidas lo mismo otra vez con otras palabras ni en otro idioma salvo que falte una aclaración concreta.
 - No preguntes papeles/documentos. No preguntes "hasta cuándo se queda en Miami".
 - Si hay resumen de CV, usalo para personalizar: referenciá el último trabajo del CV, confirma tareas/fechas, y preguntá brevemente por disponibilidad/salario si aparecen. Si el CV está vacío, seguí el flujo normal sin inventar.
  - Si hay CV usable, referenciá el último trabajo del CV, confirma tareas/fechas, y repreguntá. Si el CV no es usable (ej. vacío, “datos cv”, “cv adjunto”, “no pude leer”), no lo menciones y usá preguntas genéricas de experiencia.
@@ -2933,17 +2940,14 @@ Reglas:
 - OBLIGATORIO: preguntá si está viviendo en Miami/EE.UU. de forma permanente o temporal. Si dice temporal, preguntá cuánto tiempo planea quedarse (sin presionar fechas exactas).
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en {address}" (solo si hay dirección). No inventes direcciones.
 - Zona/logística: primero preguntá "¿En qué zona vivís?" y después "¿Te queda cómodo llegar al local? Estamos en {address}" (solo si hay dirección). No inventes direcciones. Si la zona mencionada no es en Miami/South Florida o suena lejana (ej. otra ciudad/país), pedí aclarar dónde está ahora y marcá que no es viable el traslado.
-- Si inglés es requerido ({english_required}), SIEMPRE preguntá nivel y hacé una pregunta en inglés. No lo saltees. Si inglés NO es requerido, no evalúes nivel de inglés.
-- Inglés requerido: hacé al menos una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta en inglés. Si no responde o cambia a español, marcá internamente que no es conversacional, agradecé y seguí en español sin decirle que le falta inglés.
+- LOCK DE IDIOMA: si el idioma actual es inglés, o si el candidato pide inglés o responde en inglés, TODAS tus siguientes intervenciones deben ser en inglés (preguntas, acknowledgements, aclaraciones y cierre). No vuelvas a español salvo que el candidato pida español explícitamente. Esta regla tiene prioridad sobre cualquier otra instrucción o ejemplo.
+- Si escuchás "English", "english please", "I don't speak Spanish", "hello", "hi", "who is this" u otra respuesta clara en inglés, seguí de inmediato en inglés. No vuelvas a preguntar en español si prefiere inglés.
+- Si inglés es requerido ({english_required}) y la entrevista sigue en español, hacé un único chequeo de inglés: preguntá nivel y luego una sola pregunta en inglés. Si la entrevista ya quedó en inglés, no preguntes nivel ni hagas una prueba separada; seguí toda la entrevista en inglés.
+- Inglés requerido: si todavía están hablando en español, hacé como máximo una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta. Si ya vienen conversando en inglés, eso ya cubre el chequeo.
 - Máximo un bloque de inglés por llamada: si ya preguntaste una vez en inglés y el candidato respondió en inglés, considerá el chequeo cubierto y no vuelvas a pedir nivel ni otra prueba de inglés.
-- Si el candidato ya respondió una pregunta completa en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
+- Si el candidato ya respondió una pregunta completa en inglés o la entrevista ya quedó en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
-- Si el candidato dice explícitamente "no hablo español" o responde repetidamente en inglés, cambia a inglés para el resto de la entrevista (todas las preguntas y acknowledgements) y no vuelvas a español.
 - Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
-- Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá explícitamente: "¿Te sentís más cómodo si seguimos la entrevista en inglés?" y, si dice que sí, cambiá a inglés para el resto.
-- Si notás dubitación o respuestas cortas en inglés ("hello", "yes", etc.), preguntá en inglés: "Would you prefer we continue the interview in English?" y, si dice que sí, cambiá a inglés para el resto.
-- Si el candidato responde en inglés (aunque sea "hello", "yes", "hi"), preguntá en inglés de inmediato: "Would you prefer we continue the interview in English?" Si responde en inglés o afirma, repetí el opener en inglés ("Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?") y seguí toda la entrevista en inglés sin volver al español, salvo que explícitamente pida español.
-- Si escuchás "hello", "hi", "who is this" u otra respuesta en inglés, repetí el opener en inglés de inmediato y quedate en inglés para toda la entrevista, salvo que el candidato pida seguir en español. ESTO ES MANDATORIO.
 - Preguntá SIEMPRE (no omitir): expectativa salarial abierta ("¿Tenés alguna expectativa salarial por hora?") y si está viviendo en Miami de forma permanente o temporal ("¿Estás viviendo en Miami ahora o es algo temporal?").
 - Si el CV menciona tareas específicas o idiomas (ej. barista, caja, inglés), referencialas en tus preguntas: "En el CV veo que estuviste en X haciendo Y, ¿me contás más?".
 - Usá solo el primer nombre si está: "Hola {first_name_or_question}". Podés repetirlo ocasionalmente para personalizar.
@@ -2958,9 +2962,9 @@ Reglas:
 {specific_questions}
 
 Flujo sugerido (adaptalo como conversación, no como guion rígido):
-1) Apertura: "Hola{first_name_or_blank}, te llamo por una entrevista de trabajo en {brand}. ¿Tenés unos minutos para hablar?" Si no es el postulante, pedí hablar con él/ella o un mejor momento y cortá.
-   Si dice que sí y es el postulante: "Perfecto, aplicaste para {spoken_role}. ¿Podés contarme un poco tu experiencia en esta posición? En tu CV veo que trabajaste en <lo del CV>, contame qué tareas hacías."
-   Si no puede: "Perfecto, gracias. Te escribimos para coordinar." y cortás.
+1) Primera pregunta útil:
+   - Arrancá directo por experiencia, sin volver a saludar ni pedir permiso otra vez: "Contame un poco tu experiencia en {spoken_role}."
+   - Si el candidato quedó en inglés, hacelo directamente en inglés y mantené todo el resto en inglés.
 2) Experiencia:
    - Si hay CV, arrancá con él: "En tu CV veo que tu último trabajo fue en <extraelo del CV>. ¿Qué tareas hacías ahí en un día normal?" y luego repreguntá breve sobre tareas (caja/pedidos/runner/café/pagos según aplique).
    - Si no hay CV o no se ve claro: (si no lo preguntaste ya) "Contame rápido tu experiencia en {spoken_role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
@@ -2975,11 +2979,11 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
 4) Disponibilidad: "¿Cómo es tu disponibilidad normalmente? Semana, fines de semana, día/noche… lo que puedas."
 5) Expectativa salarial: "Tenés alguna expectativa salarial por hora?"
 6) Prueba (sin prometer): "Si te invitamos, ¿cuándo podrías venir a hacer una prueba?"
-7) Inglés (si aplica, NO lo saltees):
-   - "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?" (igual si ya ofreciste seguir en inglés).
-   - Luego, sí o sí, hacé al menos una pregunta en inglés y esperá la respuesta: "Can you describe your last job and what you did day to day?"
-   - Si no se puede comunicar o no responde en inglés, marcá que no es conversacional y seguí sin insistir.
-   - Si en el CV menciona inglés/idiomas, mencioná que lo viste y verificá.
+7) Inglés (si aplica):
+   - Si TODA la entrevista ya está ocurriendo en inglés, no preguntes nivel ni hagas otra prueba: ya quedó validado.
+   - Solo si la entrevista sigue en español, preguntá: "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?"
+   - Y recién después hacé una sola pregunta en inglés: "Can you describe your last job and what you did day to day?"
+   - Si ya respondió en inglés o siguió toda la charla en inglés, no vuelvas a tocar el tema.
 Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por WhatsApp." (no prometas prueba ni confirmes fecha).
 `.trim();
 
@@ -3094,8 +3098,8 @@ function buildInstructions(ctx) {
     ? `OBLIGATORIO: preguntá exactamente: "${lateClosingQuestion}"`
     : "";
   const languageNote = langPref === "en"
-    ? "Idioma actual: inglés. Toda la entrevista en inglés; no mezcles español salvo que el candidato lo pida."
-    : "Idioma actual: español. Entrevista en español. Si el candidato pide inglés o responde en inglés, cambiá a inglés y no mezcles.";
+    ? "MANDATORIO: idioma bloqueado en inglés. Todas las preguntas, acknowledgements, aclaraciones y cierre deben ser en inglés. No vuelvas a español salvo que el candidato lo pida explícitamente. No preguntes nivel de inglés ni hagas una prueba de inglés separada: la entrevista en inglés ya cuenta como validación."
+    : "Idioma actual: español. Si el candidato pide inglés o responde en inglés, cambiá de inmediato a inglés y bloqueá el resto de la entrevista en inglés hasta que el candidato pida español explícitamente.";
   const cfg = getRoleConfig(ctx.brand, ctx.role) || {};
   const roleNotesBase = ROLE_NOTES[rKey] ? `Notas rol (${rKey}): ${ROLE_NOTES[rKey]}` : "Notas rol: general";
   const roleNotesCfg = cfg.notes ? `Notas rol (config): ${cfg.notes}` : "";
@@ -3108,7 +3112,7 @@ function buildInstructions(ctx) {
   const cvCue = hasCv ? `Pistas CV: ${cvSummaryClean}` : "Pistas CV: sin CV usable.";
   const baseQs = cfg.questions && cfg.questions.length ? cfg.questions : roleBrandQuestions(bKey, rKey);
   const withLateClosing = withLateClosingQuestion(baseQs, bKey, ctx.brand, rKey, langPref, lateClosingQuestion);
-  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, englishLevelQuestion, englishCheckQuestion);
+  const specificQs = withEnglishRequiredQuestions(withLateClosing, needsEnglish, englishLevelQuestion, englishCheckQuestion, langPref);
   const promptTemplate = (metaCfg.system_prompt || "").trim() || DEFAULT_SYSTEM_PROMPT_TEMPLATE;
   const customQuestion = (ctx.customQuestion || ctx.custom_question || "").toString().trim();
   const customQuestionMode = (ctx.customQuestionMode || ctx.custom_question_mode || "").toString().trim() === "ai" ? "ai" : "exact";
@@ -3179,6 +3183,64 @@ function buildInstructions(ctx) {
 
 function getEnglishCheckQuestionEn() {
   return getMandatoryCopy("en", "english_check_question", ENGLISH_CHECK_QUESTION);
+}
+
+function detectRequestedInterviewLanguage(text = "") {
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+  const norm = normalizeKey(raw);
+  if (!norm) return "";
+
+  const explicitEnglish =
+    norm === "english"
+    || norm === "ingles por favor"
+    || norm === "english por favor"
+    || /\benglish please\b/.test(norm)
+    || /\bin english please\b/.test(norm)
+    || /\bcan we do this in english\b/.test(norm)
+    || /\bcan we continue in english\b/.test(norm)
+    || /\bcould we do this in english\b/.test(norm)
+    || /\bcould you speak english\b/.test(norm)
+    || /\bspeak english\b/.test(norm)
+    || /\bcontinue in english\b/.test(norm)
+    || /\bprefer english\b/.test(norm)
+    || /\benglish only\b/.test(norm)
+    || /\bmy english is\b/.test(norm)
+    || /\bi speak english\b/.test(norm)
+    || /\bi am speaking english\b/.test(norm)
+    || /\bi don t speak spanish\b/.test(norm)
+    || /\bin english\b/.test(norm)
+    || /\bi dont speak spanish\b/.test(norm)
+    || /\bi do not speak spanish\b/.test(norm)
+    || /\bno hablo espanol\b/.test(norm)
+    || /\bi am\b/.test(norm)
+    || /\bi m\b/.test(norm)
+    || /\bi was\b/.test(norm)
+    || /\bi work(?:ed)?\b/.test(norm)
+    || /\bmy last job\b/.test(norm)
+    || /\bcurrently i\b/.test(norm)
+    || /\bof course\b/.test(norm)
+    || /\bno problem\b/.test(norm)
+    || /^(hello|hi|hey|who is this|good morning|good afternoon|good evening)\b/.test(norm);
+  if (explicitEnglish) return "en";
+
+  const explicitSpanish =
+    /\bspanish please\b/.test(norm)
+    || /\bspeak spanish\b/.test(norm)
+    || /\bcontinue in spanish\b/.test(norm)
+    || /\bespanol por favor\b/.test(norm)
+    || /\ben espanol\b/.test(norm)
+    || /\benh espanol\b/.test(norm)
+    || /\bseguimos en espanol\b/.test(norm)
+    || /\bvolvamos al espanol\b/.test(norm)
+    || /\bprefer spanish\b/.test(norm)
+    || /\bprefiero espanol\b/.test(norm);
+  if (explicitSpanish) return "es";
+
+  const englishHits = (norm.match(/\b(english|hello|hi|hey|please|who|what|where|when|why|how|yes|no|sure|okay|ok|good|morning|afternoon|evening|experience|work|worked|job|speak|prefer|continue|minute|minutes|talk|i|my|me|am|was|were|have|had|can|could|would|currently|last|customer|service|cashier|barista|manager|team|schedule|stock|inventory|full|time)\b/g) || []).length;
+  const spanishHits = (norm.match(/\b(hola|buenas|buenos|si|hablo|espanol|ingles|prefiero|seguir|puedo|minuto|minutos|trabajo|trabaje|experiencia|gracias|yo|mi|para|con|porque|tengo|tuve|estoy|estaba|equipo|horario|stock|inventario|tiempo|manana|tarde|noche)\b/g) || []).length;
+  if (englishHits >= 3 && englishHits >= spanishHits + 2) return "en";
+  return "";
 }
 
 function parseEnglishRequired(value) {
@@ -29072,7 +29134,9 @@ wss.on("connection", (twilioWs, req) => {
     lastCommitId: null,
     transcript: [],
     incomplete: false,
-    lang: "es"
+    lang: "es",
+    langLocked: false,
+    lastUserTranscript: ""
   };
   call.hangupTimer = null;
   call.answeredBy = null;
@@ -29129,6 +29193,10 @@ const openaiWs = new WebSocket(
         audio: {
           input: {
             format: { type: "audio/pcmu" },
+            transcription: {
+              model: OPENAI_MODEL_REALTIME_TRANSCRIPTION,
+              prompt: "Restaurant job interview. The candidate may speak Spanish or English and may switch languages mid-call."
+            },
             turn_detection: {
               type: "server_vad",
               create_response: false,
@@ -29154,6 +29222,58 @@ const openaiWs = new WebSocket(
     } else {
       setTimeout(sendSessionUpdateSafe, 50);
     }
+  }
+
+  function lockInterviewLanguage(nextLang, reason, transcriptText = "") {
+    const lang = nextLang === "en" ? "en" : nextLang === "es" ? "es" : "";
+    if (!lang) return false;
+    if (call.lang === lang && (!!call.langLocked === (lang === "en"))) return false;
+
+    call.lang = lang;
+    call.langLocked = lang === "en";
+    if (lang === "en") call.englishQuestionInjected = true;
+    call.lastUserTranscript = transcriptText || call.lastUserTranscript || "";
+    record("language_switch", { lang, reason, transcript: transcriptText || "" });
+    sendSessionUpdateSafe();
+
+    if (lang !== "en" || !call.openaiReady || openaiWs.readyState !== WebSocket.OPEN) {
+      return true;
+    }
+
+    if (call.responseInFlight) {
+      try { openaiWs.send(JSON.stringify({ type: "response.cancel" })); } catch {}
+      if (call.streamSid) {
+        try { twilioWs.send(JSON.stringify({ event: "clear", streamSid: call.streamSid })); } catch {}
+      }
+      call.responseInFlight = false;
+    }
+
+    const normalizedTranscript = normalizeKey(transcriptText || "");
+    const shouldRepeatOpener = /^(hello|hi|hey|who is this|good morning|good afternoon|good evening)\b/.test(normalizedTranscript)
+      || /\benglish\b/.test(normalizedTranscript)
+      || /\bdon t speak spanish\b/.test(normalizedTranscript)
+      || /\bdont speak spanish\b/.test(normalizedTranscript)
+      || /\bdo not speak spanish\b/.test(normalizedTranscript)
+      || /\bno hablo espanol\b/.test(normalizedTranscript);
+    const firstName = (call.applicant || "").split(/\s+/)[0] || "there";
+    const englishOpener = `Hi ${firstName}, I'm calling about your application for ${call.spokenRole || displayRole(call.role || "", call.brand)} at ${resolveBrandDisplay(call.brand)}. Do you have a few minutes to talk?`;
+    const actionLine = shouldRepeatOpener
+      ? `Repeat this opener once in English and continue the rest of the interview only in English: "${englishOpener}"`
+      : "Acknowledge briefly in English and continue with the next pending interview question in English. Do not go back to Spanish.";
+    openaiWs.send(JSON.stringify({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{
+          type: "input_text",
+          text: `MANDATORY LANGUAGE LOCK (do not say this): The candidate requested or is speaking English. From now on, the rest of the interview must be entirely in English. All questions, acknowledgements, clarifications, English checks, and closing must stay in English. Do not return to Spanish unless the candidate explicitly asks for Spanish. ${transcriptText ? `Candidate said: "${transcriptText}". ` : ""}${actionLine}`
+        }]
+      }
+    }));
+    openaiWs.send(JSON.stringify({ type: "response.create" }));
+    call.responseInFlight = true;
+    return true;
   }
 
   function kickoff() {
@@ -29209,6 +29329,19 @@ DECÍ ESTO Y CALLATE:
       return;
     }
 
+    if (evt.type === "conversation.item.input_audio_transcription.completed") {
+      const transcriptText = String(evt.transcript || "").trim();
+      if (transcriptText) {
+        call.lastUserTranscript = transcriptText;
+        record("input_transcription", { transcript: transcriptText });
+        const detectedLang = detectRequestedInterviewLanguage(transcriptText);
+        if (detectedLang === "en" || (detectedLang === "es" && call.lang === "en")) {
+          lockInterviewLanguage(detectedLang, "input_audio_transcription.completed", transcriptText);
+        }
+      }
+      return;
+    }
+
     if (evt.type === "input_audio_buffer.speech_started") {
       call.heardSpeech = true;
       call.userSpoke = true;
@@ -29259,12 +29392,12 @@ DECÍ ESTO Y CALLATE:
       call.lastCommitId = commitId;
       record("turn_committed", { commitId });
 
-      if (call.englishRequired && !call.englishQuestionInjected && call.userTurns >= 2 && !call.responseInFlight) {
+      if (call.englishRequired && !call.englishQuestionInjected && call.lang !== "en" && !call.langLocked && call.userTurns >= 2 && !call.responseInFlight) {
         const q = String(getEnglishCheckQuestionEn() || "").trim();
         if (q) {
           const forceLine = call.lang === "en"
-            ? `Ask this question now in English (exact wording), wait for the answer, then continue the interview. This already counts as the English check for this call, so do not ask for English level or another English test later: "${q}"`
-            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y luego continuá la entrevista. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
+            ? `Ask this question now in English (exact wording), wait for the answer, and keep the rest of the interview in English. This already counts as the English check for this call, so do not ask for English level or another English test later: "${q}"`
+            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y, si el candidato sigue en inglés, mantené el resto de la entrevista en inglés. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
           const guard = call.lang === "en"
             ? "Do not schedule or confirm appointments. Follow all guardrails and the original instructions."
             : "No coordines ni confirmes citas. Seguí todos los guardrails y las instrucciones originales.";
@@ -29372,9 +29505,10 @@ DECÍ ESTO Y CALLATE:
         call.customQuestion = sp.custom_question || sp.customQuestion || call.customQuestion || "";
         call.customQuestionMode = (sp.custom_question_mode || sp.customQuestionMode || call.customQuestionMode || "").toString().trim() === "ai" ? "ai" : "exact";
         call.customQuestionInjected = false;
-        call.englishQuestionInjected = false;
         spokenRole = displayRole(role, brand);
         call.lang = sp.lang || call.lang || "es";
+        call.langLocked = call.lang === "en";
+        call.englishQuestionInjected = call.lang === "en";
       }
 
       call.twilioReady = true;
