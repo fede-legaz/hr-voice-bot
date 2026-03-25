@@ -105,6 +105,29 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
 const DEFAULT_ENGLISH_REQUIRED = true;
+
+function truncateText(text, limit) {
+  const value = typeof text === "string" ? text : String(text || "");
+  if (!value) return "";
+  if (!Number.isFinite(limit) || limit <= 0) return value;
+  if (value.length <= limit) return value;
+  return value.slice(0, limit) + "...";
+}
+
+function readOpenAiErrorDetail(raw) {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) return { message: "", code: "" };
+  try {
+    const parsed = JSON.parse(text);
+    return {
+      message: parsed?.error?.message ? String(parsed.error.message) : text,
+      code: parsed?.error?.code ? String(parsed.error.code) : ""
+    };
+  } catch {
+    return { message: text, code: "" };
+  }
+}
+
 const DEFAULT_ROLE_PERMISSIONS = {
   admin: {
     calls_whatsapp: true,
@@ -11120,14 +11143,20 @@ app.post("/admin/ocr", requirePermission("cvs_write"), async (req, res) => {
     });
     if (!resp.ok) {
       const detail = await resp.text().catch(() => "");
-      throw new Error(`ocr failed ${resp.status} ${detail}`);
+      const parsed = readOpenAiErrorDetail(detail);
+      const err = new Error(parsed.message || `ocr failed ${resp.status}`);
+      err.statusCode = resp.status;
+      err.openaiCode = parsed.code || "";
+      throw err;
     }
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content?.trim() || "";
     return res.json({ ok: true, text });
   } catch (err) {
     console.error("[admin/ocr] failed", err);
-    return res.status(400).json({ error: "ocr_failed", detail: err.message });
+    const statusCode = Number(err?.statusCode) === 429 ? 503 : 400;
+    const errorCode = err?.openaiCode === "insufficient_quota" ? "ocr_quota_exceeded" : "ocr_failed";
+    return res.status(statusCode).json({ error: errorCode, detail: err?.message || "ocr failed" });
   }
 });
 
