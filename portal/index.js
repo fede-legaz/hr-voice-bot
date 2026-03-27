@@ -263,6 +263,45 @@ function createPortalRouter(options = {}) {
   const useSpacesUploads = !!(uploadToSpaces && /^https?:\/\//i.test(publicUploadsBaseUrl));
   const contactPhone = String(options.contactPhone || "").trim();
   const contactName = String(options.contactName || "").trim();
+  const publicBaseUrl = String(options.publicBaseUrl || "").replace(/\/+$/, "");
+  const shortenUrl = typeof options.shortenUrl === "function" ? options.shortenUrl : null;
+
+  function buildPortalJoinUrl(slug) {
+    const key = safeSlug(slug);
+    if (!key) return publicBaseUrl ? `${publicBaseUrl}/join` : "/join";
+    const path = `/join/${encodeURIComponent(key)}`;
+    return publicBaseUrl ? `${publicBaseUrl}${path}` : path;
+  }
+
+  function buildPortalSourceJoinUrl(slug, sourceKey) {
+    const key = normalizePortalSourceKey(sourceKey);
+    if (!key) return buildPortalJoinUrl(slug);
+    return `${buildPortalJoinUrl(slug)}/${encodeURIComponent(key)}`;
+  }
+
+  async function decoratePortalPageLinks(page) {
+    if (!page || typeof page !== "object") return page;
+    const slug = safeSlug(page.slug || page.brand || "page");
+    const publicUrl = buildPortalJoinUrl(slug);
+    const publicShortUrl = shortenUrl ? await shortenUrl(publicUrl) : "";
+    const sources = Array.isArray(page.sources) ? page.sources : [];
+    const decoratedSources = await Promise.all(sources.map(async (source) => {
+      if (!source || typeof source !== "object") return source;
+      const longUrl = buildPortalSourceJoinUrl(slug, source.key || "");
+      const shortUrl = shortenUrl ? await shortenUrl(longUrl) : "";
+      return {
+        ...source,
+        long_url: longUrl,
+        short_url: shortUrl || longUrl
+      };
+    }));
+    return {
+      ...page,
+      public_url: publicUrl,
+      public_short_url: publicShortUrl || publicUrl,
+      sources: decoratedSources
+    };
+  }
 
   function buildTrackingDefaults(sourceKey) {
     const key = normalizePortalSourceKey(sourceKey);
@@ -552,7 +591,8 @@ function createPortalRouter(options = {}) {
   });
 
   router.get("/admin/portal/pages", requireWrite, async (req, res) => {
-    const pages = await store.listPages();
+    const pagesRaw = await store.listPages();
+    const pages = await Promise.all((pagesRaw || []).map((page) => decoratePortalPageLinks(page)));
     return res.json({ ok: true, pages });
   });
 
@@ -661,7 +701,8 @@ function createPortalRouter(options = {}) {
       }
 
       const saved = await store.upsertPage(page);
-      return res.json({ ok: true, page: saved });
+      const decorated = await decoratePortalPageLinks(saved);
+      return res.json({ ok: true, page: decorated });
     } catch (err) {
       logger.error("[portal] save page failed", err.message);
       return res.status(400).json({ error: err.message || "save_failed" });

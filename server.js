@@ -66,6 +66,9 @@ const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 const OPENCLAW_AGENT_TOKEN = process.env.OPENCLAW_AGENT_TOKEN || "";
+const BITLY_ACCESS_TOKEN = process.env.BITLY_ACCESS_TOKEN || "";
+const BITLY_DOMAIN = (process.env.BITLY_DOMAIN || "bit.ly").trim() || "bit.ly";
+const BITLY_GROUP_GUID = (process.env.BITLY_GROUP_GUID || "").trim();
 const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
 const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
 const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
@@ -105,6 +108,7 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
 const DEFAULT_ENGLISH_REQUIRED = true;
+const bitlyShortUrlCache = new Map();
 
 function truncateText(text, limit) {
   const value = typeof text === "string" ? text : String(text || "");
@@ -112,6 +116,39 @@ function truncateText(text, limit) {
   if (!Number.isFinite(limit) || limit <= 0) return value;
   if (value.length <= limit) return value;
   return value.slice(0, limit) + "...";
+}
+
+async function shortenUrlWithBitly(longUrl) {
+  const value = String(longUrl || "").trim();
+  if (!value || !BITLY_ACCESS_TOKEN) return "";
+  const cacheKey = `${BITLY_DOMAIN}|${BITLY_GROUP_GUID}|${value}`;
+  if (bitlyShortUrlCache.has(cacheKey)) return bitlyShortUrlCache.get(cacheKey) || "";
+  try {
+    const payload = {
+      long_url: value,
+      domain: BITLY_DOMAIN
+    };
+    if (BITLY_GROUP_GUID) payload.group_guid = BITLY_GROUP_GUID;
+    const resp = await fetch("https://api-ssl.bitly.com/v4/shorten", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${BITLY_ACCESS_TOKEN}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.error("[bitly] shorten failed", resp.status, data?.message || data?.description || "");
+      return "";
+    }
+    const shortUrl = String(data.link || "").trim();
+    if (shortUrl) bitlyShortUrlCache.set(cacheKey, shortUrl);
+    return shortUrl;
+  } catch (err) {
+    console.error("[bitly] shorten failed", err.message);
+    return "";
+  }
 }
 
 function readOpenAiErrorDetail(raw) {
@@ -6603,7 +6640,9 @@ const portalRouter = createPortalRouter({
   uploadsDir: path.join(__dirname, "data", "uploads"),
   uploadsBaseUrl: "/uploads",
   publicUploadsBaseUrl: portalPublicUploadsBaseUrl,
+  publicBaseUrl: PUBLIC_BASE_URL,
   uploadToSpaces: portalUploadToSpaces,
+  shortenUrl: shortenUrlWithBitly,
   dbPool,
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
   photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
@@ -20478,7 +20517,9 @@ app.get("/admin/ui", (req, res) => {
         resume: { ...base.resume, ...resumeField, label: { ...base.resume.label, ...(resumeField.label || {}) } },
         photo: { ...base.photo, ...photoField, label: { ...base.photo.label, ...(photoField.label || {}) } },
         questions: Array.isArray(raw.questions) ? raw.questions : [],
-        sources: Array.isArray(sourcesField) && sourcesField.length ? sourcesField : base.sources
+        sources: Array.isArray(sourcesField) && sourcesField.length ? sourcesField : base.sources,
+        public_url: raw.public_url || raw.publicUrl || '',
+        public_short_url: raw.public_short_url || raw.publicShortUrl || raw.public_url || raw.publicUrl || ''
       };
       merged.fields.role.options = Array.isArray(merged.fields.role.options) ? merged.fields.role.options : [];
       merged.fields.locations.options = Array.isArray(merged.fields.locations.options) ? merged.fields.locations.options : [];
@@ -20491,7 +20532,9 @@ app.get("/admin/ui", (req, res) => {
         return {
           key,
           label: String(item.label || key).trim(),
-          active: item.active !== false
+          active: item.active !== false,
+          long_url: String(item.long_url || item.longUrl || '').trim(),
+          short_url: String(item.short_url || item.shortUrl || item.long_url || item.longUrl || '').trim()
         };
       }).filter(Boolean);
       return merged;
@@ -20584,21 +20627,33 @@ app.get("/admin/ui", (req, res) => {
         return;
       }
       const base = window.location.origin.replace(/\\/$/, '');
-      portalUrlEl.value = base + '/join/' + encodeURIComponent(slug);
+      const samePage = slug === String(portalCurrent?.slug || '').trim();
+      portalUrlEl.value = (samePage && (portalCurrent?.public_short_url || portalCurrent?.public_url)) || (base + '/join/' + encodeURIComponent(slug));
       if (portalSourcesEl) {
         portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
           const keyInput = row.querySelector('input[type="text"]');
           const link = row.querySelector('.portal-source-link');
-          if (link) link.textContent = portalSourceLink(keyInput?.value || '');
+          if (link) link.textContent = portalSourceLongLink(keyInput?.value || '');
         });
       }
     }
 
-    function portalSourceLink(key) {
+    function portalSourceLongLink(key) {
       const slug = (portalSlugEl?.value || portalCurrent?.slug || '').trim();
       if (!slug || !key) return '';
       const base = window.location.origin.replace(/\\/$/, '');
       return base + '/join/' + encodeURIComponent(slug) + '/' + encodeURIComponent(key);
+    }
+
+    function portalSourceLink(sourceOrKey) {
+      if (sourceOrKey && typeof sourceOrKey === 'object') {
+        const shortUrl = String(sourceOrKey.short_url || sourceOrKey.shortUrl || '').trim();
+        if (shortUrl) return shortUrl;
+        const longUrl = String(sourceOrKey.long_url || sourceOrKey.longUrl || '').trim();
+        if (longUrl) return longUrl;
+        return portalSourceLongLink(sourceOrKey.key || '');
+      }
+      return portalSourceLongLink(sourceOrKey || '');
     }
 
     function portalRenderSources() {
@@ -20652,13 +20707,13 @@ app.get("/admin/ui", (req, res) => {
         linkRow.className = 'portal-source-actions';
         const link = document.createElement('div');
         link.className = 'portal-source-link';
-        link.textContent = portalSourceLink(src.key || '');
+        link.textContent = portalSourceLink(src);
         const copyBtn = document.createElement('button');
         copyBtn.type = 'button';
         copyBtn.className = 'secondary btn-compact';
         copyBtn.textContent = 'Copiar link';
         copyBtn.onclick = () => {
-          const url = portalSourceLink(keyInput.value || '');
+          const url = (link.textContent || portalSourceLongLink(keyInput.value || '')).trim();
           if (!url) return;
           navigator.clipboard.writeText(url);
         };
@@ -20671,7 +20726,7 @@ app.get("/admin/ui", (req, res) => {
         const sync = () => {
           if (!portalCurrent) return;
           portalCurrent.sources = portalReadSources();
-          link.textContent = portalSourceLink(keyInput.value || '');
+          link.textContent = portalSourceLongLink(keyInput.value || '');
         };
         keyInput.addEventListener('input', sync);
         labelInput.addEventListener('input', sync);
