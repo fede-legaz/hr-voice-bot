@@ -1091,10 +1091,13 @@ function renderApplyPage(page, options = {}) {
     function collectAttributionParams() {
       const params = new URLSearchParams(window.location.search || '');
       const pick = (key) => (params.get(key) || '').trim();
+      const defaults = page && page.trackingDefaults && typeof page.trackingDefaults === 'object'
+        ? page.trackingDefaults
+        : {};
       const out = {};
-      const src = pick('src') || pick('source') || pick('utm_source');
+      const src = pick('src') || pick('source') || pick('utm_source') || String(defaults.src || defaults.source || defaults.utm_source || '').trim();
       if (src) out.src = src;
-      const utmSource = pick('utm_source');
+      const utmSource = pick('utm_source') || String(defaults.utm_source || defaults.source || defaults.src || '').trim();
       if (utmSource) out.utm_source = utmSource;
       const utmMedium = pick('utm_medium');
       if (utmMedium) out.utm_medium = utmMedium;
@@ -1106,7 +1109,7 @@ function renderApplyPage(page, options = {}) {
       if (utmTerm) out.utm_term = utmTerm;
       const ref = pick('ref');
       if (ref) out.ref = ref;
-      const source = pick('source');
+      const source = pick('source') || String(defaults.source || defaults.src || defaults.utm_source || '').trim();
       if (source) out.source = source;
       return Object.keys(out).length ? out : null;
     }

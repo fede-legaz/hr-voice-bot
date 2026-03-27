@@ -230,6 +230,14 @@ function buildPreferenceQuestion({ locations, roles, lang }) {
   return `Elegiste varios puestos (${roleList}). ¿Cuál preferís y en cuál tenés más experiencia?`;
 }
 
+function normalizePortalSourceKey(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+}
+
 function createPortalRouter(options = {}) {
   const router = express.Router();
   const store = createPortalStore({
@@ -256,9 +264,17 @@ function createPortalRouter(options = {}) {
   const contactPhone = String(options.contactPhone || "").trim();
   const contactName = String(options.contactName || "").trim();
 
-  router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
+  function buildTrackingDefaults(sourceKey) {
+    const key = normalizePortalSourceKey(sourceKey);
+    if (!key) return null;
+    return {
+      src: key,
+      source: key,
+      utm_source: key
+    };
+  }
 
-  router.get("/apply/:slug", async (req, res) => {
+  async function sendPortalPage(req, res, opts = {}) {
     const slug = safeSlug(req.params.slug);
     const page = await store.getPage(slug);
     if (!page || page.active === false) {
@@ -272,7 +288,23 @@ function createPortalRouter(options = {}) {
       contactPhone,
       contactName: resolvedContactName || contactName || ""
     };
-    res.type("text/html").send(renderApplyPage(payload));
+    const trackingDefaults = buildTrackingDefaults(opts.sourceKey || req.params?.sourceKey || "");
+    if (trackingDefaults) payload.trackingDefaults = trackingDefaults;
+    return res.type("text/html").send(renderApplyPage(payload));
+  }
+
+  router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
+
+  router.get("/apply/:slug", async (req, res) => {
+    return sendPortalPage(req, res);
+  });
+
+  router.get("/join/:slug", async (req, res) => {
+    return sendPortalPage(req, res);
+  });
+
+  router.get("/join/:slug/:sourceKey", async (req, res) => {
+    return sendPortalPage(req, res, { sourceKey: req.params.sourceKey });
   });
 
   router.get("/apply/:slug/config", async (req, res) => {
@@ -532,6 +564,7 @@ function createPortalRouter(options = {}) {
       const page = {
         slug,
         brand: String(body.brand || "").trim(),
+        contactName: String(body.contactName || body.contact_name || "").trim(),
         role: String(body.role || "").trim(),
         active: body.active !== false && String(body.active) !== "false",
         localeDefault: body.localeDefault === "en" ? "en" : "es",
@@ -541,7 +574,8 @@ function createPortalRouter(options = {}) {
         resume: body.resume || {},
         photo: body.photo || {},
         questions: Array.isArray(body.questions) ? body.questions : [],
-        assets: body.assets || {}
+        assets: body.assets || {},
+        sources: Array.isArray(body.sources) ? body.sources : []
       };
 
       page.questions = page.questions.map((q, idx) => {

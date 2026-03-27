@@ -56,6 +56,47 @@ function filterApplicationsByLocation(list, location) {
   return list.filter((app) => appMatchesLocation(app, location));
 }
 
+function stripPortalMetaContent(content) {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return {};
+  const next = { ...content };
+  delete next.__portal;
+  return next;
+}
+
+function normalizePortalSources(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const key = String(item.key || "").trim();
+    if (!key) return null;
+    return {
+      key,
+      label: String(item.label || key).trim(),
+      active: item.active !== false
+    };
+  }).filter(Boolean);
+}
+
+function readPortalMeta(raw = {}) {
+  const content = raw.content && typeof raw.content === "object" && !Array.isArray(raw.content)
+    ? raw.content
+    : {};
+  const meta = content.__portal && typeof content.__portal === "object" && !Array.isArray(content.__portal)
+    ? content.__portal
+    : {};
+  const contactName = String(
+    raw.contactName
+    || raw.contact_name
+    || meta.contactName
+    || raw.contact?.name
+    || ""
+  ).trim();
+  const sources = normalizePortalSources(
+    Array.isArray(raw.sources) ? raw.sources : meta.sources
+  );
+  return { contactName, sources };
+}
+
 function createPortalStore(options = {}) {
   if (options.dbPool) {
     return createPortalStoreDb(options);
@@ -80,6 +121,7 @@ function createPortalStore(options = {}) {
       if (!page || typeof page !== "object") return;
       const slug = safeSlug(page.slug || page.brand || "page");
       const now = new Date().toISOString();
+      const meta = readPortalMeta(page);
       const entry = {
         id: page.id || randomToken(8),
         slug,
@@ -88,12 +130,14 @@ function createPortalStore(options = {}) {
         active: page.active !== false,
         localeDefault: page.localeDefault || "es",
         theme: page.theme || {},
-        content: page.content || {},
+        content: stripPortalMetaContent(page.content || {}),
         fields: page.fields || {},
         resume: page.resume || {},
         photo: page.photo || {},
         questions: Array.isArray(page.questions) ? page.questions : [],
         assets: page.assets || {},
+        contactName: meta.contactName,
+        sources: meta.sources,
         created_at: page.created_at || now,
         updated_at: page.updated_at || now
       };
@@ -242,6 +286,7 @@ function createPortalStore(options = {}) {
 
   function mapPageRow(row) {
     if (!row) return null;
+    const meta = readPortalMeta(row);
     return {
       id: row.id,
       slug: row.slug,
@@ -250,12 +295,14 @@ function createPortalStore(options = {}) {
       active: row.active !== false,
       localeDefault: row.locale_default || "es",
       theme: row.theme || {},
-      content: row.content || {},
+      content: stripPortalMetaContent(row.content || {}),
       fields: row.fields || {},
       resume: row.resume || {},
       photo: row.photo || {},
       questions: Array.isArray(row.questions) ? row.questions : [],
       assets: row.assets || {},
+      contactName: meta.contactName,
+      sources: meta.sources,
       created_at: toIso(row.created_at) || toIso(new Date()),
       updated_at: toIso(row.updated_at) || toIso(new Date())
     };
@@ -320,6 +367,14 @@ function createPortalStore(options = {}) {
   async function upsertPage(page) {
     const slug = safeSlug(page.slug || page.brand || "page");
     const id = page.id || randomToken(8);
+    const meta = readPortalMeta(page);
+    const contentPayload = stripPortalMetaContent(page.content || {});
+    if (meta.contactName || meta.sources.length) {
+      contentPayload.__portal = {
+        ...(meta.contactName ? { contactName: meta.contactName } : {}),
+        ...(meta.sources.length ? { sources: meta.sources } : {})
+      };
+    }
     const payload = {
       slug,
       id,
@@ -327,7 +382,7 @@ function createPortalStore(options = {}) {
       role: page.role || "",
       active: page.active !== false,
       localeDefault: page.localeDefault === "en" ? "en" : "es",
-      content: page.content || {},
+      content: contentPayload,
       theme: page.theme || {},
       fields: page.fields || {},
       resume: page.resume || {},

@@ -20584,7 +20584,7 @@ app.get("/admin/ui", (req, res) => {
         return;
       }
       const base = window.location.origin.replace(/\\/$/, '');
-      portalUrlEl.value = base + '/apply/' + slug;
+      portalUrlEl.value = base + '/join/' + encodeURIComponent(slug);
       if (portalSourcesEl) {
         portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
           const keyInput = row.querySelector('input[type="text"]');
@@ -20598,8 +20598,7 @@ app.get("/admin/ui", (req, res) => {
       const slug = (portalSlugEl?.value || portalCurrent?.slug || '').trim();
       if (!slug || !key) return '';
       const base = window.location.origin.replace(/\\/$/, '');
-      const url = base + '/apply/' + encodeURIComponent(slug);
-      return url + '?src=' + encodeURIComponent(key);
+      return base + '/join/' + encodeURIComponent(slug) + '/' + encodeURIComponent(key);
     }
 
     function portalRenderSources() {
