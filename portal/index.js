@@ -238,6 +238,19 @@ function normalizePortalSourceKey(value) {
     .slice(0, 80);
 }
 
+function resolvePortalTrackingSource(body = {}, answers = {}) {
+  const direct = String(
+    body.source
+    || body.src
+    || body.utm_source
+    || answers.__utm?.source
+    || answers.__utm?.utm_source
+    || answers.__utm?.ref
+    || ""
+  ).trim();
+  return normalizePortalSourceKey(direct);
+}
+
 function createPortalRouter(options = {}) {
   const router = express.Router();
   const store = createPortalStore({
@@ -446,6 +459,7 @@ function createPortalRouter(options = {}) {
       });
       const rawAnswers = body.answers && typeof body.answers === "object" ? body.answers : {};
       const answers = {};
+      const trackingSource = resolvePortalTrackingSource(body, rawAnswers);
 
       if (!name) return res.status(400).json({ error: "missing_name" });
       if (!consent) return res.status(400).json({ error: "missing_consent" });
@@ -472,6 +486,14 @@ function createPortalRouter(options = {}) {
         const val = rawAnswers[q.id];
         answers[q.id] = typeof val === "string" ? val.trim() : String(val || "").trim();
       });
+      if (rawAnswers.__utm && typeof rawAnswers.__utm === "object") {
+        answers.__utm = {
+          ...rawAnswers.__utm,
+          ...(trackingSource ? { source: trackingSource, utm_source: rawAnswers.__utm.utm_source || trackingSource } : {})
+        };
+      } else if (trackingSource) {
+        answers.__utm = { source: trackingSource, utm_source: trackingSource };
+      }
       if (roles.length) {
         answers.__roles = roles;
       }
@@ -528,6 +550,7 @@ function createPortalRouter(options = {}) {
         id: appId,
         slug,
         brand: page.brand || "",
+        source: trackingSource || "",
         role,
         roles,
         name,
@@ -558,7 +581,7 @@ function createPortalRouter(options = {}) {
           cv_text: cvText,
           cv_url: resumeUrl,
           cv_photo_url: photoUrl,
-          source: `portal:${slug}`,
+          source: trackingSource ? `portal:${slug}:${trackingSource}` : `portal:${slug}`,
           custom_question: customQuestion,
           custom_question_mode: customQuestionMode
         });
