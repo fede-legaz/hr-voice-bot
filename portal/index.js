@@ -279,28 +279,39 @@ function createPortalRouter(options = {}) {
   const publicBaseUrl = String(options.publicBaseUrl || "").replace(/\/+$/, "");
   const shortenUrl = typeof options.shortenUrl === "function" ? options.shortenUrl : null;
 
-  function buildPortalJoinUrl(slug) {
+  function resolvePortalPublicBaseUrl(req) {
+    const forwardedHost = String(req?.get?.("x-forwarded-host") || "").split(",")[0].trim();
+    const host = forwardedHost || String(req?.get?.("host") || "").split(",")[0].trim();
+    const proto = String(req?.get?.("x-forwarded-proto") || req?.protocol || "").split(",")[0].trim() || "https";
+    if (host && !/^(localhost|127(?:\.\d{1,3}){3})(:\d+)?$/i.test(host)) {
+      return `${proto}://${host}`.replace(/\/+$/, "");
+    }
+    return publicBaseUrl;
+  }
+
+  function buildPortalJoinUrl(slug, baseUrl = publicBaseUrl) {
     const key = safeSlug(slug);
-    if (!key) return publicBaseUrl ? `${publicBaseUrl}/join` : "/join";
+    if (!key) return baseUrl ? `${baseUrl}/join` : "/join";
     const path = `/join/${encodeURIComponent(key)}`;
-    return publicBaseUrl ? `${publicBaseUrl}${path}` : path;
+    return baseUrl ? `${baseUrl}${path}` : path;
   }
 
-  function buildPortalSourceJoinUrl(slug, sourceKey) {
+  function buildPortalSourceJoinUrl(slug, sourceKey, baseUrl = publicBaseUrl) {
     const key = normalizePortalSourceKey(sourceKey);
-    if (!key) return buildPortalJoinUrl(slug);
-    return `${buildPortalJoinUrl(slug)}/${encodeURIComponent(key)}`;
+    if (!key) return buildPortalJoinUrl(slug, baseUrl);
+    return `${buildPortalJoinUrl(slug, baseUrl)}/${encodeURIComponent(key)}`;
   }
 
-  async function decoratePortalPageLinks(page) {
+  async function decoratePortalPageLinks(page, req) {
     if (!page || typeof page !== "object") return page;
     const slug = safeSlug(page.slug || page.brand || "page");
-    const publicUrl = buildPortalJoinUrl(slug);
+    const resolvedBaseUrl = resolvePortalPublicBaseUrl(req);
+    const publicUrl = buildPortalJoinUrl(slug, resolvedBaseUrl);
     const publicShortUrl = shortenUrl ? await shortenUrl(publicUrl) : "";
     const sources = Array.isArray(page.sources) ? page.sources : [];
     const decoratedSources = await Promise.all(sources.map(async (source) => {
       if (!source || typeof source !== "object") return source;
-      const longUrl = buildPortalSourceJoinUrl(slug, source.key || "");
+      const longUrl = buildPortalSourceJoinUrl(slug, source.key || "", resolvedBaseUrl);
       const shortUrl = shortenUrl ? await shortenUrl(longUrl) : "";
       return {
         ...source,
@@ -615,7 +626,7 @@ function createPortalRouter(options = {}) {
 
   router.get("/admin/portal/pages", requireWrite, async (req, res) => {
     const pagesRaw = await store.listPages();
-    const pages = await Promise.all((pagesRaw || []).map((page) => decoratePortalPageLinks(page)));
+    const pages = await Promise.all((pagesRaw || []).map((page) => decoratePortalPageLinks(page, req)));
     return res.json({ ok: true, pages });
   });
 
@@ -724,7 +735,7 @@ function createPortalRouter(options = {}) {
       }
 
       const saved = await store.upsertPage(page);
-      const decorated = await decoratePortalPageLinks(saved);
+      const decorated = await decoratePortalPageLinks(saved, req);
       return res.json({ ok: true, page: decorated });
     } catch (err) {
       logger.error("[portal] save page failed", err.message);
@@ -743,7 +754,7 @@ function createPortalRouter(options = {}) {
         ...current,
         sources
       });
-      const decorated = await decoratePortalPageLinks(saved);
+      const decorated = await decoratePortalPageLinks(saved, req);
       return res.json({ ok: true, page: decorated });
     } catch (err) {
       logger.error("[portal] save sources failed", err.message);
