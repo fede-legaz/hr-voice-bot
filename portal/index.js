@@ -709,6 +709,25 @@ function createPortalRouter(options = {}) {
     }
   });
 
+  router.post("/admin/portal/pages/:slug/sources", requireWrite, async (req, res) => {
+    try {
+      const slug = safeSlug(req.params.slug || req.body?.slug || "");
+      if (!slug) return res.status(400).json({ error: "missing_slug" });
+      const current = await store.getPage(slug);
+      if (!current) return res.status(404).json({ error: "not_found" });
+      const sources = Array.isArray(req.body?.sources) ? req.body.sources : [];
+      const saved = await store.upsertPage({
+        ...current,
+        sources
+      });
+      const decorated = await decoratePortalPageLinks(saved);
+      return res.json({ ok: true, page: decorated });
+    } catch (err) {
+      logger.error("[portal] save sources failed", err.message);
+      return res.status(400).json({ error: err.message || "save_sources_failed" });
+    }
+  });
+
   router.delete("/admin/portal/pages/:slug", requireWrite, async (req, res) => {
     const slug = safeSlug(req.params.slug);
     const ok = await store.deletePage(slug);

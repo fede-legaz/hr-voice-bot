@@ -17361,6 +17361,8 @@ app.get("/admin/ui", (req, res) => {
     let portalPendingUploads = { logo: null, hero: null, favicon: null, gallery: [] };
     let portalLastApps = [];
     let portalPendingSlug = '';
+    let portalSavingSources = false;
+    let portalSourcesSaveQueued = false;
     let portalLoaded = false;
     let pendingPortalView = '';
     let pendingView = '';
@@ -20425,6 +20427,22 @@ app.get("/admin/ui", (req, res) => {
       portalSyncPreview();
     }
 
+    function portalNormalizeSources(list) {
+      if (!Array.isArray(list)) return [];
+      return list.map((item) => {
+        if (!item || typeof item !== 'object') return null;
+        const key = String(item.key || '').trim();
+        if (!key) return null;
+        return {
+          key,
+          label: String(item.label || key).trim(),
+          active: item.active !== false,
+          long_url: String(item.long_url || item.longUrl || '').trim(),
+          short_url: String(item.short_url || item.shortUrl || item.long_url || item.longUrl || '').trim()
+        };
+      }).filter(Boolean);
+    }
+
     function portalDefaultPage() {
       return {
         slug: '',
@@ -20524,19 +20542,7 @@ app.get("/admin/ui", (req, res) => {
       merged.fields.role.options = Array.isArray(merged.fields.role.options) ? merged.fields.role.options : [];
       merged.fields.locations.options = Array.isArray(merged.fields.locations.options) ? merged.fields.locations.options : [];
       merged.assets.gallery = Array.isArray(merged.assets.gallery) ? merged.assets.gallery : [];
-      merged.sources = Array.isArray(merged.sources) ? merged.sources : [];
-      merged.sources = merged.sources.map((item) => {
-        if (!item || typeof item !== 'object') return null;
-        const key = String(item.key || '').trim();
-        if (!key) return null;
-        return {
-          key,
-          label: String(item.label || key).trim(),
-          active: item.active !== false,
-          long_url: String(item.long_url || item.longUrl || '').trim(),
-          short_url: String(item.short_url || item.shortUrl || item.long_url || item.longUrl || '').trim()
-        };
-      }).filter(Boolean);
+      merged.sources = portalNormalizeSources(merged.sources);
       return merged;
     }
 
@@ -20629,13 +20635,7 @@ app.get("/admin/ui", (req, res) => {
       const base = window.location.origin.replace(/\\/$/, '');
       const samePage = slug === String(portalCurrent?.slug || '').trim();
       portalUrlEl.value = (samePage && (portalCurrent?.public_short_url || portalCurrent?.public_url)) || (base + '/join/' + encodeURIComponent(slug));
-      if (portalSourcesEl) {
-        portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
-          const keyInput = row.querySelector('input[type="text"]');
-          const link = row.querySelector('.portal-source-link');
-          if (link) link.textContent = portalSourceLongLink(keyInput?.value || '');
-        });
-      }
+      portalSyncSourceLinks();
     }
 
     function portalSourceLongLink(key) {
@@ -20654,6 +20654,88 @@ app.get("/admin/ui", (req, res) => {
         return portalSourceLongLink(sourceOrKey.key || '');
       }
       return portalSourceLongLink(sourceOrKey || '');
+    }
+
+    function portalSyncSourceLinks() {
+      if (!portalSourcesEl) return;
+      const slug = (portalSlugEl?.value || portalCurrent?.slug || '').trim();
+      const samePage = slug && slug === String(portalCurrent?.slug || '').trim();
+      const sources = portalCurrent && Array.isArray(portalCurrent.sources) ? portalCurrent.sources : [];
+      portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
+        const idx = Number(row.dataset.index || -1);
+        const keyInput = row.querySelector('input[type="text"]');
+        const link = row.querySelector('.portal-source-link');
+        if (!link) return;
+        const key = (keyInput?.value || '').trim();
+        const current = samePage ? sources[idx] : null;
+        if (current && String(current.key || '').trim() === key) {
+          link.textContent = portalSourceLink(current);
+          return;
+        }
+        link.textContent = portalSourceLongLink(key);
+      });
+    }
+
+    function portalMergeSavedSources(page, slug) {
+      const nextSources = portalNormalizeSources(page && Array.isArray(page.sources) ? page.sources : []);
+      const publicUrl = String(page?.public_url || page?.publicUrl || '').trim();
+      const publicShortUrl = String(page?.public_short_url || page?.publicShortUrl || publicUrl).trim();
+      if (portalCurrent) {
+        portalCurrent.sources = nextSources;
+        if (publicUrl) portalCurrent.public_url = publicUrl;
+        if (publicShortUrl) portalCurrent.public_short_url = publicShortUrl;
+      }
+      const pageSlug = String(slug || page?.slug || portalCurrent?.slug || '').trim();
+      const idx = portalPages.findIndex((item) => item.slug === pageSlug);
+      if (idx >= 0) {
+        portalPages[idx] = {
+          ...portalPages[idx],
+          ...(publicUrl ? { public_url: publicUrl } : {}),
+          ...(publicShortUrl ? { public_short_url: publicShortUrl } : {}),
+          sources: nextSources
+        };
+      }
+      portalRenderSources();
+      portalUpdateUrl();
+    }
+
+    async function portalSaveSources() {
+      try {
+        if (portalSavingSources) {
+          portalSourcesSaveQueued = true;
+          return;
+        }
+        if (authRole === 'viewer') {
+          portalSetStatus('Solo lectura.', true);
+          return;
+        }
+        const slug = toSlug((portalSlugEl?.value || portalCurrent?.slug || '').trim());
+        if (!slug) {
+          portalSetStatus('Primero guardá el portal para fijar el slug.', true);
+          return;
+        }
+        if (!portalCurrent) portalCurrent = portalDefaultPage();
+        portalCurrent.sources = portalReadSources();
+        portalSavingSources = true;
+        portalSetStatus('Guardando fuentes...');
+        const resp = await fetch('/admin/portal/pages/' + encodeURIComponent(slug) + '/sources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...portalAuthHeaders() },
+          body: JSON.stringify({ sources: portalCurrent.sources })
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.error || 'save_sources_failed');
+        portalMergeSavedSources(data.page || {}, slug);
+        portalSetStatus('Fuentes guardadas');
+      } catch (err) {
+        portalSetStatus('Error guardando fuentes: ' + err.message, true);
+      } finally {
+        portalSavingSources = false;
+        if (portalSourcesSaveQueued) {
+          portalSourcesSaveQueued = false;
+          portalSaveSources();
+        }
+      }
     }
 
     function portalRenderSources() {
@@ -20698,6 +20780,8 @@ app.get("/admin/ui", (req, res) => {
         removeBtn.onclick = () => {
           row.remove();
           if (portalCurrent) portalCurrent.sources = portalReadSources();
+          portalSyncSourceLinks();
+          portalSaveSources();
         };
         fields.appendChild(keyInput);
         fields.appendChild(labelInput);
@@ -20726,17 +20810,24 @@ app.get("/admin/ui", (req, res) => {
         const sync = () => {
           if (!portalCurrent) return;
           portalCurrent.sources = portalReadSources();
-          link.textContent = portalSourceLongLink(keyInput.value || '');
+          portalSyncSourceLinks();
         };
         keyInput.addEventListener('input', sync);
         labelInput.addEventListener('input', sync);
-        activeInput.addEventListener('change', sync);
+        keyInput.addEventListener('blur', portalSaveSources);
+        labelInput.addEventListener('blur', portalSaveSources);
+        activeInput.addEventListener('change', () => {
+          sync();
+          portalSaveSources();
+        });
       });
     }
 
     function portalReadSources() {
       if (!portalSourcesEl) return [];
       const items = [];
+      const previous = portalCurrent && Array.isArray(portalCurrent.sources) ? portalCurrent.sources : [];
+      const previousByKey = new Map(previous.map((item) => [String(item?.key || '').trim(), item]).filter(([key]) => !!key));
       portalSourcesEl.querySelectorAll('.portal-source-row').forEach((row) => {
         const inputs = row.querySelectorAll('input');
         const keyInput = inputs[0];
@@ -20744,11 +20835,19 @@ app.get("/admin/ui", (req, res) => {
         const activeInput = row.querySelector('input[type="checkbox"]');
         const key = (keyInput?.value || '').trim();
         if (!key) return;
-        items.push({
+        const item = {
           key,
           label: (labelInput?.value || key).trim(),
           active: activeInput ? activeInput.checked : true
-        });
+        };
+        const prev = previousByKey.get(key);
+        if (prev && String(prev.key || '').trim() === key) {
+          const longUrl = String(prev.long_url || prev.longUrl || '').trim();
+          const shortUrl = String(prev.short_url || prev.shortUrl || '').trim();
+          if (longUrl) item.long_url = longUrl;
+          if (shortUrl) item.short_url = shortUrl;
+        }
+        items.push(item);
       });
       return items;
     }
@@ -27836,6 +27935,7 @@ app.get("/admin/ui", (req, res) => {
           active: true
         });
         portalRenderSources();
+        portalSaveSources();
       };
     }
     if (portalSlugEl) {
