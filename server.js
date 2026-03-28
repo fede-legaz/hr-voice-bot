@@ -7088,7 +7088,7 @@ app.get("/admin/analytics", requirePermission("analytics_view"), async (req, res
       bump(brandCounts, normalizeBrand(app.brand));
       bump(roleCounts, normalizeRole(app.role));
       const utm = app.answers && typeof app.answers === "object" ? app.answers.__utm : null;
-      const source = normalizeSource(utm?.utm_source || utm?.source || utm?.ref || "direct");
+      const source = normalizeSource(app.source || utm?.utm_source || utm?.source || utm?.ref || "direct");
       bump(sourceCounts, source);
     });
 
@@ -21520,7 +21520,7 @@ app.get("/admin/ui", (req, res) => {
 
     function portalFormatSourceLabel(app) {
       const utm = app.answers && typeof app.answers === 'object' ? app.answers.__utm : null;
-      const raw = (utm && (utm.source || utm.utm_source || utm.ref)) || '';
+      const raw = app.source || (utm && (utm.source || utm.utm_source || utm.ref)) || '';
       const key = String(raw || '').trim();
       if (!key) return 'direct';
       const page = portalFindPageBySlug(app.slug);
