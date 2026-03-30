@@ -826,7 +826,7 @@ const LATE_CLOSING_QUESTION_ES = "En caso de ser requerido, ¿podes trabajar el 
 const LATE_CLOSING_QUESTION_EN = "If required, are you able to work the night shift, which may go until 1 or 2am?";
 const ENGLISH_LEVEL_QUESTION = "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?";
 const ENGLISH_LEVEL_QUESTION_EN = "For this role we need conversational English. What is your English level?";
-const ENGLISH_CHECK_QUESTION = "Can you describe your last job and what you did day to day?";
+const ENGLISH_CHECK_QUESTION = "For this role we need English — could you tell me a bit about yourself in English?";
 const DEFAULT_RECORDING_INTRO_ES = "{opener} Soy Mariana. Si preferís en inglés, decí English.";
 const DEFAULT_RECORDING_INTRO_EN = "Hi {name}, I'm Mariana from {brand}. I'm calling about your application for {spoken_role}.";
 const DEFAULT_RECORDING_CONSENT_ES = "Para compartir el resultado con el equipo, ¿te parece bien que grabemos esta llamada? Decí sí o no. También podés presionar 1 para sí o 2 para no.";
@@ -3006,6 +3006,7 @@ Reglas:
 - Si inglés es requerido ({english_required}) y la entrevista sigue en español, hacé un único chequeo de inglés: preguntá nivel y luego una sola pregunta en inglés. Si la entrevista ya quedó en inglés, no preguntes nivel ni hagas una prueba separada; seguí toda la entrevista en inglés.
 - Inglés requerido: si todavía están hablando en español, hacé como máximo una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta. Si ya vienen conversando en inglés, eso ya cubre el chequeo.
 - Máximo un bloque de inglés por llamada: si ya preguntaste una vez en inglés y el candidato respondió en inglés, considerá el chequeo cubierto y no vuelvas a pedir nivel ni otra prueba de inglés.
+- Después del chequeo de inglés, retomá en español desde el siguiente tema pendiente. NUNCA repitas en español una pregunta que ya hiciste en inglés ni una que el candidato ya respondió antes del chequeo.
 - Si el candidato ya respondió una pregunta completa en inglés o la entrevista ya quedó en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
 - Después del chequeo de inglés, si el candidato respondió en español, volvé a español de inmediato y no sigas en inglés. El chequeo fue solo una pregunta puntual, no un cambio de idioma.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
@@ -3041,11 +3042,12 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
 4) Disponibilidad: "¿Cómo es tu disponibilidad normalmente? Semana, fines de semana, día/noche… lo que puedas."
 5) Expectativa salarial: "Tenés alguna expectativa salarial por hora?"
 6) Prueba (sin prometer): "Si te invitamos, ¿cuándo podrías venir a hacer una prueba?"
-7) Inglés (si aplica):
+7) Inglés (SOLO si inglés es requerido — si {english_required} es false, SALTEAR este paso por completo, no mencionar inglés):
    - Si TODA la entrevista ya está ocurriendo en inglés, no preguntes nivel ni hagas otra prueba: ya quedó validado.
    - Solo si la entrevista sigue en español, preguntá: "Para esta posición necesitamos inglés conversacional. ¿Qué nivel de inglés tenés?"
-   - Y recién después hacé una sola pregunta en inglés: "Can you describe your last job and what you did day to day?"
+   - Y recién después hacé una sola pregunta en inglés que NO repita un tema ya cubierto. Usá la pregunta de chequeo de inglés configurada, NO repitas la pregunta de experiencia.
    - Si ya respondió en inglés o siguió toda la charla en inglés, no vuelvas a tocar el tema.
+   - IMPORTANTE: después del chequeo de inglés, NO vuelvas a preguntar en español lo mismo que el candidato ya respondió (ni experiencia, ni tareas, ni nada ya cubierto). Avanzá al siguiente punto pendiente.
 Cierre: "Gracias, paso toda la info al equipo; si seguimos, te escriben por WhatsApp." (no prometas prueba ni confirmes fecha).
 `.trim();
 
