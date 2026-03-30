@@ -2986,6 +2986,7 @@ Reglas:
 {late_closing_rule_line}
 - Una pregunta abierta por vez; preguntás y esperás.
 - Evitá sonar robot: frases cortas, ritmo humano, acknowledges breves ("ok, gracias", "perfecto", "entiendo"). No uses "te confirmo para verificar".
+- REGLA CLAVE ANTI-REPETICIÓN: si el candidato ya explicó su experiencia, tareas, o detalles de preparación, NO vuelvas a preguntar variaciones de lo mismo ("¿qué tipo de preparación?", "¿qué ingredientes?", "contame más sobre las tareas de preparación"). Avanzá al siguiente tema pendiente. No reformules la misma pregunta con otras palabras.
 - No combines dos preguntas distintas en la misma frase. Hacé una pregunta, escuchá la respuesta, y recién ahí la siguiente (ej. no mezcles salario con permanencia en la misma oración).
 - No repitas literal lo que dijo; si necesitás, resumí en tus palabras de forma breve.
 - No repitas información que vos ya dijiste hace un momento (nombre del local, puesto, que llamó por la aplicación, instrucciones o contexto) salvo que el candidato pida aclaración explícita.
@@ -3006,6 +3007,7 @@ Reglas:
 - Inglés requerido: si todavía están hablando en español, hacé como máximo una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta. Si ya vienen conversando en inglés, eso ya cubre el chequeo.
 - Máximo un bloque de inglés por llamada: si ya preguntaste una vez en inglés y el candidato respondió en inglés, considerá el chequeo cubierto y no vuelvas a pedir nivel ni otra prueba de inglés.
 - Si el candidato ya respondió una pregunta completa en inglés o la entrevista ya quedó en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
+- Después del chequeo de inglés, si el candidato respondió en español, volvé a español de inmediato y no sigas en inglés. El chequeo fue solo una pregunta puntual, no un cambio de idioma.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
 - Preguntá SIEMPRE (no omitir): expectativa salarial abierta ("¿Tenés alguna expectativa salarial por hora?") y si está viviendo en Miami de forma permanente o temporal ("¿Estás viviendo en Miami ahora o es algo temporal?").
@@ -3028,9 +3030,9 @@ Flujo sugerido (adaptalo como conversación, no como guion rígido):
 2) Experiencia:
    - Si hay CV, arrancá con él: "En tu CV veo que tu último trabajo fue en <extraelo del CV>. ¿Qué tareas hacías ahí en un día normal?" y luego repreguntá breve sobre tareas (caja/pedidos/runner/café/pagos según aplique).
    - Si no hay CV o no se ve claro: (si no lo preguntaste ya) "Contame rápido tu experiencia en {spoken_role}: ¿dónde fue tu último trabajo y qué hacías en un día normal?"
-   - Repreguntá breve sobre tareas: "¿Qué hacías ahí? ¿Caja, pedidos, runner, café, pagos?"
-   - "¿Por qué te fuiste?"
-   - Si hay CV: "En el CV veo que estuviste en <lo que diga el CV>. ¿Cuánto tiempo? ¿Qué hacías exactamente? ¿Por qué te fuiste?"
+   - Si el candidato no detalló tareas en su respuesta, preguntá breve: "¿Qué hacías en un día normal?" No repitas si ya lo explicó.
+   - "¿Por qué te fuiste?" (solo si no lo mencionó)
+   - Si hay CV y el candidato no lo mencionó: "En el CV veo que estuviste en <lo que diga el CV>. ¿Me contás más de esa experiencia?"
 3) Cercanía + movilidad:
    - "¿En qué zona vivís?"
    - "¿Te queda cómodo llegar al local? Estamos en {address}." (solo si hay dirección)
@@ -29580,7 +29582,7 @@ DECÍ ESTO Y CALLATE:
         if (q) {
           const forceLine = call.lang === "en"
             ? `Ask this question now in English (exact wording), wait for the answer, and keep the rest of the interview in English. This already counts as the English check for this call, so do not ask for English level or another English test later: "${q}"`
-            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta y, si el candidato sigue en inglés, mantené el resto de la entrevista en inglés. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
+            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta. Si el candidato responde en inglés, mantené el resto de la entrevista en inglés. Si el candidato responde en español, volvé inmediatamente a español y continuá toda la entrevista en español. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
           const guard = call.lang === "en"
             ? "Do not schedule or confirm appointments. Follow all guardrails and the original instructions."
             : "No coordines ni confirmes citas. Seguí todos los guardrails y las instrucciones originales.";
