@@ -4606,12 +4606,8 @@ async function notifyPortalApplication({ application, page }) {
     title: "Nueva postulacion",
     body: bodyParts.join(" · "),
     url: buildAdminUiUrl({
-      view: "portal",
-      slug: slug || "",
-      focus: "application",
-      app_id: appId,
-      app_code: appCode,
-      phone: phone
+      view: "candidates",
+      q: phone || name
     }),
     icon: "/admin/icon.svg"
   };
@@ -15552,6 +15548,7 @@ app.get("/admin/ui", (req, res) => {
                   <th>Local</th>
                   <th>Posición</th>
                   <th>Candidato</th>
+                  <th>Fuente</th>
                   <th>Teléfono</th>
                   <th>Estado</th>
                   <th>Llamada</th>
@@ -26280,6 +26277,8 @@ app.get("/admin/ui", (req, res) => {
         candidateWrap.appendChild(nameSpan);
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
+        const sourceLabel = (item.source || '').toString().trim();
+        addCell(sourceLabel || '—', 'Fuente', 'cell-compact', sourceLabel);
         const phoneTd = document.createElement('td');
         phoneTd.dataset.label = 'Teléfono';
         phoneTd.appendChild(buildPhoneCellContent(item));
