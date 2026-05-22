@@ -62,7 +62,7 @@ const TWILIO_VOICE_FROM = process.env.TWILIO_VOICE_FROM || "";
 const TWILIO_SMS_MESSAGING_SERVICE_SID = process.env.TWILIO_SMS_MESSAGING_SERVICE_SID || "";
 const TWILIO_SMS_FROM = process.env.TWILIO_SMS_FROM || TWILIO_VOICE_FROM || "+18556431913";
 const TWILIO_ONBOARDING_SMS_FROM = process.env.TWILIO_ONBOARDING_SMS_FROM || "+18556431913";
-const CALL_BEARER_TOKEN = process.env.CALL_BEARER_TOKEN || "";
+const CALL_BEARER_TOKEN = process.env.HRBOT_CALL_SECRET || process.env.CALL_BEARER_TOKEN || "";
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 const OPENCLAW_AGENT_TOKEN = process.env.OPENCLAW_AGENT_TOKEN || "";
@@ -89,6 +89,8 @@ const TRIAL_SMS_CANDIDATE_ENABLED = process.env.TRIAL_SMS_CANDIDATE_ENABLED !== 
 const TRIAL_SMS_INTERVIEWER_ENABLED = process.env.TRIAL_SMS_INTERVIEWER_ENABLED !== "0";
 const TWILIO_VOICE_PRICE_PER_MIN_USD = Number(process.env.TWILIO_VOICE_PRICE_PER_MIN_USD || 0.013);
 const OPENAI_WHISPER_PRICE_PER_MIN_USD = Number(process.env.OPENAI_WHISPER_PRICE_PER_MIN_USD || 0.006);
+const YESBOT_WEBHOOK_BASE_URL = (process.env.YESBOT_WEBHOOK_BASE_URL || "https://yesbot.us/api/hrbot").replace(/\/+$/, "");
+const YESBOT_WEBHOOK_SECRET = process.env.YESBOT_WEBHOOK_SECRET || process.env.HRBOT_WEBHOOK_SECRET || "";
 
 if (!PUBLIC_BASE_URL) { console.error("Missing PUBLIC_BASE_URL"); process.exit(1); }
 if (!OPENAI_API_KEY) { console.error("Missing OPENAI_API_KEY"); process.exit(1); }
@@ -4825,7 +4827,9 @@ async function initDb() {
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completion_notified_at TIMESTAMPTZ;`);
     await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS completion_notify_error TEXT;`);
+    await dbPool.query(`ALTER TABLE onboarding_profiles ADD COLUMN IF NOT EXISTS yesbot_onboarding_id TEXT;`);
     await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_token ON onboarding_profiles (public_token);`);
+    await dbPool.query(`CREATE INDEX IF NOT EXISTS idx_onboarding_yesbot_id ON onboarding_profiles (yesbot_onboarding_id);`);
     await dbPool.query(`
       CREATE TABLE IF NOT EXISTS onboarding_docs (
         id TEXT PRIMARY KEY,
@@ -10631,6 +10635,11 @@ app.post("/admin/onboarding/:id/doc", requirePermission("onboarding_manage"), as
       docUrl,
       uploadedBy: req.userEmail || req.userRole || "admin"
     });
+    try {
+      await notifyYesBotDocumentUploaded({ profile, docType, docUrl, fileName });
+    } catch (err) {
+      console.error("[yesbot] document-uploaded webhook failed (admin)", err);
+    }
     const docs = await fetchOnboardingDocs(profileId);
     const synced = await syncOnboardingCompletionState(profileId, { reason: "admin_doc_upload" });
     return res.json({ ok: true, docs, progress: synced?.progress || null, webhook: synced?.webhook || null });
@@ -10801,6 +10810,11 @@ app.post("/onboard/:token/upload", async (req, res) => {
       docUrl,
       uploadedBy: "candidate"
     });
+    try {
+      await notifyYesBotDocumentUploaded({ profile, docType, docUrl, fileName });
+    } catch (err) {
+      console.error("[yesbot] document-uploaded webhook failed (candidate upload)", err);
+    }
     const docs = await fetchOnboardingDocs(profile.id);
     const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_upload" });
     return res.json({ ok: true, docs, progress: synced?.progress || null });
@@ -10930,6 +10944,16 @@ app.post("/onboard/:token/pdf", async (req, res) => {
       },
       uploadedBy: "candidate"
     });
+    try {
+      await notifyYesBotDocumentUploaded({
+        profile,
+        docType,
+        docUrl,
+        fileName: `${docType}-${Date.now()}.pdf`
+      });
+    } catch (err) {
+      console.error("[yesbot] document-uploaded webhook failed (candidate pdf)", err);
+    }
     const docs = await fetchOnboardingDocs(profile.id);
     const synced = await syncOnboardingCompletionState(profile.id, { reason: "candidate_pdf" });
     return res.json({ ok: true, docs, progress: synced?.progress || null });
@@ -10984,6 +11008,16 @@ app.post("/onboard/:token/ack", async (req, res) => {
           },
           uploadedBy: "candidate"
         });
+        try {
+          await notifyYesBotDocumentUploaded({
+            profile,
+            docType: policyKey,
+            docUrl: signatureUrl,
+            fileName: `signature-${Date.now()}.png`
+          });
+        } catch (err) {
+          console.error("[yesbot] document-uploaded webhook failed (policy ack)", err);
+        }
       } catch (err) {
         console.error("[onboard] signature save failed", err.message);
       }
@@ -29238,6 +29272,92 @@ app.post("/call", requirePermission("cvs_call"), async (req, res) => {
   }
 });
 
+// §6 — YesBot asks HR Bot to send the onboarding link via SMS.
+// Auth: Bearer HRBOT_CALL_SECRET (aliased to CALL_BEARER_TOKEN).
+app.post("/onboarding/send-link", requirePermission("cvs_call"), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const candidateName = String(body.candidateName || body.candidate_name || "").trim();
+    const phoneRaw = String(body.phoneNumber || body.phone_number || body.phone || "").trim();
+    const brand = String(body.brand || "").trim();
+    const role = String(body.role || "").trim();
+    const employmentType = String(body.employmentType || body.employment_type || "W2").trim();
+    const yesbotOnboardingId = String(body.yesbotOnboardingId || body.yesbot_onboarding_id || "").trim();
+    // language reserved for future use; HR Bot currently ships a Spanish SMS body
+    if (!candidateName) return res.status(400).json({ error: "missing_candidate_name" });
+    if (!phoneRaw) return res.status(400).json({ error: "missing_phone_number" });
+    if (!brand) return res.status(400).json({ error: "missing_brand" });
+    if (!role) return res.status(400).json({ error: "missing_role" });
+    const phoneNormalized = normalizePhone(phoneRaw) || phoneRaw;
+
+    const allowedBrands = Array.isArray(req.allowedBrands) ? req.allowedBrands : [];
+    if (allowedBrands.length && !isBrandAllowed(allowedBrands, brand)) {
+      return res.status(403).json({ error: "brand_not_allowed" });
+    }
+
+    const onboardingType = employmentType === "1099" ? "contractor_1099" : "employee_w2";
+
+    let profile = null;
+    if (yesbotOnboardingId) {
+      try {
+        const row = await dbQuery(
+          "SELECT id FROM onboarding_profiles WHERE yesbot_onboarding_id = $1 LIMIT 1",
+          [yesbotOnboardingId]
+        );
+        const existingId = row?.rows?.[0]?.id;
+        if (existingId) {
+          profile = await fetchOnboardingProfile(existingId);
+        }
+      } catch (err) {
+        console.warn("[onboarding/send-link] lookup by yesbot_onboarding_id failed", err.message);
+      }
+    }
+
+    if (!profile) {
+      const created = await createOnboardingFromPayload({
+        manual: true,
+        name: candidateName,
+        phone: phoneNormalized,
+        brand,
+        role,
+        onboarding_type: onboardingType,
+        external_ref: yesbotOnboardingId || undefined
+      }, allowedBrands);
+      profile = created?.profile || null;
+    }
+    if (!profile) return res.status(500).json({ error: "profile_create_failed" });
+
+    if (yesbotOnboardingId && profile.yesbot_onboarding_id !== yesbotOnboardingId) {
+      profile = await updateOnboardingProfile(profile.id, { yesbot_onboarding_id: yesbotOnboardingId });
+    }
+
+    let updatedProfile;
+    try {
+      updatedProfile = await sendOnboardingLinkSms(profile.id, {
+        phone: phoneNormalized,
+        save_phone: true
+      });
+    } catch (err) {
+      console.error("[onboarding/send-link] sms failed", err);
+      return res.status(err.statusCode || 500).json({
+        error: "sms_failed",
+        detail: err.message || ""
+      });
+    }
+
+    const onboardingLink = buildOnboardingPublicUrl(updatedProfile || profile);
+    return res.json({
+      onboardingLink,
+      smsSent: true,
+      onboardingId: yesbotOnboardingId || null,
+      profileId: profile.id
+    });
+  } catch (err) {
+    console.error("[/onboarding/send-link] error", err);
+    return res.status(err.statusCode || 500).json({ error: "internal_error", detail: err.message });
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server, path: "/media-stream" });
 
@@ -31729,6 +31849,203 @@ async function sendOnboardingCompletionWebhook({ profile, docs, progress, force 
   }
 }
 
+// In-memory mapping captured when YesBot responds to §3 with an onboardingId.
+// Used to stamp the profile later if §6 doesn't supply one explicitly.
+const yesbotOnboardingIdByCallSid = new Map();
+
+function rememberYesBotOnboardingId(callSid, onboardingId) {
+  if (!callSid || !onboardingId) return;
+  yesbotOnboardingIdByCallSid.set(String(callSid), String(onboardingId));
+  if (yesbotOnboardingIdByCallSid.size > 5000) {
+    const firstKey = yesbotOnboardingIdByCallSid.keys().next().value;
+    if (firstKey) yesbotOnboardingIdByCallSid.delete(firstKey);
+  }
+}
+
+function lookupYesBotOnboardingIdByCallSid(callSid) {
+  if (!callSid) return "";
+  return yesbotOnboardingIdByCallSid.get(String(callSid)) || "";
+}
+
+function mapDocTypeToYesBot(docType) {
+  const norm = normalizeDocTypeKey(docType);
+  if (!norm) return null;
+  if (norm === "i9") return "I9";
+  if (norm === "w4") return "W4";
+  if (norm === "w9") return "W9";
+  if (norm.includes("policy")) return "POLICY_SIGNED";
+  if (norm.includes("idback") || norm.includes("backid") || norm.includes("dlback")) return "ID_BACK";
+  if (norm.includes("idfront") || norm.includes("frontid") || norm.includes("dlfront") || norm === "id" || norm === "dl") return "ID_FRONT";
+  if (norm.includes("directdeposit") || norm.includes("ach")) return "DIRECT_DEPOSIT";
+  return null;
+}
+
+function inferEmploymentType(call) {
+  const raw = String(
+    call?.employmentType
+      || call?.employment_type
+      || call?.onboardingType
+      || call?.onboarding_type
+      || ""
+  ).toLowerCase();
+  if (raw.includes("1099") || raw.includes("contractor")) return "1099";
+  return "W2";
+}
+
+function inferEmploymentTypeFromProfile(profile) {
+  const raw = String(profile?.onboarding_type || profile?.employment_type || "").toLowerCase();
+  if (raw.includes("1099") || raw.includes("contractor")) return "1099";
+  return "W2";
+}
+
+function callDurationSeconds(call) {
+  if (!call) return 0;
+  if (Number.isFinite(call.durationSec)) return Math.max(0, Math.round(call.durationSec));
+  if (Number.isFinite(call.duration)) return Math.max(0, Math.round(call.duration));
+  const start = call.startedAt || call.connectedAt || call.callStartedAt;
+  const end = call.endedAt || call.completedAt || call.callEndedAt;
+  if (start && end) {
+    const sec = Math.round((new Date(end).getTime() - new Date(start).getTime()) / 1000);
+    if (Number.isFinite(sec) && sec > 0) return sec;
+  }
+  return 0;
+}
+
+async function postYesBotJson(path, payload) {
+  if (!YESBOT_WEBHOOK_SECRET) return { ok: false, skipped: "secret_not_configured" };
+  if (!YESBOT_WEBHOOK_BASE_URL) return { ok: false, skipped: "url_not_configured" };
+  const url = `${YESBOT_WEBHOOK_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${YESBOT_WEBHOOK_SECRET}`
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    const bodyText = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      throw new Error(`yesbot ${path} ${resp.status}${bodyText ? `: ${bodyText.slice(0, 300)}` : ""}`);
+    }
+    let data = null;
+    try { data = bodyText ? JSON.parse(bodyText) : null; } catch (_) { data = null; }
+    return { ok: true, status: resp.status, data };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function notifyYesBotOnboardingReady(call) {
+  if (!YESBOT_WEBHOOK_SECRET) return { ok: false, skipped: "secret_not_configured" };
+  if (!call || !call.scoring) return { ok: false, skipped: "no_scoring" };
+  const screeningPassed = call.scoring?.recommendation === "advance";
+
+  const payload = {
+    candidateName: call.applicant || "",
+    phoneNumber: call.to || "",
+    brand: brandKey(call.brand || ""),
+    role: call.role || "",
+    employmentType: inferEmploymentType(call),
+    callId: call.callSid || "",
+    callDurationSec: callDurationSeconds(call),
+    screeningPassed,
+    notes: call.scoring?.summary || ""
+  };
+
+  const result = await postYesBotJson("/onboarding-ready", payload);
+  if (result.ok) {
+    const returnedId = result.data?.onboardingId || result.data?.id || "";
+    if (returnedId) rememberYesBotOnboardingId(call.callSid || "", returnedId);
+  }
+  return result;
+}
+
+async function notifyYesBotOnboardingComplete(profile) {
+  if (!YESBOT_WEBHOOK_SECRET) return { ok: false, skipped: "secret_not_configured" };
+  if (!profile) return { ok: false, skipped: "no_profile" };
+  const onboardingId = profile.yesbot_onboarding_id
+    || profile.external_ref
+    || lookupYesBotOnboardingIdByCallSid(profile.call_sid);
+  if (!onboardingId) return { ok: false, skipped: "no_yesbot_onboarding_id" };
+  const completedAt = profile.completed_at
+    ? new Date(profile.completed_at).toISOString()
+    : new Date().toISOString();
+  return postYesBotJson("/onboarding-complete", {
+    onboardingId: String(onboardingId),
+    completedAt
+  });
+}
+
+async function notifyYesBotDocumentUploaded({ profile, docType, docUrl, fileName }) {
+  if (!YESBOT_WEBHOOK_SECRET) return { ok: false, skipped: "secret_not_configured" };
+  if (!YESBOT_WEBHOOK_BASE_URL) return { ok: false, skipped: "url_not_configured" };
+  if (!profile) return { ok: false, skipped: "no_profile" };
+  if (!docUrl) return { ok: false, skipped: "no_doc_url" };
+  const onboardingId = profile.yesbot_onboarding_id
+    || profile.external_ref
+    || lookupYesBotOnboardingIdByCallSid(profile.call_sid);
+  if (!onboardingId) return { ok: false, skipped: "no_yesbot_onboarding_id" };
+  const yesbotDocType = mapDocTypeToYesBot(docType);
+  if (!yesbotDocType) return { ok: false, skipped: "unmapped_doc_type" };
+
+  let fileBuffer;
+  let mimeType = "application/octet-stream";
+  try {
+    const signedUrl = await resolveStoredUrl(docUrl, 5 * 60);
+    const resp = await fetch(signedUrl);
+    if (!resp.ok) throw new Error(`download ${resp.status}`);
+    const arr = await resp.arrayBuffer();
+    fileBuffer = Buffer.from(arr);
+    mimeType = resp.headers.get("content-type") || mimeType;
+  } catch (err) {
+    return { ok: false, error: "download_failed", message: err.message };
+  }
+
+  const safeFilename = String(fileName || "").trim()
+    || `${yesbotDocType.toLowerCase()}-${Date.now()}${guessExtFromMime(mimeType)}`;
+
+  const form = new FormData();
+  form.append("onboardingId", String(onboardingId));
+  form.append("documentType", yesbotDocType);
+  form.append("filename", safeFilename);
+  form.append("file", new Blob([fileBuffer], { type: mimeType }), safeFilename);
+
+  const url = `${YESBOT_WEBHOOK_BASE_URL}/document-uploaded`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${YESBOT_WEBHOOK_SECRET}` },
+      body: form,
+      signal: controller.signal
+    });
+    const bodyText = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      throw new Error(`yesbot document-uploaded ${resp.status}${bodyText ? `: ${bodyText.slice(0, 300)}` : ""}`);
+    }
+    let data = null;
+    try { data = bodyText ? JSON.parse(bodyText) : null; } catch (_) { data = null; }
+    return { ok: true, status: resp.status, data };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function guessExtFromMime(mime) {
+  const m = String(mime || "").toLowerCase();
+  if (m.includes("pdf")) return ".pdf";
+  if (m.includes("png")) return ".png";
+  if (m.includes("jpeg") || m.includes("jpg")) return ".jpg";
+  if (m.includes("webp")) return ".webp";
+  if (m.includes("gif")) return ".gif";
+  return "";
+}
+
 async function syncOnboardingCompletionState(profileId, options = {}) {
   const reason = String(options.reason || "").trim();
   const forceNotify = options.forceNotify === true;
@@ -31774,6 +32091,11 @@ async function syncOnboardingCompletionState(profileId, options = {}) {
       profile = await updateOnboardingProfile(profileId, {
         completion_notify_error: webhook.message
       });
+    }
+    try {
+      await notifyYesBotOnboardingComplete(profile);
+    } catch (err) {
+      console.error("[yesbot] onboarding-complete webhook failed", err);
     }
   }
 
@@ -32673,6 +32995,13 @@ async function maybeScoreAndSend(call) {
     call.expiresAt = Date.now() + CALL_TTL_MS;
   } catch (err) {
     console.error("[whatsapp] failed", err);
+  }
+  if (call.scoring) {
+    try {
+      await notifyYesBotOnboardingReady(call);
+    } catch (err) {
+      console.error("[yesbot] onboarding-ready webhook failed", err);
+    }
   }
   recordCallHistory(call);
 }
