@@ -3251,6 +3251,10 @@ function getEnglishCheckQuestionEn() {
   return getMandatoryCopy("en", "english_check_question", ENGLISH_CHECK_QUESTION);
 }
 
+// Only returns "en" or "es" when the candidate EXPLICITLY asks to switch the
+// interview language. Heuristics over loose word counts caused false positives
+// (e.g. "I worked", "of course", "hi") that flipped the call to English even
+// when the role didn't require it.
 function detectRequestedInterviewLanguage(text = "") {
   const raw = String(text || "").trim();
   if (!raw) return "";
@@ -3258,36 +3262,19 @@ function detectRequestedInterviewLanguage(text = "") {
   if (!norm) return "";
 
   const explicitEnglish =
-    norm === "english"
-    || norm === "ingles por favor"
-    || norm === "english por favor"
-    || /\benglish please\b/.test(norm)
+    /\benglish please\b/.test(norm)
     || /\bin english please\b/.test(norm)
-    || /\bcan we do this in english\b/.test(norm)
-    || /\bcan we continue in english\b/.test(norm)
-    || /\bcould we do this in english\b/.test(norm)
+    || /\bingles por favor\b/.test(norm)
+    || /\bcan we (?:do this|continue|talk|speak) in english\b/.test(norm)
+    || /\bcould we (?:do this|continue|talk|speak) in english\b/.test(norm)
     || /\bcould you speak english\b/.test(norm)
-    || /\bspeak english\b/.test(norm)
     || /\bcontinue in english\b/.test(norm)
     || /\bprefer english\b/.test(norm)
     || /\benglish only\b/.test(norm)
-    || /\bmy english is\b/.test(norm)
-    || /\bi speak english\b/.test(norm)
-    || /\bi am speaking english\b/.test(norm)
-    || /\bi don t speak spanish\b/.test(norm)
-    || /\bin english\b/.test(norm)
-    || /\bi dont speak spanish\b/.test(norm)
-    || /\bi do not speak spanish\b/.test(norm)
+    || /\bi (?:dont|don t|do not) speak spanish\b/.test(norm)
     || /\bno hablo espanol\b/.test(norm)
-    || /\bi am\b/.test(norm)
-    || /\bi m\b/.test(norm)
-    || /\bi was\b/.test(norm)
-    || /\bi work(?:ed)?\b/.test(norm)
-    || /\bmy last job\b/.test(norm)
-    || /\bcurrently i\b/.test(norm)
-    || /\bof course\b/.test(norm)
-    || /\bno problem\b/.test(norm)
-    || /^(hello|hi|hey|who is this|good morning|good afternoon|good evening)\b/.test(norm);
+    || /\bsolo (?:hablo )?ingles\b/.test(norm)
+    || /\bonly speak english\b/.test(norm);
   if (explicitEnglish) return "en";
 
   const explicitSpanish =
@@ -3300,12 +3287,11 @@ function detectRequestedInterviewLanguage(text = "") {
     || /\bseguimos en espanol\b/.test(norm)
     || /\bvolvamos al espanol\b/.test(norm)
     || /\bprefer spanish\b/.test(norm)
-    || /\bprefiero espanol\b/.test(norm);
+    || /\bprefiero espanol\b/.test(norm)
+    || /\bi (?:dont|don t|do not) speak english\b/.test(norm)
+    || /\bno hablo ingles\b/.test(norm);
   if (explicitSpanish) return "es";
 
-  const englishHits = (norm.match(/\b(english|hello|hi|hey|please|who|what|where|when|why|how|yes|no|sure|okay|ok|good|morning|afternoon|evening|experience|work|worked|job|speak|prefer|continue|minute|minutes|talk|i|my|me|am|was|were|have|had|can|could|would|currently|last|customer|service|cashier|barista|manager|team|schedule|stock|inventory|full|time)\b/g) || []).length;
-  const spanishHits = (norm.match(/\b(hola|buenas|buenos|si|hablo|espanol|ingles|prefiero|seguir|puedo|minuto|minutos|trabajo|trabaje|experiencia|gracias|yo|mi|para|con|porque|tengo|tuve|estoy|estaba|equipo|horario|stock|inventario|tiempo|manana|tarde|noche)\b/g) || []).length;
-  if (englishHits >= 3 && englishHits >= spanishHits + 2) return "en";
   return "";
 }
 
@@ -29698,12 +29684,21 @@ DECÍ ESTO Y CALLATE:
       call.lastCommitId = commitId;
       record("turn_committed", { commitId });
 
+      // If the most recent transcript explicitly requested English, the
+      // language-lock flow (in transcription.completed) will switch us to
+      // English on its own — skip the announced English check so we don't
+      // ask a candidate who is already speaking English to prove they speak it.
+      const lastUserAskedForEnglish = detectRequestedInterviewLanguage(call.lastUserTranscript || "") === "en";
+      if (lastUserAskedForEnglish && !call.englishQuestionInjected) {
+        call.englishQuestionInjected = true;
+      }
+
       if (call.englishRequired && !call.englishQuestionInjected && call.lang !== "en" && !call.langLocked && call.userTurns >= 2 && !call.responseInFlight) {
         const q = String(getEnglishCheckQuestionEn() || "").trim();
         if (q) {
           const forceLine = call.lang === "en"
             ? `Ask this question now in English (exact wording), wait for the answer, and keep the rest of the interview in English. This already counts as the English check for this call, so do not ask for English level or another English test later: "${q}"`
-            : `Preguntá ahora esta pregunta EN INGLÉS (texto exacto), esperá la respuesta. Si el candidato responde en inglés, mantené el resto de la entrevista en inglés. Si el candidato responde en español, volvé inmediatamente a español y continuá toda la entrevista en español. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después: "${q}"`;
+            : `Decí PRIMERO en español, como acknowledgement breve: "Te voy a hacer una pregunta en inglés para evaluar tu nivel conversacional." Y a continuación, en la MISMA respuesta, hacé la pregunta EN INGLÉS (texto exacto): "${q}". Después de la respuesta del candidato, volvé inmediatamente a español y continuá toda la entrevista en español, salvo que el candidato pida explícitamente seguir en inglés. Esto ya cuenta como el chequeo de inglés de esta llamada, así que no vuelvas a preguntar nivel de inglés ni hagas otra prueba de inglés después.`;
           const guard = call.lang === "en"
             ? "Do not schedule or confirm appointments. Follow all guardrails and the original instructions."
             : "No coordines ni confirmes citas. Seguí todos los guardrails y las instrucciones originales.";
