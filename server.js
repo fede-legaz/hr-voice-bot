@@ -32371,6 +32371,30 @@ async function attachOnboardingToRecords(profile) {
   }
 }
 
+function whatsappScoreBar(score) {
+  const num = Number(score);
+  if (!Number.isFinite(num)) return "";
+  const filled = Math.max(0, Math.min(10, Math.round(num / 10)));
+  return "▓".repeat(filled) + "░".repeat(10 - filled);
+}
+
+function whatsappDash(value) {
+  const text = (value ?? "").toString().trim();
+  if (!text) return "—";
+  if (/^(unknown|n\/d|no informad[oa]|none)$/i.test(text)) return "—";
+  return text;
+}
+
+function whatsappEnglishLabel(level) {
+  const map = {
+    none: "No habla",
+    basic: "Básico",
+    conversational: "Conversacional",
+    fluent: "Fluido"
+  };
+  return map[(level || "").toLowerCase()] || whatsappDash(level);
+}
+
 function formatWhatsapp(scoring, call, opts = {}) {
   const note = opts.note || "";
   const ex = scoring?.extracted || {};
@@ -32378,21 +32402,21 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const recText = rec === "advance" ? "Avanzar" : rec === "reject" ? "No avanzar" : "Revisar";
   const recIcon = rec === "advance" ? "🟢" : rec === "reject" ? "⛔" : "🟡";
   const scoreVal = scoring?.score_0_100 ?? "n/d";
-  const warmth = typeof ex.warmth_score === "number" ? `${ex.warmth_score}/10` : "n/d";
-  const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "n/d";
+  const warmth = typeof ex.warmth_score === "number" ? `${ex.warmth_score}/10` : "—";
+  const fluency = typeof ex.fluency_score === "number" ? `${ex.fluency_score}/10` : "—";
   const applicant = call.applicant || "No informado";
-  const tel = call.to || call.from || "No informado";
+  const tel = call.to || call.from || "";
   const role = call.spokenRole || displayRole(call.role || "", call.brand);
-  const area = ex.area || "No informada";
+  const area = ex.area || "";
   const duration = formatDuration(call.durationSec);
-  const englishLevel = ex.english_level || "No informado";
-  const englishDetail = ex.english_detail ? `\n${ex.english_detail}` : "";
-  const mobility = ex.mobility || "No informada";
-  const availability = ex.availability || "No informada";
-  const salary = ex.salary_expectation || "No informada";
-  const experience = ex.experience || "No informada";
-  const trial = ex.trial_date || ex.trial_availability || "No informada";
-  const stayPlan = ex.stay_plan || "No informado";
+  const mobilityMap = { yes: "Sí", no: "No" };
+  const mobility = mobilityMap[(ex.mobility || "").toLowerCase()] || whatsappDash(ex.mobility);
+  const availability = ex.availability || "";
+  const salary = ex.salary_expectation || "";
+  const experience = ex.experience || "";
+  const trial = ex.trial_date || ex.trial_availability || "";
+  const stayMap = { permanent: "Permanente", temporary: "Temporal" };
+  const stayPlan = stayMap[(ex.stay_plan || "").toLowerCase()] || whatsappDash(ex.stay_plan);
   const stayDetail = ex.stay_detail ? ` (${ex.stay_detail})` : "";
 
   if (!scoring) {
@@ -32411,36 +32435,49 @@ function formatWhatsapp(scoring, call, opts = {}) {
   }
 
   const reds = (scoring.red_flags || []).filter(Boolean).slice(0, 3);
+  const brandDisplay = resolveBrandDisplay(call.brand || "");
+  const scoreBar = whatsappScoreBar(scoreVal);
+  const source = (call.source || "").toString().trim();
+  const englishLabel = whatsappEnglishLabel(ex.english_level);
+  const englishDetail = (ex.english_detail || "").trim();
+  const fichaUrl = PUBLIC_BASE_URL && tel
+    ? `${PUBLIC_BASE_URL}${buildAdminUiUrl({ view: "candidates", q: normalizeDigits(tel) })}`
+    : "";
 
   return [
-    `*ENTREVISTA – ${call.brand.toUpperCase()}*`,
+    `*${recIcon} ${scoreVal} · ${applicant} · ${role} — ${brandDisplay}*`,
     ``,
-    `- *CANDIDATO:* ${applicant}`,
-    `- *PUESTO:* ${role}`,
-    `- *UBICACIÓN:* ${area}`,
-    `- *SCORE:* ${scoreVal} / 100 ⭐`,
-    `- *RECOMENDACIÓN:* ${recText.toUpperCase()} ${recIcon}`,
+    `👤 ${applicant}${tel ? ` · 📞 ${tel}` : ""}`,
+    `📌 *PUESTO:* ${role} — ${brandDisplay}`,
+    source ? `🌐 *FUENTE:* ${source}` : null,
     ``,
-    `*RESUMEN*`,
+    `⭐ *SCORE:* ${scoreBar ? `\`${scoreBar}\` ` : ""}${scoreVal}/100`,
+    `${recIcon} *RECOMENDACIÓN:* ${recText.toUpperCase()}`,
+    ``,
+    `📝 *RESUMEN*`,
     scoring.summary ? `${scoring.summary}` : "No disponible.",
     ``,
-    `- *CALIDEZ:* ${warmth}${ex.warmth_note ? ` - ${ex.warmth_note}` : ""}`,
-    `- *FLUIDEZ:* ${fluency}${ex.fluency_note ? ` - ${ex.fluency_note}` : ""}`,
+    `🤝 *CALIDEZ:* ${warmth}${ex.warmth_note ? ` — ${ex.warmth_note}` : ""}`,
+    `🗣️ *FLUIDEZ:* ${fluency}${ex.fluency_note ? ` — ${ex.fluency_note}` : ""}`,
     ``,
-    `✅ CHECKLIST`,
-    `- *ZONA:* ${area}`,
-    `- *MOVILIDAD:* ${mobility}`,
-    `- *DISPONIBILIDAD:* ${availability}`,
-    `- *PRETENSIÓN SALARIAL:* ${salary}`,
-    `- *ESTADÍA:* ${stayPlan}${stayDetail}`,
-    `- *PRUEBA:* ${trial}`,
-    `- *INGLÉS:* ${englishLevel}${englishDetail ? ` - ${englishDetail.trim()}` : ""}`,
+    `✅ *CHECKLIST*`,
+    `• *ZONA:* ${whatsappDash(area)}`,
+    `• *MOVILIDAD:* ${mobility}`,
+    `• *DISPONIBILIDAD:* ${whatsappDash(availability)}`,
+    `• *SALARIO:* ${whatsappDash(salary)}`,
+    `• *ESTADÍA:* ${stayPlan}${stayDetail}`,
+    `• *PRUEBA:* ${whatsappDash(trial)}`,
+    `• *INGLÉS:* ${englishLabel}${englishDetail ? ` — ${englishDetail}` : ""}`,
     ``,
-    `*EXPERIENCIA:* ${experience ? `${experience}` : "No informada"}`,
-    reds.length ? `- 🚩 *RED FLAGS:* ${reds.join(" · ")}` : "",
-    call.callSid ? `\`callId: ${call.callSid}\`` : "",
-    duration ? `\`DURACIÓN: ${duration}\`` : ""
-  ].filter(Boolean).join("\n");
+    `💼 *EXPERIENCIA*`,
+    whatsappDash(experience),
+    reds.length ? `` : null,
+    reds.length ? `🚩 *RED FLAGS:* ${reds.join(" · ")}` : null,
+    ``,
+    fichaUrl ? `🔗 Ficha completa: ${fichaUrl}` : null,
+    call.callSid ? `\`callId: ${call.callSid}\`` : null,
+    duration ? `\`DURACIÓN: ${duration}\`` : null
+  ].filter((line) => line !== null).join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 function buildScoringFromCall(call) {
