@@ -32443,6 +32443,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
   const fichaUrl = PUBLIC_BASE_URL && tel
     ? `${PUBLIC_BASE_URL}${buildAdminUiUrl({ view: "candidates", q: normalizeDigits(tel) })}`
     : "";
+  const audioUrl = (opts.audioUrl || "").trim();
 
   return [
     `*${recIcon} ${scoreVal} · ${applicant} · ${role} — ${brandDisplay}*`,
@@ -32474,6 +32475,7 @@ function formatWhatsapp(scoring, call, opts = {}) {
     reds.length ? `` : null,
     reds.length ? `🚩 *RED FLAGS:* ${reds.join(" · ")}` : null,
     ``,
+    audioUrl ? `🎧 Audio: ${audioUrl}` : null,
     fichaUrl ? `🔗 Ficha completa: ${fichaUrl}` : null,
     call.callSid ? `\`callId: ${call.callSid}\`` : null,
     duration ? `\`DURACIÓN: ${duration}\`` : null
@@ -32956,17 +32958,22 @@ async function sendWhatsappReport(call, opts = {}) {
     console.error("[whatsapp] failed sending cv", err);
   }
   await sleep(1500);
+  let audioMediaUrl = "";
   try {
-    await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note }) });
+    audioMediaUrl = await getCallAudioMediaUrl(call);
+  } catch (err) {
+    console.error("[whatsapp] failed resolving audio url", err);
+  }
+  try {
+    await sendWhatsappMessage({ body: formatWhatsapp(scoring, call, { note, audioUrl: audioMediaUrl }) });
   } catch (err) {
     console.error("[whatsapp] failed sending text", err);
     return;
   }
   await sleep(1000);
   try {
-    const mediaUrl = await getCallAudioMediaUrl(call);
-    if (mediaUrl) {
-      await sendWhatsappMessage({ mediaUrl });
+    if (audioMediaUrl) {
+      await sendWhatsappMessage({ mediaUrl: audioMediaUrl });
     }
   } catch (err) {
     console.error("[whatsapp] failed sending audio", err);
