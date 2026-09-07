@@ -4554,10 +4554,20 @@ async function notifyPortalApplication({ application, page }) {
   if (brand) bodyParts.push(brand);
   if (role) bodyParts.push(role);
   const telUrl = phone ? `tel:${phone.startsWith("+") ? phone : `+${phone}`}` : "";
+  if (phone) bodyParts.push(phone);
+  const callUrl = telUrl
+    ? buildAdminUiUrl({
+      view: "candidates",
+      phone,
+      name,
+      call: "1"
+    })
+    : "";
   const payload = {
     title: "Nueva postulacion",
     body: bodyParts.join(" · "),
-    url: buildAdminUiUrl({
+    // On iOS there are no notification actions, so the main tap opens the console with the call banner.
+    url: callUrl || buildAdminUiUrl({
       view: "candidates",
       q: phone || name
     }),
@@ -4566,12 +4576,7 @@ async function notifyPortalApplication({ application, page }) {
     ...(telUrl
       ? {
         tel: telUrl,
-        callUrl: buildAdminUiUrl({
-          view: "candidates",
-          phone,
-          name,
-          call: "1"
-        }),
+        callUrl,
         actions: [{ action: "call", title: "📞 Llamar" }]
       }
       : {})
