@@ -30,6 +30,9 @@ const IMAGE_MIME = new Set([
   "image/vnd.microsoft.icon"
 ]);
 
+const SCREENING_CALL_DELAY_MS = Math.max(0, Number(process.env.SCREENING_CALL_DELAY_MS || 30000) || 30000);
+const SCREENING_OFFER_TTL_MS = 30 * 60 * 1000;
+
 const APPLY_CODE_LENGTH = Math.max(4, Math.min(10, Number(process.env.APPLY_CODE_LENGTH || 6) || 6));
 
 const MIME_EXT = {
@@ -277,7 +280,16 @@ function createPortalRouter(options = {}) {
   const contactPhone = String(options.contactPhone || "").trim();
   const contactName = String(options.contactName || "").trim();
   const publicBaseUrl = String(options.publicBaseUrl || "").replace(/\/+$/, "");
-  const shortenUrl = typeof options.shortenUrl === "function" ? options.shortenUrl : null;
+  const placeScreeningCall = typeof options.placeScreeningCall === "function" ? options.placeScreeningCall : null;
+  const screeningDelayMs = Math.max(0, Number(options.screeningDelayMs ?? SCREENING_CALL_DELAY_MS) || 0);
+  const pendingScreening = new Map();
+
+  function purgePendingScreening() {
+    const now = Date.now();
+    for (const [key, entry] of pendingScreening.entries()) {
+      if (!entry || entry.expiresAt <= now) pendingScreening.delete(key);
+    }
+  }
 
   function resolvePortalPublicBaseUrl(req) {
     const forwardedHost = String(req?.get?.("x-forwarded-host") || "").split(",")[0].trim();
@@ -307,22 +319,20 @@ function createPortalRouter(options = {}) {
     const slug = safeSlug(page.slug || page.brand || "page");
     const resolvedBaseUrl = resolvePortalPublicBaseUrl(req);
     const publicUrl = buildPortalJoinUrl(slug, resolvedBaseUrl);
-    const publicShortUrl = shortenUrl ? await shortenUrl(publicUrl) : "";
     const sources = Array.isArray(page.sources) ? page.sources : [];
-    const decoratedSources = await Promise.all(sources.map(async (source) => {
+    const decoratedSources = sources.map((source) => {
       if (!source || typeof source !== "object") return source;
       const longUrl = buildPortalSourceJoinUrl(slug, source.key || "", resolvedBaseUrl);
-      const shortUrl = shortenUrl ? await shortenUrl(longUrl) : "";
       return {
         ...source,
         long_url: longUrl,
-        short_url: shortUrl || longUrl
+        short_url: longUrl
       };
-    }));
+    });
     return {
       ...page,
       public_url: publicUrl,
-      public_short_url: publicShortUrl || publicUrl,
+      public_short_url: publicUrl,
       sources: decoratedSources
     };
   }
@@ -578,13 +588,15 @@ function createPortalRouter(options = {}) {
 
       await store.recordApplication(application);
 
+      const cvText = buildCvText(application, page);
+      const primaryLocation = locations[0] || {};
+      const cvBrand = locations.length === 1
+        ? (primaryLocation.key || primaryLocation.label || page.brand || "")
+        : (page.brand || primaryLocation.key || primaryLocation.label || "");
+      const cvSource = trackingSource ? `portal:${slug}:${trackingSource}` : `portal:${slug}`;
+      let cvId = "";
       if (saveCvEntry) {
-        const cvText = buildCvText(application, page);
-        const primaryLocation = locations[0] || {};
-        const cvBrand = locations.length === 1
-          ? (primaryLocation.key || primaryLocation.label || page.brand || "")
-          : (page.brand || primaryLocation.key || primaryLocation.label || "");
-        await saveCvEntry({
+        const savedCv = await saveCvEntry({
           brand: cvBrand,
           role: role || "",
           applicant: name,
@@ -592,9 +604,33 @@ function createPortalRouter(options = {}) {
           cv_text: cvText,
           cv_url: resumeUrl,
           cv_photo_url: photoUrl,
-          source: trackingSource ? `portal:${slug}:${trackingSource}` : `portal:${slug}`,
+          source: cvSource,
           custom_question: customQuestion,
           custom_question_mode: customQuestionMode
+        });
+        cvId = String(savedCv?.id || "");
+      }
+
+      const screeningAvailable = !!(placeScreeningCall && phone && phone.length >= 7 && page.screening?.enabled !== false);
+      if (screeningAvailable) {
+        purgePendingScreening();
+        pendingScreening.set(appId, {
+          slug,
+          requestedAt: 0,
+          expiresAt: Date.now() + SCREENING_OFFER_TTL_MS,
+          payload: {
+            to: phone,
+            brand: cvBrand,
+            role: role || "",
+            applicant: name,
+            cv_summary: cvText,
+            cv_text: cvText,
+            cv_id: cvId,
+            resume_url: resumeUrl,
+            source: cvSource,
+            custom_question: customQuestion,
+            custom_question_mode: customQuestionMode
+          }
         });
       }
 
@@ -604,10 +640,51 @@ function createPortalRouter(options = {}) {
         });
       }
 
-      return res.json({ ok: true, application_id: appId, application_code: applicationCode });
+      return res.json({
+        ok: true,
+        application_id: appId,
+        application_code: applicationCode,
+        screening_available: screeningAvailable,
+        screening_delay_seconds: Math.round(screeningDelayMs / 1000)
+      });
     } catch (err) {
       logger.error("[portal] submit failed", err.message);
       return res.status(400).json({ error: err.message || "submit_failed" });
+    }
+  });
+
+  router.post("/apply/:slug/screening-call", async (req, res) => {
+    try {
+      const slug = safeSlug(req.params.slug);
+      const appId = String(req.body?.application_id || "").trim();
+      if (!appId) return res.status(400).json({ error: "missing_application_id" });
+      purgePendingScreening();
+      const entry = pendingScreening.get(appId);
+      if (!entry || entry.slug !== slug) {
+        return res.status(404).json({ error: "screening_not_available" });
+      }
+      if (!placeScreeningCall) {
+        return res.status(503).json({ error: "screening_disabled" });
+      }
+      if (entry.requestedAt) {
+        return res.json({ ok: true, already_requested: true, delay_seconds: Math.round(screeningDelayMs / 1000) });
+      }
+      entry.requestedAt = Date.now();
+      const payload = { ...entry.payload };
+      logger.log(`[portal] screening call scheduled in ${Math.round(screeningDelayMs / 1000)}s`, { app: appId, to: payload.to, brand: payload.brand });
+      setTimeout(() => {
+        Promise.resolve(placeScreeningCall(payload))
+          .then(() => {
+            pendingScreening.delete(appId);
+          })
+          .catch((err) => {
+            logger.error("[portal] screening call failed", err?.message || err);
+          });
+      }, screeningDelayMs);
+      return res.json({ ok: true, delay_seconds: Math.round(screeningDelayMs / 1000) });
+    } catch (err) {
+      logger.error("[portal] screening call request failed", err.message);
+      return res.status(400).json({ error: err.message || "screening_failed" });
     }
   });
 

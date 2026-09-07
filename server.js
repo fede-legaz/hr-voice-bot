@@ -66,9 +66,6 @@ const CALL_BEARER_TOKEN = process.env.HRBOT_CALL_SECRET || process.env.CALL_BEAR
 const CONFIG_TOKEN = CALL_BEARER_TOKEN;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "ADMIN";
 const OPENCLAW_AGENT_TOKEN = process.env.OPENCLAW_AGENT_TOKEN || "";
-const BITLY_ACCESS_TOKEN = process.env.BITLY_ACCESS_TOKEN || "";
-const BITLY_DOMAIN = (process.env.BITLY_DOMAIN || "bit.ly").trim() || "bit.ly";
-const BITLY_GROUP_GUID = (process.env.BITLY_GROUP_GUID || "").trim();
 const VIEWER_EMAIL = (process.env.VIEWER_EMAIL || "").trim();
 const VIEWER_PASSWORD = process.env.VIEWER_PASSWORD || "";
 const VIEWER_SESSION_TTL_MS = Number(process.env.VIEWER_SESSION_TTL_MS) || 12 * 60 * 60 * 1000;
@@ -110,7 +107,6 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
 const DEFAULT_BRAND = "New Campo Argentino";
 const DEFAULT_ROLE = "Server/Runner";
 const DEFAULT_ENGLISH_REQUIRED = true;
-const bitlyShortUrlCache = new Map();
 
 function truncateText(text, limit) {
   const value = typeof text === "string" ? text : String(text || "");
@@ -118,39 +114,6 @@ function truncateText(text, limit) {
   if (!Number.isFinite(limit) || limit <= 0) return value;
   if (value.length <= limit) return value;
   return value.slice(0, limit) + "...";
-}
-
-async function shortenUrlWithBitly(longUrl) {
-  const value = String(longUrl || "").trim();
-  if (!value || !BITLY_ACCESS_TOKEN) return "";
-  const cacheKey = `${BITLY_DOMAIN}|${BITLY_GROUP_GUID}|${value}`;
-  if (bitlyShortUrlCache.has(cacheKey)) return bitlyShortUrlCache.get(cacheKey) || "";
-  try {
-    const payload = {
-      long_url: value,
-      domain: BITLY_DOMAIN
-    };
-    if (BITLY_GROUP_GUID) payload.group_guid = BITLY_GROUP_GUID;
-    const resp = await fetch("https://api-ssl.bitly.com/v4/shorten", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${BITLY_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      console.error("[bitly] shorten failed", resp.status, data?.message || data?.description || "");
-      return "";
-    }
-    const shortUrl = String(data.link || "").trim();
-    if (shortUrl) bitlyShortUrlCache.set(cacheKey, shortUrl);
-    return shortUrl;
-  } catch (err) {
-    console.error("[bitly] shorten failed", err.message);
-    return "";
-  }
 }
 
 function readOpenAiErrorDetail(raw) {
@@ -4590,6 +4553,7 @@ async function notifyPortalApplication({ application, page }) {
   const bodyParts = [name];
   if (brand) bodyParts.push(brand);
   if (role) bodyParts.push(role);
+  const telUrl = phone ? `tel:${phone.startsWith("+") ? phone : `+${phone}`}` : "";
   const payload = {
     title: "Nueva postulacion",
     body: bodyParts.join(" · "),
@@ -4597,7 +4561,20 @@ async function notifyPortalApplication({ application, page }) {
       view: "candidates",
       q: phone || name
     }),
-    icon: "/admin/icon.svg"
+    icon: "/admin/icon.svg",
+    tag: appId ? `portal-app-${appId}` : undefined,
+    ...(telUrl
+      ? {
+        tel: telUrl,
+        callUrl: buildAdminUiUrl({
+          view: "candidates",
+          phone,
+          name,
+          call: "1"
+        }),
+        actions: [{ action: "call", title: "📞 Llamar" }]
+      }
+      : {})
   };
   return sendPushToAll(payload, brand);
 }
@@ -6632,7 +6609,6 @@ const portalRouter = createPortalRouter({
   publicUploadsBaseUrl: portalPublicUploadsBaseUrl,
   publicBaseUrl: PUBLIC_BASE_URL,
   uploadToSpaces: portalUploadToSpaces,
-  shortenUrl: shortenUrlWithBitly,
   dbPool,
   resumeMaxBytes: CV_UPLOAD_MAX_BYTES,
   photoMaxBytes: Math.max(CV_PHOTO_MAX_BYTES, 5 * 1024 * 1024),
@@ -6640,8 +6616,13 @@ const portalRouter = createPortalRouter({
   contactName: "Yes! Hiring Team",
   requireAdmin: requireAdminUser,
   requireWrite,
-  saveCvEntry: (entry) => recordCvEntry(buildCvEntry(entry)),
-  notifyOnApplication: (payload) => notifyPortalApplication(payload)
+  saveCvEntry: (entry) => {
+    const cvEntry = buildCvEntry(entry);
+    recordCvEntry(cvEntry);
+    return cvEntry;
+  },
+  notifyOnApplication: (payload) => notifyPortalApplication(payload),
+  placeScreeningCall: (payload) => placeOutboundCall(payload)
 });
 app.use("/", portalRouter);
 
@@ -6850,13 +6831,26 @@ self.addEventListener('push', (event) => {
     body: data.body || '',
     icon: data.icon || '/admin/icon.svg',
     badge: data.badge || '/admin/icon.svg',
-    data: { url: data.url || '/admin/ui' }
+    data: { url: data.url || '/admin/ui', tel: data.tel || '', callUrl: data.callUrl || '' }
   };
+  if (data.tag) options.tag = data.tag;
+  if (Array.isArray(data.actions) && data.actions.length) options.actions = data.actions;
   event.waitUntil(self.registration.showNotification(title, options));
 });
 self.addEventListener('notificationclick', (event) => {
-  const rawUrl = event.notification?.data?.url || '/admin/ui';
+  const notifData = event.notification?.data || {};
+  const rawUrl = notifData.url || '/admin/ui';
   event.notification.close();
+  if (event.action === 'call' && (notifData.tel || notifData.callUrl)) {
+    const fallbackUrl = new URL(notifData.callUrl || rawUrl, self.location.origin).href;
+    const openFallback = () => self.clients.openWindow(fallbackUrl);
+    event.waitUntil(
+      (notifData.tel ? Promise.resolve().then(() => self.clients.openWindow(notifData.tel)) : Promise.reject(new Error('no_tel')))
+        .then((win) => (win ? win : openFallback()))
+        .catch(openFallback)
+    );
+    return;
+  }
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
       const targetUrl = new URL(rawUrl, self.location.origin).href;
@@ -11614,6 +11608,12 @@ app.get("/admin/ui", (req, res) => {
     .eyebrow { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--muted); }
     .header-actions { display: flex; align-items: center; gap: 10px; }
     .status-line { margin: 8px 0 18px; color: var(--muted); font-size: 13px; min-height: 18px; }
+    .call-banner { display: flex; align-items: center; gap: 14px; margin: 0 0 18px; padding: 14px 18px; border-radius: 16px; background: #e6f4f1; border: 1px solid #b7dcd6; }
+    .call-banner-body { flex: 1; min-width: 0; }
+    .call-banner-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+    .call-banner-text { font-weight: 700; font-size: 16px; word-break: break-word; }
+    .call-banner-link { display: inline-flex; align-items: center; gap: 6px; padding: 12px 20px; border-radius: 999px; background: #1b7a8c; color: #fff !important; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .call-banner-close { flex-shrink: 0; }
     .panel {
       background: var(--panel);
       border: 1px solid var(--border);
@@ -14842,6 +14842,14 @@ app.get("/admin/ui", (req, res) => {
         </div>
       </div>
       <div class="status-line"><span id="status"></span></div>
+      <div id="call-banner" class="call-banner" style="display:none;">
+        <div class="call-banner-body">
+          <div class="call-banner-label">Nuevo candidato</div>
+          <div class="call-banner-text"></div>
+        </div>
+        <a class="call-banner-link" href="#">📞 Llamar</a>
+        <button class="secondary icon-btn call-banner-close" type="button" aria-label="Cerrar">✕</button>
+      </div>
 
       <section id="general-view" class="view">
         <div class="general-shell">
@@ -19626,6 +19634,8 @@ app.get("/admin/ui", (req, res) => {
         'cv_id',
         'cvId',
         'phone',
+        'call',
+        'name',
         'app_id',
         'application_id',
         'app_code',
@@ -19647,6 +19657,26 @@ app.get("/admin/ui", (req, res) => {
     function consumePendingDeepLink() {
       pendingDeepLink = null;
       clearPendingDeepLinkQueryParams();
+    }
+
+    function showCallBanner(phoneRaw, name) {
+      const banner = document.getElementById('call-banner');
+      if (!banner) return;
+      const cleaned = String(phoneRaw || '').replace(/[^0-9+]/g, '');
+      if (!cleaned) return;
+      const tel = cleaned.startsWith('+') ? cleaned : ('+' + cleaned.replace(/[^0-9]/g, ''));
+      if (tel.replace(/[^0-9]/g, '').length < 7) return;
+      const textEl = banner.querySelector('.call-banner-text');
+      const link = banner.querySelector('.call-banner-link');
+      const closeBtn = banner.querySelector('.call-banner-close');
+      const displayName = String(name || '').trim();
+      if (textEl) textEl.textContent = displayName ? (displayName + ' · ' + tel) : tel;
+      if (link) link.href = 'tel:' + tel;
+      if (closeBtn) closeBtn.onclick = () => { banner.style.display = 'none'; };
+      banner.style.display = 'flex';
+      try {
+        if (link) link.click();
+      } catch (err) {}
     }
 
     function matchesInterviewDeepLink(call, target) {
@@ -20655,7 +20685,7 @@ app.get("/admin/ui", (req, res) => {
       }
       const base = window.location.origin.replace(/\\/$/, '');
       const samePage = slug === String(portalCurrent?.slug || '').trim();
-      portalUrlEl.value = (samePage && (portalCurrent?.public_short_url || portalCurrent?.public_url)) || (base + '/join/' + encodeURIComponent(slug));
+      portalUrlEl.value = (samePage && portalCurrent?.public_url) || (base + '/join/' + encodeURIComponent(slug));
       portalSyncSourceLinks();
     }
 
@@ -20668,8 +20698,6 @@ app.get("/admin/ui", (req, res) => {
 
     function portalSourceLink(sourceOrKey) {
       if (sourceOrKey && typeof sourceOrKey === 'object') {
-        const shortUrl = String(sourceOrKey.short_url || sourceOrKey.shortUrl || '').trim();
-        if (shortUrl) return shortUrl;
         const longUrl = String(sourceOrKey.long_url || sourceOrKey.longUrl || '').trim();
         if (longUrl) return longUrl;
         return portalSourceLongLink(sourceOrKey.key || '');
@@ -20864,9 +20892,7 @@ app.get("/admin/ui", (req, res) => {
         const prev = previousByKey.get(key);
         if (prev && String(prev.key || '').trim() === key) {
           const longUrl = String(prev.long_url || prev.longUrl || '').trim();
-          const shortUrl = String(prev.short_url || prev.shortUrl || '').trim();
           if (longUrl) item.long_url = longUrl;
-          if (shortUrl) item.short_url = shortUrl;
         }
         items.push(item);
       });
@@ -27690,7 +27716,13 @@ app.get("/admin/ui", (req, res) => {
     }
 
     loadBtnEl.onclick = loadConfig;
-    saveBtnEl.onclick = saveConfig;
+    saveBtnEl.onclick = () => {
+      if (activeView === 'portal') {
+        portalSavePage();
+        return;
+      }
+      saveConfig();
+    };
     if (addBrandEl) {
       addBrandEl.onclick = () => {
         const tempKey = 'new_local_' + Date.now().toString(36);
@@ -28397,6 +28429,9 @@ app.get("/admin/ui", (req, res) => {
         pendingView = '';
       }
       applyPendingDeepLinkFromUrlParams(urlParams, viewParam || '');
+      if (String(urlParams.get('call') || '') === '1' && urlParams.get('phone')) {
+        showCallBanner(urlParams.get('phone') || '', urlParams.get('name') || '');
+      }
       const slugParam = urlParams.get('slug');
       if (slugParam) portalPendingSlug = toSlug(slugParam);
     }

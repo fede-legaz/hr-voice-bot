@@ -424,6 +424,29 @@ function renderApplyPage(page, options = {}) {
       font-size: 22px;
       font-weight: 700;
     }
+    .status-note .screening-card {
+      margin-top: 14px;
+      padding: 16px 18px;
+      border-radius: 16px;
+      background: rgba(var(--primary-rgb, 27, 122, 140), 0.08);
+      border: 1px solid rgba(var(--primary-rgb, 27, 122, 140), 0.25);
+    }
+    .status-note .screening-title { font-weight: 700; font-size: 16px; margin-bottom: 6px; }
+    .status-note .screening-text { font-size: 14px; color: var(--muted); margin-bottom: 12px; }
+    .status-note .screening-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+    .status-note .screening-actions button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-weight: 700;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .status-note .screening-yes { background: var(--primary); color: #fff; }
+    .status-note .screening-no { background: transparent; color: var(--text); border: 1px solid rgba(0,0,0,0.15) !important; }
+    .status-note .screening-actions button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status-note .screening-done { font-weight: 700; color: var(--primary); }
+    .status-note .screening-countdown { font-size: 28px; font-weight: 800; margin-top: 6px; }
     .form-grid.is-complete .status-note {
       font-size: 15px;
       color: var(--text);
@@ -511,6 +534,12 @@ function renderApplyPage(page, options = {}) {
     const contactPhoneRaw = page.contactPhone || (page.contact && page.contact.phone) || '';
     const contactName = page.contactName || (page.contact && page.contact.name) || 'Yes! Hiring Team';
     let lastApplicationCode = '';
+    let lastApplicationId = '';
+    let lastAppliedPhone = '';
+    let screeningAvailable = false;
+    let screeningDelaySeconds = 30;
+    let screeningState = '';
+    let screeningTimer = null;
 
     const els = {
       brand: document.querySelector('[data-brand]'),
@@ -606,11 +635,115 @@ function renderApplyPage(page, options = {}) {
       return '+' + cleaned.replace(/\D/g, '');
     }
 
+    function buildScreeningCard(contactPhone) {
+      const card = document.createElement('div');
+      card.className = 'screening-card';
+      const title = document.createElement('div');
+      title.className = 'screening-title';
+      const text = document.createElement('div');
+      text.className = 'screening-text';
+      card.appendChild(title);
+      card.appendChild(text);
+      const candidatePhone = lastAppliedPhone || '';
+      const delayText = String(screeningDelaySeconds || 30);
+      if (screeningState === 'requested') {
+        title.textContent = t(
+          { es: '¡Listo! Te llamamos en los próximos ' + delayText + ' segundos.', en: 'Done! We will call you within the next ' + delayText + ' seconds.' },
+          'We will call you shortly.'
+        );
+        text.textContent = t(
+          {
+            es: 'Vamos a llamarte al ' + candidatePhone + (contactPhone ? ' desde el ' + (contactPhoneRaw || contactPhone) : '') + '. Tené el teléfono a mano y atendé la llamada para hacer tu screening inicial.',
+            en: 'We will call you at ' + candidatePhone + (contactPhone ? ' from ' + (contactPhoneRaw || contactPhone) : '') + '. Keep your phone handy and answer the call to do your initial screening.'
+          },
+          'Keep your phone handy.'
+        );
+        const countdown = document.createElement('div');
+        countdown.className = 'screening-countdown';
+        card.appendChild(countdown);
+        startScreeningCountdown(countdown);
+        return card;
+      }
+      title.textContent = t(
+        { es: '¿Querés hacer una entrevista de screening inicial en este momento?', en: 'Would you like to do an initial screening interview right now?' },
+        'Would you like to do an initial screening interview right now?'
+      );
+      text.textContent = t(
+        { es: 'Si apretás "Sí", te llamamos en los próximos ' + delayText + ' segundos al ' + candidatePhone + ' para un screening.', en: 'If you press "Yes", we will call you within the next ' + delayText + ' seconds at ' + candidatePhone + ' for a screening.' },
+        'We will call you within seconds.'
+      );
+      const actions = document.createElement('div');
+      actions.className = 'screening-actions';
+      const yesBtn = document.createElement('button');
+      yesBtn.type = 'button';
+      yesBtn.className = 'screening-yes';
+      yesBtn.textContent = t({ es: 'Sí, llámenme ahora', en: 'Yes, call me now' }, 'Yes, call me now');
+      const noBtn = document.createElement('button');
+      noBtn.type = 'button';
+      noBtn.className = 'screening-no';
+      noBtn.textContent = t({ es: 'Ahora no', en: 'Not now' }, 'Not now');
+      yesBtn.addEventListener('click', async () => {
+        yesBtn.disabled = true;
+        noBtn.disabled = true;
+        yesBtn.textContent = t({ es: 'Agendando...', en: 'Scheduling...' }, 'Scheduling...');
+        try {
+          const resp = await fetch('/apply/' + page.slug + '/screening-call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ application_id: lastApplicationId })
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.error || 'screening_failed');
+          if (data.delay_seconds) screeningDelaySeconds = Number(data.delay_seconds) || screeningDelaySeconds;
+          screeningState = 'requested';
+          renderStatusNote();
+        } catch (err) {
+          yesBtn.disabled = false;
+          noBtn.disabled = false;
+          yesBtn.textContent = t({ es: 'Reintentar', en: 'Retry' }, 'Retry');
+          text.textContent = t(
+            { es: 'No pudimos agendar la llamada. Probá de nuevo o esperá nuestro contacto.', en: 'We could not schedule the call. Try again or wait for us to reach out.' },
+            'We could not schedule the call.'
+          );
+        }
+      });
+      noBtn.addEventListener('click', () => {
+        screeningState = 'declined';
+        renderStatusNote();
+      });
+      actions.appendChild(yesBtn);
+      actions.appendChild(noBtn);
+      card.appendChild(actions);
+      return card;
+    }
+
+    function startScreeningCountdown(el) {
+      if (screeningTimer) clearInterval(screeningTimer);
+      let remaining = Number(screeningDelaySeconds) || 30;
+      const paint = () => {
+        if (remaining > 0) {
+          el.textContent = remaining + 's';
+        } else {
+          el.textContent = t({ es: 'Llamando...', en: 'Calling...' }, 'Calling...');
+          clearInterval(screeningTimer);
+          screeningTimer = null;
+        }
+      };
+      paint();
+      screeningTimer = setInterval(() => {
+        remaining -= 1;
+        paint();
+      }, 1000);
+    }
+
     function renderStatusNote() {
       if (!els.statusNote) return;
       els.statusNote.textContent = '';
       els.statusNote.innerHTML = '';
       const phone = normalizePhoneForLink(contactPhoneRaw);
+      if (lastApplicationId && screeningAvailable && screeningState !== 'declined') {
+        els.statusNote.appendChild(buildScreeningCard(phone));
+      }
       if (!phone && !lastApplicationCode) return;
       const noteText = t(
         {
@@ -870,12 +1003,19 @@ function renderApplyPage(page, options = {}) {
       labelEl.textContent = label + (required ? ' *' : '');
       wrapper.appendChild(labelEl);
 
+      const optionList = Array.isArray(options) ? options : [];
+      let preselected = selectedValues;
+      if (optionList.length === 1 && (!preselected || !preselected.length)) {
+        const onlyValue = optionValue(optionList[0]);
+        if (onlyValue) preselected = [onlyValue];
+      }
       const list = document.createElement('div');
-      renderMultiOptionsList(list, id, options, layout, selectedValues);
+      renderMultiOptionsList(list, id, optionList, layout, preselected);
       wrapper.appendChild(list);
       const hint = document.createElement('div');
-      hint.className = 'hint';
+      hint.className = 'hint multi-hint';
       hint.textContent = t({ es: 'Podés elegir más de una.', en: 'You can choose more than one.' }, 'You can choose more than one.');
+      hint.hidden = optionList.length <= 1;
       wrapper.appendChild(hint);
       if (required) wrapper.dataset.required = '1';
       return wrapper;
@@ -923,6 +1063,8 @@ function renderApplyPage(page, options = {}) {
         const prevSelected = readSelectedRoles();
         const list = roleMultiWrap.querySelector('.multi-options');
         renderMultiOptionsList(list, 'roles', options, fields.role?.layout || 'compact', prevSelected);
+        const hint = roleMultiWrap.querySelector('.multi-hint');
+        if (hint) hint.hidden = options.length <= 1;
         return;
       }
       if (!roleSelectEl) return;
@@ -1204,6 +1346,11 @@ function renderApplyPage(page, options = {}) {
         if (!resp.ok) throw new Error(data.error || 'submit_failed');
 
         lastApplicationCode = data.application_code || '';
+        lastApplicationId = data.application_id || '';
+        lastAppliedPhone = phone;
+        screeningAvailable = !!data.screening_available;
+        screeningDelaySeconds = Number(data.screening_delay_seconds) || 30;
+        screeningState = '';
         setStatus(t(page.content?.thankYou, 'Thanks! We will contact you soon.'), false);
         if (els.form) els.form.classList.add('is-complete');
         renderStatusNote();
