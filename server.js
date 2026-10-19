@@ -11617,7 +11617,7 @@ app.get("/admin/ui", (req, res) => {
     .call-banner-body { flex: 1; min-width: 0; }
     .call-banner-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
     .call-banner-text { font-weight: 700; font-size: 16px; word-break: break-word; }
-    .call-banner-link { display: inline-flex; align-items: center; gap: 6px; padding: 12px 20px; border-radius: 999px; background: #1b7a8c; color: #fff !important; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .call-banner-link { border: 0; cursor: pointer; font-size: 16px; display: inline-flex; align-items: center; gap: 6px; padding: 12px 20px; border-radius: 999px; background: #1b7a8c; color: #fff !important; font-weight: 700; text-decoration: none; white-space: nowrap; }
     .call-banner-close { flex-shrink: 0; }
     .panel {
       background: var(--panel);
@@ -14852,7 +14852,7 @@ app.get("/admin/ui", (req, res) => {
           <div class="call-banner-label">Nuevo candidato</div>
           <div class="call-banner-text"></div>
         </div>
-        <a class="call-banner-link" href="#">📞 Llamar</a>
+        <button class="call-banner-link" type="button">📞 Llamar</button>
         <button class="secondary icon-btn call-banner-close" type="button" aria-label="Cerrar">✕</button>
       </div>
 
@@ -19676,12 +19676,35 @@ app.get("/admin/ui", (req, res) => {
       const closeBtn = banner.querySelector('.call-banner-close');
       const displayName = String(name || '').trim();
       if (textEl) textEl.textContent = displayName ? (displayName + ' · ' + tel) : tel;
-      if (link) link.href = 'tel:' + tel;
+      // The bot places the screening call (same flow as "Llamar" in the CV list), not the admin's own phone.
+      if (link) link.onclick = async () => {
+        const digits = tel.replace(/[^0-9]/g, '');
+        const tail = digits.slice(-10);
+        link.disabled = true;
+        setCallStatus('Buscando CV del candidato...');
+        try {
+          const resp = await fetch('/admin/cv?q=' + encodeURIComponent(tail), {
+            headers: { Authorization: 'Bearer ' + tokenEl.value }
+          });
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok) throw new Error(data.error || 'cv failed');
+          const item = (data.cvs || []).find((cv) => String(cv.phone || '').replace(/[^0-9]/g, '').endsWith(tail));
+          if (!item) {
+            setCallStatus('Error: no encontré el CV de ' + (displayName || tel) + '.');
+            return;
+          }
+          const label = displayName || item.applicant || tel;
+          if (!confirm('¿Llamar con el bot a ' + label + '?')) return;
+          await startBotCallForCv(item);
+          banner.style.display = 'none';
+        } catch (err) {
+          setCallStatus('Error: ' + err.message);
+        } finally {
+          link.disabled = false;
+        }
+      };
       if (closeBtn) closeBtn.onclick = () => { banner.style.display = 'none'; };
       banner.style.display = 'flex';
-      try {
-        if (link) link.click();
-      } catch (err) {}
     }
 
     function matchesInterviewDeepLink(call, target) {
@@ -21919,32 +21942,7 @@ app.get("/admin/ui", (req, res) => {
             const label = name || 'este candidato';
             if (!confirm('¿Seguro que querés volver a llamar a ' + label + '?')) return;
           }
-          currentCvId = item.id || '';
-          callBrandEl.value = item.brandKey || item.brand || '';
-          updateCallRoleOptions(callBrandEl.value);
-          const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
-          if (item.role && roleOptions.includes(item.role)) {
-            callRoleEl.value = item.role;
-          } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
-            callRoleEl.value = item.roleKey;
-          } else {
-            callRoleEl.value = item.role || item.roleKey || '';
-          }
-          callNameEl.value = item.applicant || '';
-          callPhoneEl.value = item.phone || '';
-          callCvTextEl.value = item.cv_text || '';
-          currentCvSource = item.source || '';
-          placeCall({
-            to: item.phone || '',
-            brand: item.brandKey || item.brand || '',
-            role: callRoleEl.value || item.role || item.roleKey || '',
-            applicant: item.applicant || '',
-            cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
-            cv_text: item.cv_text || '',
-            cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
-            custom_question: item.custom_question || '',
-            custom_question_mode: item.custom_question_mode || 'exact'
-          });
+          startBotCallForCv(item);
         };
         cvActions.appendChild(callBtn);
       }
@@ -23840,6 +23838,35 @@ app.get("/admin/ui", (req, res) => {
       } catch (err) {
         setCvStatus('Error: ' + err.message);
       }
+    }
+
+    function startBotCallForCv(item) {
+      currentCvId = item.id || '';
+      callBrandEl.value = item.brandKey || item.brand || '';
+      updateCallRoleOptions(callBrandEl.value);
+      const roleOptions = Array.from(callRoleEl.options || []).map((opt) => opt.value);
+      if (item.role && roleOptions.includes(item.role)) {
+        callRoleEl.value = item.role;
+      } else if (item.roleKey && roleOptions.includes(item.roleKey)) {
+        callRoleEl.value = item.roleKey;
+      } else {
+        callRoleEl.value = item.role || item.roleKey || '';
+      }
+      callNameEl.value = item.applicant || '';
+      callPhoneEl.value = item.phone || '';
+      callCvTextEl.value = item.cv_text || '';
+      currentCvSource = item.source || '';
+      return placeCall({
+        to: item.phone || '',
+        brand: item.brandKey || item.brand || '',
+        role: callRoleEl.value || item.role || item.roleKey || '',
+        applicant: item.applicant || '',
+        cv_summary: truncateText(item.cv_text || '', CV_CHAR_LIMIT),
+        cv_text: item.cv_text || '',
+        cv_id: item.id || (Array.isArray(item.cvIds) ? item.cvIds[0] : '') || '',
+        custom_question: item.custom_question || '',
+        custom_question_mode: item.custom_question_mode || 'exact'
+      });
     }
 
     async function placeCall(payloadOverride = null) {
