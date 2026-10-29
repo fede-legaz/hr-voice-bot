@@ -491,9 +491,188 @@ function renderApplyPage(page, options = {}) {
       color: var(--text);
       box-shadow: 0 10px 18px rgba(31,111,92,0.08);
     }
+    /* ==== Refresh 2026-10: cleaner, lighter form. Colors still come from each page's theme. ==== */
+    body { -webkit-font-smoothing: antialiased; line-height: 1.5; }
+    .page { gap: 20px; padding-top: 28px; }
+    .hero, .card {
+      border-radius: 24px;
+      box-shadow: 0 1px 2px rgba(36,27,19,0.04), 0 12px 32px -12px rgba(36,27,19,0.14);
+      border: 1px solid rgba(36,27,19,0.06);
+    }
+    .hero::after { background: radial-gradient(circle, rgba(var(--primary-rgb),0.14), transparent 70%); }
+    .hero-media { border-radius: 18px; }
+    .badge, .lang-toggle { justify-self: start; }
+    .badge { background: rgba(var(--primary-rgb), 0.1); color: var(--primary); font-size: 11px; letter-spacing: 0.08em; }
+    .card { padding: 28px; }
+    .card h2 {
+      font-family: var(--font-heading);
+      font-size: clamp(26px, 3.2vw, 32px);
+      line-height: 1.1;
+      margin: 0 0 6px;
+    }
+    .card h3 { font-family: var(--font-heading); font-size: 22px; margin: 0 0 6px; }
+    .card > .hint { margin: 0 0 22px; font-size: 15px; }
+    .form-grid { gap: 20px; }
+    #custom-fields:empty { display: none; }
+    .row { gap: 18px 16px; }
+    label { font-size: 14px; font-weight: 600; margin-bottom: 8px; letter-spacing: -0.005em; }
+    input, select, textarea {
+      min-height: 50px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(36,27,19,0.14);
+      background: #fdfcfa;
+      font-size: 16px;
+      color: var(--text);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+    }
+    input:hover, select:hover, textarea:hover { border-color: rgba(36,27,19,0.26); }
+    input:focus, select:focus, textarea:focus { background: #fff; }
+    select {
+      appearance: none;
+      -webkit-appearance: none;
+      padding-right: 40px;
+      background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position: calc(100% - 20px) 50%, calc(100% - 15px) 50%;
+      background-size: 5px 5px, 5px 5px;
+      background-repeat: no-repeat;
+    }
+
+    /* Role / location options */
+    .multi-option, .multi-options.layout-compact .multi-option {
+      min-height: 52px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border-color: rgba(36,27,19,0.12);
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .multi-options.layout-compact { gap: 8px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+    .multi-option:hover { transform: none; box-shadow: none; border-color: rgba(var(--primary-rgb), 0.55); }
+    .multi-option.is-checked {
+      background: rgba(var(--primary-rgb), 0.07);
+      border-color: var(--primary);
+      box-shadow: inset 0 0 0 1px var(--primary);
+    }
+    .multi-option input { width: 20px; height: 20px; min-height: 0; margin: 0; flex: none; }
+    .multi-hint { margin-top: 8px; }
+
+    /* Yes / No as two pill buttons */
+    .choice-group { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 420px; }
+    .choice {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      min-height: 52px;
+      margin: 0;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(36,27,19,0.14);
+      background: #fdfcfa;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+    }
+    .choice:hover { border-color: rgba(var(--primary-rgb), 0.55); }
+    .choice input { position: absolute; opacity: 0; width: 1px; height: 1px; min-height: 0; pointer-events: none; }
+    .choice span::before {
+      content: "";
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      margin-right: 10px;
+      vertical-align: -3px;
+      border-radius: 50%;
+      border: 2px solid rgba(36,27,19,0.25);
+      background: #fff;
+      box-sizing: border-box;
+      transition: border 0.15s ease;
+    }
+    .choice:has(input:checked) {
+      border-color: var(--primary);
+      background: rgba(var(--primary-rgb), 0.07);
+      box-shadow: inset 0 0 0 1px var(--primary);
+      color: var(--text);
+    }
+    .choice:has(input:checked) span::before { border: 6px solid var(--primary); }
+    .choice:has(input:focus-visible) { box-shadow: 0 0 0 4px var(--ring); }
+
+    /* Follow-up field that appears after a "yes" */
+    .reveal {
+      margin-top: 12px;
+      padding: 16px;
+      border-radius: 14px;
+      background: rgba(var(--primary-rgb), 0.05);
+      border: 1px solid rgba(var(--primary-rgb), 0.16);
+      animation: reveal-in 0.2s ease;
+    }
+    .reveal input { background: #fff; }
+    @keyframes reveal-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+    /* File pickers */
+    input[type="file"] {
+      min-height: 58px;
+      padding: 9px 10px;
+      border-style: dashed;
+      border-color: rgba(36,27,19,0.22);
+      background: #fdfcfa;
+      font-size: 14px;
+      color: var(--muted);
+      cursor: pointer;
+    }
+    input[type="file"]::file-selector-button {
+      margin-right: 14px;
+      padding: 9px 16px;
+      border: none;
+      border-radius: 999px;
+      background: rgba(var(--primary-rgb), 0.1);
+      color: var(--primary);
+      font: 700 14px var(--font-body);
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    input[type="file"]:hover::file-selector-button { background: rgba(var(--primary-rgb), 0.18); }
+    #file-fields .hint { margin-top: 6px; font-size: 12px; }
+
+    .consent {
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: rgba(36,27,19,0.03);
+      border: 1px solid rgba(36,27,19,0.08);
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 500;
+      margin: 0;
+    }
+    .consent input { min-height: 0; padding: 0; flex: none; }
+
+    .submit-btn {
+      width: 100%;
+      min-height: 56px;
+      border-radius: 14px;
+      font-size: 16px;
+      letter-spacing: 0.01em;
+      box-shadow: 0 8px 20px -8px rgba(var(--primary-rgb), 0.7);
+      transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+    }
+    .submit-btn:hover { transform: translateY(-1px); filter: brightness(1.05); box-shadow: 0 12px 24px -8px rgba(var(--primary-rgb), 0.75); }
+
+    .chip-list { background: rgba(var(--accent-rgb), 0.07); border-radius: 14px; }
+    .chip { box-shadow: none; }
+    .gallery { margin-top: 16px; gap: 8px; }
+    .gallery img { border-radius: 14px; height: 130px; }
+
     @media (max-width: 900px) {
       .hero { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 560px) {
+      .page { padding: 16px 16px 48px; gap: 16px; }
+      .hero, .card { padding: 20px; border-radius: 20px; }
+      .choice-group { max-width: none; }
     }
     @media (prefers-reduced-motion: reduce) {
       * { animation: none !important; transition: none !important; }
@@ -527,7 +706,7 @@ function renderApplyPage(page, options = {}) {
           <div class="row" id="base-fields"></div>
           <div id="custom-fields" class="form-grid"></div>
           <div id="file-fields" class="form-grid"></div>
-          <button class="submit-btn" id="submit-btn" type="submit">Send application</button>
+          <button class="submit-btn" id="submit-btn" type="submit">Enviar postulación</button>
           <div class="status" id="status"></div>
           <div class="status-note" id="status-note"></div>
         </form>
@@ -862,9 +1041,10 @@ function renderApplyPage(page, options = {}) {
       els.brand.style.display = page.content?.hideBrandName ? 'none' : '';
       els.title.textContent = t(page.content?.title, 'Work with us');
       els.description.textContent = t(page.content?.description, 'Join our restaurant team.');
-      els.badge.textContent = t(page.content?.badge, 'Now hiring');
-      els.formTitle.textContent = t(page.content?.formTitle, 'Apply now');
-      els.formSubtitle.textContent = t(page.content?.formSubtitle, 'Tell us a bit about you.');
+      els.badge.textContent = t(page.content?.badge, t({ es: 'Estamos contratando', en: 'Now hiring' }, 'Now hiring'));
+      els.formTitle.textContent = t(page.content?.formTitle, t({ es: 'Postulate', en: 'Apply now' }, 'Apply now'));
+      els.formSubtitle.textContent = t(page.content?.formSubtitle, t({ es: 'Contanos un poco sobre vos. Te respondemos rápido.', en: 'Tell us a bit about you. We answer fast.' }, 'Tell us a bit about you.'));
+      els.submit.textContent = t(page.content?.submitLabel, t({ es: 'Enviar postulación', en: 'Send application' }, 'Send application'));
       els.sideTitle.textContent = t(page.content?.sideTitle, 'Inside the team');
       els.sideText.textContent = t(page.content?.sideText, 'Fast pace, real growth, strong culture.');
       const sideNote = t(page.content?.sideNote, 'Flexible shifts and training.');
@@ -950,23 +1130,24 @@ function renderApplyPage(page, options = {}) {
         });
       } else if (type === 'yesno') {
         input = document.createElement('div');
-        input.className = 'row';
-        const yes = document.createElement('label');
-        const yesInput = document.createElement('input');
-        yesInput.type = 'radio';
-        yesInput.name = id;
-        yesInput.value = 'yes';
-        yes.appendChild(yesInput);
-        yes.appendChild(document.createTextNode(' ' + t({ es: 'Si', en: 'Yes' }, 'Yes')));
-        const no = document.createElement('label');
-        const noInput = document.createElement('input');
-        noInput.type = 'radio';
-        noInput.name = id;
-        noInput.value = 'no';
-        no.appendChild(noInput);
-        no.appendChild(document.createTextNode(' ' + t({ es: 'No', en: 'No' }, 'No')));
-        input.appendChild(yes);
-        input.appendChild(no);
+        input.className = 'choice-group';
+        input.setAttribute('role', 'radiogroup');
+        [
+          { value: 'yes', text: t({ es: 'Sí', en: 'Yes' }, 'Yes') },
+          { value: 'no', text: t({ es: 'No', en: 'No' }, 'No') }
+        ].forEach((opt) => {
+          const choice = document.createElement('label');
+          choice.className = 'choice';
+          const radio = document.createElement('input');
+          radio.type = 'radio';
+          radio.name = id;
+          radio.value = opt.value;
+          const text = document.createElement('span');
+          text.textContent = opt.text;
+          choice.appendChild(radio);
+          choice.appendChild(text);
+          input.appendChild(choice);
+        });
       } else {
         input = document.createElement('input');
         input.type = type || 'text';
@@ -1057,7 +1238,7 @@ function renderApplyPage(page, options = {}) {
       const wrapper = buildInputField('referred', t({ es: '¿Alguien te refirió?', en: 'Did someone refer you?' }, 'Did someone refer you?'), 'yesno', true);
       wrapper.className = 'field-span';
       const nameWrap = buildInputField('referred_by', t({ es: '¿Quién te refirió? (nombre)', en: 'Who referred you? (name)' }, 'Who referred you? (name)'), 'text', true);
-      nameWrap.style.marginTop = '10px';
+      nameWrap.className = 'reveal';
       const nameInput = nameWrap.querySelector('input');
       const sync = () => {
         const isYes = wrapper.querySelector('input[name="referred"]:checked')?.value === 'yes';
