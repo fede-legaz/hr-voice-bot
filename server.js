@@ -2971,9 +2971,10 @@ Reglas:
 - Si inglés es requerido ({english_required}) y la entrevista sigue en español, hacé un único chequeo de inglés: preguntá nivel y luego una sola pregunta en inglés. Si la entrevista ya quedó en inglés, no preguntes nivel ni hagas una prueba separada; seguí toda la entrevista en inglés.
 - Inglés requerido: si todavía están hablando en español, hacé como máximo una pregunta completa en inglés (por ejemplo: "Can you describe your last job and what you did day to day?") y esperá la respuesta. Si ya vienen conversando en inglés, eso ya cubre el chequeo.
 - Máximo un bloque de inglés por llamada: si ya preguntaste una vez en inglés y el candidato respondió en inglés, considerá el chequeo cubierto y no vuelvas a pedir nivel ni otra prueba de inglés.
-- Después del chequeo de inglés, retomá en español desde el siguiente tema pendiente. NUNCA repitas en español una pregunta que ya hiciste en inglés ni una que el candidato ya respondió antes del chequeo.
+- Después del chequeo de inglés (solo si la entrevista venía en español y el candidato NO pidió inglés), retomá en español desde el siguiente tema pendiente. NUNCA repitas en español una pregunta que ya hiciste en inglés ni una que el candidato ya respondió antes del chequeo.
 - Si el candidato ya respondió una pregunta completa en inglés o la entrevista ya quedó en inglés, no repitas después ni "¿qué nivel de inglés tenés?" ni otra pregunta de validación en inglés. Seguí al siguiente tema o cerrá.
-- Después del chequeo de inglés, si el candidato respondió en español, volvé a español de inmediato y no sigas en inglés. El chequeo fue solo una pregunta puntual, no un cambio de idioma.
+- Contestar en inglés la pregunta de chequeo NO es pedir inglés: el chequeo fue solo una pregunta puntual. Pero si el candidato PIDE inglés (en cualquier momento, aunque sea con una frase corta como "English", "in English please", "¿podemos hablar en inglés?"), eso SÍ es un cambio de idioma permanente: quedate en inglés hasta el final.
+- Una vez que la entrevista pasó a inglés, NUNCA vuelvas a español por tu cuenta: ni para aclarar, ni para confirmar datos, ni en el cierre, ni si el candidato mete alguna palabra en español o menciona que habla español. Solo volvé a español si el candidato lo pide explícitamente. Ir y volver entre idiomas suena a falta de respeto.
 - Si el candidato prefiere hablar solo en inglés o dice que no habla español, seguí la entrevista en inglés y completá todas las preguntas igual (no cortes ni discrimines).
 - Si dice "I don't speak Spanish"/"no hablo español", reiniciá el opener en inglés: "Hi {first_name_or_there}, I'm calling about your application for {spoken_role} at {brand}. Do you have a few minutes to talk?" y continuá toda la entrevista en inglés.
 - Preguntá SIEMPRE (no omitir): expectativa salarial abierta ("¿Tenés alguna expectativa salarial por hora?") y si está viviendo en Miami de forma permanente o temporal ("¿Estás viviendo en Miami ahora o es algo temporal?").
@@ -3224,35 +3225,46 @@ function detectRequestedInterviewLanguage(text = "") {
   const norm = normalizeKey(raw);
   if (!norm) return "";
 
+  // Asking for English: be generous — a candidate who asks once must never have to ask twice.
   const explicitEnglish =
-    /\benglish please\b/.test(norm)
+    /^(?:ok |okay |yes |si |uh |um |eh )?(?:in )?english(?: please| por favor)?$/.test(norm)
+    || /\benglish please\b/.test(norm)
     || /\bin english please\b/.test(norm)
     || /\bingles por favor\b/.test(norm)
-    || /\bcan we (?:do this|continue|talk|speak) in english\b/.test(norm)
-    || /\bcould we (?:do this|continue|talk|speak) in english\b/.test(norm)
-    || /\bcould you speak english\b/.test(norm)
+    || /\b(?:can|could|may|should) (?:we|you|i) (?:please )?(?:do|do this|do it|continue|talk|speak|go|have (?:it|this)|keep going) (?:this |it )?in english\b/.test(norm)
+    || /\b(?:can|could|do) you (?:please )?(?:speak|talk) (?:in )?english\b/.test(norm)
+    || /\b(?:speak|talk) to me in english\b/.test(norm)
+    || /\bplease (?:speak|talk) in english\b/.test(norm)
     || /\bcontinue in english\b/.test(norm)
-    || /\bprefer english\b/.test(norm)
-    || /\benglish only\b/.test(norm)
-    || /\bi (?:dont|don t|do not) speak spanish\b/.test(norm)
-    || /\bno hablo espanol\b/.test(norm)
+    || /\bprefer (?:to (?:speak|talk|do (?:it|this)) )?(?:in )?english\b/.test(norm)
+    || /\benglish (?:is better|would be better|only)\b/.test(norm)
+    || /\bi (?:dont|don t|do not) speak (?:much |a lot of |good )?spanish\b/.test(norm)
+    || /\bmy spanish is(?:n t| not) (?:very )?good\b/.test(norm)
+    || /\bonly speak english\b/.test(norm)
+    || /\bno hablo (?:mucho |bien |bien el )?espanol\b/.test(norm)
     || /\bsolo (?:hablo )?ingles\b/.test(norm)
-    || /\bonly speak english\b/.test(norm);
+    || /\b(?:podemos|podriamos|puedes|podes|puede|prefiero|quiero|mejor) (?:hablar |seguir |hacerlo |hacer la entrevista |la entrevista |continuar )?en ingles\b/.test(norm)
+    || /\bhabla(?:me|nos|rme)? (?:en )?ingles\b/.test(norm)
+    || /\ben ingles por favor\b/.test(norm);
   if (explicitEnglish) return "en";
 
+  // Going back to Spanish needs a clear request; merely mentioning Spanish ("I speak Spanish and English",
+  // "trabajé en español") must not flip an English interview back.
   const explicitSpanish =
-    /\bspanish please\b/.test(norm)
-    || /\bspeak spanish\b/.test(norm)
+    /^(?:in )?spanish(?: please)?$/.test(norm)
+    || /^(?:en )?espanol(?: por favor)?$/.test(norm)
+    || /\bspanish please\b/.test(norm)
+    || /\b(?:can|could|may) (?:we|you) (?:please )?(?:do|do this|do it|continue|talk|speak|go) (?:this |it )?in spanish\b/.test(norm)
     || /\bcontinue in spanish\b/.test(norm)
+    || /\bprefer (?:to (?:speak|talk) )?(?:in )?spanish\b/.test(norm)
     || /\bespanol por favor\b/.test(norm)
-    || /\ben espanol\b/.test(norm)
-    || /\benh espanol\b/.test(norm)
     || /\bseguimos en espanol\b/.test(norm)
     || /\bvolvamos al espanol\b/.test(norm)
-    || /\bprefer spanish\b/.test(norm)
-    || /\bprefiero espanol\b/.test(norm)
-    || /\bi (?:dont|don t|do not) speak english\b/.test(norm)
-    || /\bno hablo ingles\b/.test(norm);
+    || /\b(?:podemos|podriamos|prefiero|quiero|mejor) (?:hablar |seguir |hacerlo |continuar )?en espanol\b/.test(norm)
+    || /\bhabla(?:me|nos)? en espanol\b/.test(norm)
+    || /\bi (?:dont|don t|do not) speak (?:much |good )?english\b/.test(norm)
+    || /\bno hablo (?:mucho |bien )?ingles\b/.test(norm)
+    || /\bno entiendo (?:el |mucho |bien )?ingles\b/.test(norm);
   if (explicitSpanish) return "es";
 
   return "";
