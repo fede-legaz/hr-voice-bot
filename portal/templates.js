@@ -89,7 +89,7 @@ function renderApplyPage(page, options = {}) {
       gap: 8px;
       padding: 6px 12px;
       border-radius: 999px;
-      background: rgba(31,111,92,0.12);
+      background: rgba(var(--accent-rgb), 0.12);
       color: var(--accent);
       font-weight: 600;
       letter-spacing: 0.02em;
@@ -104,11 +104,13 @@ function renderApplyPage(page, options = {}) {
       color: var(--muted);
     }
     .brand-logo {
-      width: 48px;
+      width: auto;
+      max-width: 160px;
       height: 48px;
-      border-radius: 16px;
-      object-fit: cover;
-      background: #f0e7dd;
+      border-radius: 12px;
+      object-fit: contain;
+      object-position: left center;
+      background: transparent;
     }
     h1 {
       font-family: var(--font-heading);
@@ -135,6 +137,22 @@ function renderApplyPage(page, options = {}) {
       width: 100%;
       height: 100%;
       object-fit: cover;
+    }
+    .hero-media.is-empty {
+      background:
+        repeating-linear-gradient(135deg, rgba(var(--primary-rgb), 0.05) 0 2px, transparent 2px 14px),
+        radial-gradient(circle at 16% 12%, rgba(var(--primary-rgb), 0.28), transparent 58%),
+        radial-gradient(circle at 86% 88%, rgba(var(--accent-rgb), 0.26), transparent 58%),
+        var(--bg);
+      box-shadow: inset 0 0 0 1px rgba(var(--primary-rgb), 0.18);
+    }
+    .hero-media .hero-mark {
+      width: auto;
+      height: auto;
+      max-width: 62%;
+      max-height: 44%;
+      object-fit: contain;
+      opacity: 0.95;
     }
     .lang-toggle {
       display: inline-flex;
@@ -840,6 +858,8 @@ function renderApplyPage(page, options = {}) {
 
     function renderHeader() {
       els.brand.textContent = page.brand || '';
+      // A wordmark logo already spells the brand: let a page opt out of the duplicate label.
+      els.brand.style.display = page.content?.hideBrandName ? 'none' : '';
       els.title.textContent = t(page.content?.title, 'Work with us');
       els.description.textContent = t(page.content?.description, 'Join our restaurant team.');
       els.badge.textContent = t(page.content?.badge, 'Now hiring');
@@ -857,12 +877,23 @@ function renderApplyPage(page, options = {}) {
         els.logo.style.display = 'none';
       }
 
+      els.hero.classList.remove('is-empty');
       if (page.assets?.heroUrl) {
         const img = new Image();
         img.src = page.assets.heroUrl;
         img.alt = 'Photo';
         els.hero.innerHTML = '';
         els.hero.appendChild(img);
+      } else if (page.assets?.logoUrl) {
+        const mark = new Image();
+        mark.src = page.assets.logoUrl;
+        mark.alt = '';
+        mark.className = 'hero-mark';
+        els.hero.innerHTML = '';
+        els.hero.classList.add('is-empty');
+        els.hero.appendChild(mark);
+      } else {
+        els.hero.classList.add('is-empty');
       }
 
       els.gallery.innerHTML = '';
@@ -1021,6 +1052,26 @@ function renderApplyPage(page, options = {}) {
       return wrapper;
     }
 
+    // Built-in on every application page: "¿Alguien te refirió?" + referrer name when yes.
+    function buildReferralField() {
+      const wrapper = buildInputField('referred', t({ es: '¿Alguien te refirió?', en: 'Did someone refer you?' }, 'Did someone refer you?'), 'yesno', true);
+      wrapper.className = 'field-span';
+      const nameWrap = buildInputField('referred_by', t({ es: '¿Quién te refirió? (nombre)', en: 'Who referred you? (name)' }, 'Who referred you? (name)'), 'text', true);
+      nameWrap.style.marginTop = '10px';
+      const nameInput = nameWrap.querySelector('input');
+      const sync = () => {
+        const isYes = wrapper.querySelector('input[name="referred"]:checked')?.value === 'yes';
+        nameWrap.hidden = !isYes;
+        nameInput.required = isYes;
+        if (!isYes) nameInput.value = '';
+      };
+      wrapper.querySelectorAll('input[name="referred"]').forEach((input) => input.addEventListener('change', sync));
+      wrapper.appendChild(nameWrap);
+      if (els.form) els.form.addEventListener('reset', () => setTimeout(sync, 0));
+      sync();
+      return wrapper;
+    }
+
     function readSelectedLocations() {
       return Array.from(document.querySelectorAll('input[name="locations"]:checked'))
         .map((input) => input.value)
@@ -1139,6 +1190,8 @@ function renderApplyPage(page, options = {}) {
           els.baseFields.appendChild(roleWrap);
         }
       }
+
+      els.baseFields.appendChild(buildReferralField());
 
       const questions = Array.isArray(page.questions) ? page.questions : [];
       questions.forEach((q) => {
@@ -1291,7 +1344,16 @@ function renderApplyPage(page, options = {}) {
           throw new Error(t({ es: 'Tenés que aceptar los términos de contacto', en: 'You must accept the contact terms' }, 'You must accept the contact terms'));
         }
 
-        const answers = {};
+        const referred = document.querySelector('input[name="referred"]:checked')?.value || '';
+        const referredBy = referred === 'yes' ? (document.getElementById('referred_by')?.value?.trim() || '') : '';
+        if (!referred) {
+          throw new Error(t({ es: 'Contanos si alguien te refirió', en: 'Tell us if someone referred you' }, 'Tell us if someone referred you'));
+        }
+        if (referred === 'yes' && !referredBy) {
+          throw new Error(t({ es: 'Escribí el nombre de quien te refirió', en: 'Enter the name of who referred you' }, 'Enter the name of who referred you'));
+        }
+
+        const answers = { __referred: referred, __referred_by: referredBy };
         (page.questions || []).forEach((q) => {
           if (q.type === 'yesno') {
             const selector = 'input[name="' + q.id + '"]:checked';
@@ -1454,6 +1516,33 @@ function renderAdminPage(options = {}) {
     .app-table td.answers { white-space: pre-wrap; min-width: 240px; }
     .app-table td.meta { color: var(--muted); font-size: 12px; }
     .status { font-weight: 600; }
+    /* ==== UI refresh 2026-10 (appearance + small-screen layout only) ==== */
+    :root {
+      --bg: #f5f7f8;
+      --text: #0f1a1f;
+      --muted: #52606a;
+      --border: #dde3e6;
+      --shadow: 0 1px 2px rgba(15, 26, 31, 0.05), 0 4px 14px rgba(15, 26, 31, 0.05);
+    }
+    body { line-height: 1.45; -webkit-font-smoothing: antialiased; }
+    header { box-shadow: none; border-bottom: 1px solid var(--border); flex-wrap: wrap; position: sticky; top: 0; z-index: 5; }
+    .panel { border: 1px solid var(--border); }
+    .list button { min-height: 44px; background: #fff; border-color: var(--border); }
+    .list button:hover { border-color: #c3cdd2; }
+    .btn { min-height: 40px; border-radius: 8px; }
+    .btn.primary:hover { filter: brightness(0.92); }
+    input, textarea, select, .token-row input { border-color: #c3cdd2; border-radius: 8px; }
+    input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(38, 70, 83, 0.18); }
+    .question, .table-wrap { border-color: var(--border); }
+    .app-table th { background: #f7f9fa; position: sticky; top: 0; }
+    .app-table tbody tr:hover td { background: #f7f9fa; }
+    @media (max-width: 900px) {
+      header { padding: 14px 16px; }
+      .token-row { width: 100%; flex-wrap: wrap; }
+      .token-row input { flex: 1; width: auto; min-width: 0; }
+      .wrap { grid-template-columns: 1fr; padding: 14px; }
+      input, textarea, select { font-size: 16px; }
+    }
   </style>
 </head>
 <body>
@@ -1864,8 +1953,12 @@ function renderAdminPage(options = {}) {
 
     function buildAnswerText(app) {
       const page = findPageBySlug(app.slug);
-      if (!page || !Array.isArray(page.questions) || !app.answers) return '';
-      return page.questions
+      if (!app.answers) return '';
+      const referral = app.answers.__referred === 'yes'
+        ? ('Referido por: ' + (app.answers.__referred_by || '—'))
+        : (app.answers.__referred === 'no' ? 'Referido: No' : '');
+      if (!page || !Array.isArray(page.questions)) return referral;
+      return [referral].concat(page.questions
         .map((q) => {
           const key = q && q.id ? q.id : '';
           if (!key) return '';
@@ -1873,9 +1966,9 @@ function renderAdminPage(options = {}) {
           if (!val) return '';
           const label = (q.label && (q.label.es || q.label.en)) || key;
           return label + ': ' + val;
-        })
+        }))
         .filter(Boolean)
-        .join('\n');
+        .join('\\n');
     }
 
     function addTextCell(row, text, className) {

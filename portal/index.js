@@ -168,6 +168,11 @@ function buildCvText(app, page) {
     const labels = app.locations.map((loc) => loc.label || loc.key || "").filter(Boolean);
     if (labels.length) lines.push(`Locations: ${labels.join(", ")}`);
   }
+  if (app.answers?.__referred === "yes") {
+    lines.push(`Referred by: ${app.answers.__referred_by || "unknown"}`);
+  } else if (app.answers?.__referred === "no") {
+    lines.push("Referred by: nobody");
+  }
   if (page && Array.isArray(page.questions)) {
     lines.push("Answers:");
     page.questions.forEach((q) => {
@@ -517,6 +522,15 @@ function createPortalRouter(options = {}) {
       }
       if (roles.length) {
         answers.__roles = roles;
+      }
+      const referred = rawAnswers.__referred === "yes" ? "yes" : (rawAnswers.__referred === "no" ? "no" : "");
+      const referredBy = referred === "yes" ? String(rawAnswers.__referred_by || "").trim().slice(0, 120) : "";
+      if (referred === "yes" && !referredBy) {
+        return res.status(400).json({ error: "missing_referrer_name" });
+      }
+      if (referred) {
+        answers.__referred = referred;
+        answers.__referred_by = referredBy;
       }
       const langPref = body.lang === "en" ? "en" : "es";
       const customQuestion = buildPreferenceQuestion({ locations, roles, lang: langPref });
