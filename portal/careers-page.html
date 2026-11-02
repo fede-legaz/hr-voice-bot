@@ -869,6 +869,8 @@
     // Resized copies through an image CDN; the original URL is the fallback if the CDN fails.
     function imgUrl(url, w) {
       if (!url) return '';
+      // Same-origin assets are already small; the image CDN can only fetch absolute public URLs.
+      if (!/^https?:\/\//i.test(url)) return url;
       return 'https://wsrv.nl/?url=' + encodeURIComponent(url) + '&w=' + w + '&output=webp&q=76&we';
     }
     function imgTag(url, w, alt, extra) {

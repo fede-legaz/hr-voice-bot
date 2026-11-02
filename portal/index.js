@@ -866,6 +866,9 @@ function createPortalRouter(options = {}) {
     return res.type("text/html").send(renderCareersPage(payload));
   }
 
+  // Brand assets that live in the repo (e.g. the Yes! logo) rather than in uploaded portal pages.
+  router.use("/careers/assets", express.static(path.join(__dirname, "assets"), { maxAge: "7d", fallthrough: false }));
+
   router.get(["/careers", "/trabaja", "/jobs"], (req, res) => {
     sendCareersPage(req, res).catch((err) => {
       logger.error("[portal] careers page failed", err?.message || err);

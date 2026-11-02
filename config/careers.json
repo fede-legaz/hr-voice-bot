@@ -12,7 +12,7 @@
     "es": "Postulate una sola vez y elegí en qué locales y en qué puestos querés trabajar. Te contactamos rápido, en español o en inglés.",
     "en": "Apply once and choose which restaurants and positions you want. We reach out fast, in English or Spanish."
   },
-  "logoUrl": "https://hrbot-files.nyc3.digitaloceanspaces.com/portal-assets/yes-cafe/Yes_CAFE_Logo_Redondo_para_stickers_transparentes4.png",
+  "logoUrl": "/careers/assets/yes-logo.png",
   "benefits": [
     {
       "icon": "meal",
@@ -74,7 +74,8 @@
       "address": "601 71st St, Miami Beach, FL 33141",
       "lat": 25.8561681,
       "lng": -80.1243119,
-      "color": "#e3066a"
+      "color": "#e3066a",
+      "badgeUrl": "/careers/assets/yes-logo.png"
     },
     {
       "key": "mexi",
@@ -103,7 +104,8 @@
       "address": "731 NE 79th St, Miami, FL 33138",
       "lat": 25.8482207,
       "lng": -80.1815773,
-      "color": "#c2185b"
+      "color": "#c2185b",
+      "badgeUrl": "/careers/assets/yes-logo.png"
     }
   ]
 }
