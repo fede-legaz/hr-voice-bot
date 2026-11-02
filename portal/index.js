@@ -789,6 +789,8 @@ function createPortalRouter(options = {}) {
       const page = await getPageCached(slug);
       if (!page || page.active === false) continue;
       const key = String(loc.key).trim();
+      // Locations switched off with "Portal de empleo" in the admin brand card stay off the portal.
+      if (roleConfig?.[key]?._meta?.portalHidden === true) continue;
       const pageLocations = Array.isArray(page.fields?.locations?.options) ? page.fields.locations.options : [];
       const pageLoc = pageLocations.find((opt) => opt && careersOptionValue(opt) === key) || null;
       const byLocation = page.fields?.roleByLocation?.[key];
@@ -800,6 +802,8 @@ function createPortalRouter(options = {}) {
         const value = careersOptionValue(opt);
         if (!value || roles.some((r) => r.value === value)) return;
         const cfg = findRoleConfigEntry(roleConfig, key, value) || {};
+        // Closed roles are left out, which also makes /careers/submit reject them.
+        if (cfg.portalClosed === true) return;
         const reqEs = splitRequirementLines(cfg.portalRequirements?.es);
         const reqEn = splitRequirementLines(cfg.portalRequirements?.en);
         roles.push({

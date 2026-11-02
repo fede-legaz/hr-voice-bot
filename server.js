@@ -19570,6 +19570,13 @@ app.get("/admin/ui", (req, res) => {
                 <span class="small">Visible en menú lateral y filtros.</span>
               </div>
             </div>
+            <div>
+              <label>Portal de empleo</label>
+              <div class="check-row">
+                <input type="checkbox" class="brand-portal-visible" checked />
+                <span class="small">Mostrar este local en yesjobs.us/careers.</span>
+              </div>
+            </div>
           </div>
           <div class="logo-row">
             <label>Logo</label>
@@ -19693,7 +19700,8 @@ app.get("/admin/ui", (req, res) => {
           <div class="inline">
             <span class="pill" style="background:\${data.englishRequired ? '#e4f1f2' : '#f3f0ea'}; color:\${data.englishRequired ? '#0f5563' : '#6a6f6b'};">EN</span>
             <span class="pill" style="background:\${data.physical ? '#f6dfd5' : '#f3f0ea'}; color:\${data.physical ? '#8a3f25' : '#6a6f6b'};">Físico</span>
-            \${data.portalUrgent ? '<span class="pill" style="background:#fde2e4; color:#b42318; font-weight:700;">URGENTE</span>' : ''}
+            \${data.portalClosed ? '<span class="pill" style="background:#ecebe8; color:#6a6f6b;">Cerrado en portal</span>' : ''}
+            \${data.portalUrgent && !data.portalClosed ? '<span class="pill" style="background:#fde2e4; color:#b42318; font-weight:700;">URGENTE</span>' : ''}
             <button class="secondary remove-role" type="button">✕</button>
           </div>
         </div>
@@ -19713,6 +19721,7 @@ app.get("/admin/ui", (req, res) => {
             <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
             <label><input type="checkbox" class="chk-english" \${data.englishRequired ? 'checked' : ''} /> Requiere inglés</label>
             <label><input type="checkbox" class="chk-physical" \${data.physical ? 'checked' : ''} /> Rol físico</label>
+            <label><input type="checkbox" class="chk-portal-open" \${data.portalClosed ? '' : 'checked'} /> Abierto en el portal de empleo</label>
             <label><input type="checkbox" class="chk-portal-urgent" \${data.portalUrgent ? 'checked' : ''} /> URGENTE en el portal de empleo</label>
           </div>
           <div class="grid">
@@ -23496,6 +23505,8 @@ app.get("/admin/ui", (req, res) => {
           if (groupEl) groupEl.value = metaB.group || '';
           const visibleEl = bCard.querySelector('.brand-visible');
           if (visibleEl) visibleEl.checked = !metaB.hidden;
+          const portalVisibleEl = bCard.querySelector('.brand-portal-visible');
+          if (portalVisibleEl) portalVisibleEl.checked = metaB.portalHidden !== true;
           setLogoPreview(bCard, metaB.logo || '');
           if (typeof bCard._updateLabels === "function") bCard._updateLabels();
           const rolesBox = bCard.querySelector('.roles');
@@ -23632,6 +23643,7 @@ app.get("/admin/ui", (req, res) => {
           address: (bCard.querySelector('.brand-address').value || '').trim(),
           logo: (bCard.querySelector('.brand-logo').value || '').trim(),
           hidden: bCard.querySelector('.brand-visible')?.checked === false,
+          portalHidden: bCard.querySelector('.brand-portal-visible')?.checked === false,
           group: (bCard.querySelector('.brand-group')?.value || '').trim(),
           aliases: (bCard.querySelector('.brand-aliases').value || '')
             .split(',')
@@ -23653,6 +23665,7 @@ app.get("/admin/ui", (req, res) => {
             englishRequired: rCard.querySelector('.chk-english').checked,
             physical: rCard.querySelector('.chk-physical').checked,
             portalUrgent: !!rCard.querySelector('.chk-portal-urgent')?.checked,
+            portalClosed: rCard.querySelector('.chk-portal-open')?.checked === false,
             portalRequirements: {
               es: (rCard.querySelector('.role-portal-req-es')?.value || '').trim(),
               en: (rCard.querySelector('.role-portal-req-en')?.value || '').trim()

@@ -961,11 +961,18 @@
         '<div class="stat"><b>' + uniqueRoleCount() + '</b><span>' + esc(T('statRoles')) + '</span></div>' +
         '<div class="stat"><b>ES/EN</b><span>' + esc(T('statLang')) + '</span></div>';
 
-      var picks = teams.filter(function (t) { return t.photos.length; }).slice(0, 3);
+      // Three tiles, one brand each first; with fewer brands (e.g. a location switched off) reuse more of their photos.
+      var picks = [];
+      var maxPhotos = 0;
+      teams.forEach(function (t) { maxPhotos = Math.max(maxPhotos, t.photos.length); });
+      for (var pi = 0; pi < maxPhotos && picks.length < 3; pi += 1) {
+        teams.forEach(function (t) { if (t.photos[pi] && picks.length < 3) picks.push({ team: t, photo: t.photos[pi] }); });
+      }
       var mosaic = document.getElementById('mosaic');
       var m = '';
-      picks.forEach(function (team, idx) {
-        m += '<figure>' + imgTag(team.photos[0], idx === 0 ? 900 : 640, team.brand, idx === 0 ? ' fetchpriority="high" loading="eager"' : '') +
+      picks.forEach(function (pick, idx) {
+        var team = pick.team;
+        m += '<figure>' + imgTag(pick.photo, idx === 0 ? 900 : 640, team.brand, idx === 0 ? ' fetchpriority="high" loading="eager"' : '') +
           '<span class="tag">' + logoImg(team, 80) + esc(team.brand) + '</span></figure>';
       });
       m += '<div class="float-card"><span class="ico"><svg class="icon"><use href="#i-check"/></svg></span><div><b>' + esc(T('floatTitle')) + '</b><span>' + esc(T('floatSub')) + '</span></div></div>';
