@@ -290,6 +290,7 @@ function createPortalRouter(options = {}) {
   const screeningDelayMs = Math.max(0, Number(options.screeningDelayMs ?? SCREENING_CALL_DELAY_MS) || 0);
   const pendingScreening = new Map();
   const careersConfigPath = options.careersConfigPath || path.join(__dirname, "..", "config", "careers.json");
+  const getRoleConfig = typeof options.getRoleConfig === "function" ? options.getRoleConfig : () => null;
 
   function purgePendingScreening() {
     const now = Date.now();
@@ -739,10 +740,42 @@ function createPortalRouter(options = {}) {
     return { es: src.es || src.en || value, en: src.en || src.es || value };
   }
 
+  function normalizeRoleKey(value) {
+    return String(value || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  }
+
+  // Finds the interview-config entry (roles_config[brand][role]) for a portal role, matching key, display name or alias.
+  function findRoleConfigEntry(roleConfig, brandKey, roleValue) {
+    const brand = roleConfig && typeof roleConfig === "object" ? roleConfig[brandKey] : null;
+    if (!brand || typeof brand !== "object") return null;
+    const target = normalizeRoleKey(roleValue);
+    if (!target) return null;
+    for (const [key, entry] of Object.entries(brand)) {
+      if (key === "_meta" || !entry || typeof entry !== "object") continue;
+      const names = [key, entry.displayName, ...(Array.isArray(entry.aliases) ? entry.aliases : [])].map(normalizeRoleKey);
+      if (names.includes(target)) return entry;
+    }
+    return null;
+  }
+
+  function splitRequirementLines(value) {
+    return String(value || "")
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^[\s\-•·*]+/, "").trim())
+      .filter(Boolean)
+      .slice(0, 8);
+  }
+
   // Builds the multi-location portal data from config/careers.json plus each brand's live portal page.
   async function buildCareersPayload() {
     const config = loadCareersConfig();
     if (!config || !Array.isArray(config.locations)) return null;
+    const roleConfig = getRoleConfig();
     const pageCache = new Map();
     const getPageCached = async (slug) => {
       if (!pageCache.has(slug)) pageCache.set(slug, await store.getPage(slug));
@@ -766,7 +799,17 @@ function createPortalRouter(options = {}) {
       roleList.forEach((opt) => {
         const value = careersOptionValue(opt);
         if (!value || roles.some((r) => r.value === value)) return;
-        roles.push({ value, label: careersOptionLabel(opt) });
+        const cfg = findRoleConfigEntry(roleConfig, key, value) || {};
+        const reqEs = splitRequirementLines(cfg.portalRequirements?.es);
+        const reqEn = splitRequirementLines(cfg.portalRequirements?.en);
+        roles.push({
+          value,
+          label: careersOptionLabel(opt),
+          urgent: cfg.portalUrgent === true,
+          english: typeof cfg.englishRequired === "boolean" ? cfg.englishRequired : null,
+          physical: cfg.physical === true,
+          requirements: { es: reqEs.length ? reqEs : reqEn, en: reqEn.length ? reqEn : reqEs }
+        });
       });
       if (!roles.length) continue;
       const gallery = Array.isArray(page.assets?.gallery) ? page.assets.gallery.filter(Boolean) : [];

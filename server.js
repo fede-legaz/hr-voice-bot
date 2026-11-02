@@ -6642,7 +6642,8 @@ const portalRouter = createPortalRouter({
     return cvEntry;
   },
   notifyOnApplication: (payload) => notifyPortalApplication(payload),
-  placeScreeningCall: (payload) => placeOutboundCall(payload)
+  placeScreeningCall: (payload) => placeOutboundCall(payload),
+  getRoleConfig: () => roleConfig
 });
 app.use("/", portalRouter);
 
@@ -19692,6 +19693,7 @@ app.get("/admin/ui", (req, res) => {
           <div class="inline">
             <span class="pill" style="background:\${data.englishRequired ? '#e4f1f2' : '#f3f0ea'}; color:\${data.englishRequired ? '#0f5563' : '#6a6f6b'};">EN</span>
             <span class="pill" style="background:\${data.physical ? '#f6dfd5' : '#f3f0ea'}; color:\${data.physical ? '#8a3f25' : '#6a6f6b'};">Físico</span>
+            \${data.portalUrgent ? '<span class="pill" style="background:#fde2e4; color:#b42318; font-weight:700;">URGENTE</span>' : ''}
             <button class="secondary remove-role" type="button">✕</button>
           </div>
         </div>
@@ -19711,7 +19713,19 @@ app.get("/admin/ui", (req, res) => {
             <label><input type="checkbox" class="chk-active" \${data.active === false ? '' : 'checked'} /> Activo</label>
             <label><input type="checkbox" class="chk-english" \${data.englishRequired ? 'checked' : ''} /> Requiere inglés</label>
             <label><input type="checkbox" class="chk-physical" \${data.physical ? 'checked' : ''} /> Rol físico</label>
+            <label><input type="checkbox" class="chk-portal-urgent" \${data.portalUrgent ? 'checked' : ''} /> URGENTE en el portal de empleo</label>
           </div>
+          <div class="grid">
+            <div>
+              <label>Requisitos en el portal (ES)</label>
+              <textarea class="role-portal-req-es" placeholder="Uno por línea. Ej: Experiencia en línea de cocina">\${data.portalRequirements?.es || ''}</textarea>
+            </div>
+            <div>
+              <label>Requisitos en el portal (EN)</label>
+              <textarea class="role-portal-req-en" placeholder="One per line. Ex: Line cook experience">\${data.portalRequirements?.en || ''}</textarea>
+            </div>
+          </div>
+          <div class="small">Se muestran a los candidatos en yesjobs.us/careers, junto con "Requiere inglés" y "Rol físico".</div>
           <div>
             <label>Aliases (coma separados)</label>
             <input type="text" class="role-aliases" value="\${aliases}" placeholder="cajero, cashier, front" />
@@ -23638,6 +23652,11 @@ app.get("/admin/ui", (req, res) => {
             active: rCard.querySelector('.chk-active').checked,
             englishRequired: rCard.querySelector('.chk-english').checked,
             physical: rCard.querySelector('.chk-physical').checked,
+            portalUrgent: !!rCard.querySelector('.chk-portal-urgent')?.checked,
+            portalRequirements: {
+              es: (rCard.querySelector('.role-portal-req-es')?.value || '').trim(),
+              en: (rCard.querySelector('.role-portal-req-en')?.value || '').trim()
+            },
             aliases,
             displayName: (rCard.querySelector('.role-display').value || '').trim(),
             notes: (rCard.querySelector('.role-notes').value || '').trim(),
@@ -26803,7 +26822,9 @@ app.get("/admin/ui", (req, res) => {
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
         const sourceLabel = (item.source || '').toString().trim();
-        addCell(sourceLabel || '—', 'Fuente', 'cell-compact', sourceLabel);
+        // Applications from the multi-location portal (/careers) carry "portal:<brand>:careers".
+        const sourceText = /^portal:[^:]+:careers$/i.test(sourceLabel) ? 'Portal multi-local' : sourceLabel;
+        addCell(sourceText || '—', 'Fuente', 'cell-compact', sourceLabel);
         const phoneTd = document.createElement('td');
         phoneTd.dataset.label = 'Teléfono';
         phoneTd.appendChild(buildPhoneCellContent(item));
