@@ -1,0 +1,1519 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>__PAGE_TITLE__</title>
+  <meta name="description" content="__PAGE_DESCRIPTION__" />
+  <meta property="og:title" content="__PAGE_TITLE__" />
+  <meta property="og:description" content="__PAGE_DESCRIPTION__" />
+  <meta name="theme-color" content="#fbf7f1" />
+  <link rel="icon" href="__FAVICON_URL__" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://wsrv.nl" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #fbf7f1;
+      --bg-soft: #f4ece1;
+      --card: #ffffff;
+      --ink: #1d1712;
+      --ink-2: #3a312a;
+      --muted: #6f645b;
+      --line: rgba(29, 23, 18, 0.10);
+      --line-strong: rgba(29, 23, 18, 0.18);
+      --accent: #e3066a;
+      --accent-soft: rgba(227, 6, 106, 0.08);
+      --accent-ring: rgba(227, 6, 106, 0.22);
+      --ok: #12805c;
+      --err: #b42318;
+      --radius: 22px;
+      --shadow-sm: 0 1px 2px rgba(29, 23, 18, 0.06), 0 4px 14px rgba(29, 23, 18, 0.05);
+      --shadow: 0 2px 6px rgba(29, 23, 18, 0.05), 0 18px 44px rgba(29, 23, 18, 0.10);
+      --font-head: 'Fraunces', Georgia, serif;
+      --font-body: 'Manrope', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --header-h: 64px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: calc(var(--header-h) + 12px); -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--font-body);
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+    img { display: block; max-width: 100%; }
+    button, input { font: inherit; color: inherit; }
+    a { color: inherit; }
+    .wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 24px; }
+    .icon { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* Header */
+    .topbar {
+      position: sticky; top: 0; z-index: 1500;
+      height: var(--header-h);
+      background: rgba(251, 247, 241, 0.86);
+      backdrop-filter: saturate(1.4) blur(14px);
+      -webkit-backdrop-filter: saturate(1.4) blur(14px);
+      border-bottom: 1px solid transparent;
+      transition: border-color .2s ease;
+    }
+    .topbar.scrolled { border-bottom-color: var(--line); }
+    .topbar .wrap { height: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .brandmark { display: flex; align-items: center; gap: 10px; text-decoration: none; min-width: 0; }
+    .brandmark img { width: 38px; height: 38px; border-radius: 50%; background: #fff; object-fit: contain; padding: 3px; box-shadow: var(--shadow-sm); }
+    .brandmark b { font-family: var(--font-head); font-weight: 600; font-size: 19px; letter-spacing: -0.01em; white-space: nowrap; }
+    .brandmark span { color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; }
+    .topbar-actions { display: flex; align-items: center; gap: 10px; }
+    .lang { display: inline-flex; padding: 3px; border-radius: 999px; background: var(--bg-soft); border: 1px solid var(--line); }
+    .lang button { border: 0; background: none; padding: 6px 11px; border-radius: 999px; font-size: 12px; font-weight: 800; letter-spacing: .04em; color: var(--muted); cursor: pointer; }
+    .lang button.active { background: var(--card); color: var(--ink); box-shadow: var(--shadow-sm); }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      border: 1px solid transparent; border-radius: 999px;
+      padding: 13px 22px; font-weight: 700; font-size: 15px; text-decoration: none;
+      cursor: pointer; transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+      white-space: nowrap;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-dark { background: var(--ink); color: #fff; box-shadow: 0 8px 22px rgba(29,23,18,.22); }
+    .btn-dark:hover { background: #000; }
+    .btn-accent { background: var(--accent); color: #fff; box-shadow: 0 10px 24px rgba(227,6,106,.28); }
+    .btn-accent:hover { background: #c9055e; }
+    .btn-ghost { background: var(--card); color: var(--ink); border-color: var(--line-strong); }
+    .btn-ghost:hover { border-color: var(--ink); }
+    .btn-sm { padding: 9px 15px; font-size: 13.5px; }
+    .btn .icon { width: 18px; height: 18px; }
+
+    /* Hero */
+    .hero { padding: 48px 0 72px; }
+    .hero .wrap { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr); gap: 56px; align-items: center; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 9px;
+      padding: 7px 14px 7px 11px; border-radius: 999px;
+      background: var(--card); border: 1px solid var(--line);
+      font-size: 13px; font-weight: 700; color: var(--ink-2); box-shadow: var(--shadow-sm);
+    }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; box-shadow: 0 0 0 0 rgba(22,163,74,.5); animation: pulse 2s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(22,163,74,.45); } 70% { box-shadow: 0 0 0 9px rgba(22,163,74,0); } 100% { box-shadow: 0 0 0 0 rgba(22,163,74,0); } }
+    h1 {
+      font-family: var(--font-head); font-weight: 600;
+      font-size: clamp(40px, 5.6vw, 68px); line-height: 1.02; letter-spacing: -0.025em;
+      margin: 22px 0 18px; text-wrap: balance;
+    }
+    h1 em { font-style: italic; color: var(--accent); font-weight: 500; }
+    .lead { font-size: 18px; color: var(--muted); max-width: 520px; margin: 0 0 28px; text-wrap: pretty; }
+    .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+    .hero-logos { display: flex; align-items: center; gap: 14px; margin-top: 36px; flex-wrap: wrap; }
+    .hero-logos .logo-dot { width: 56px; height: 56px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-sm); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .hero-logos .logo-dot img { width: 78%; height: 78%; object-fit: contain; }
+    .stats { display: flex; gap: 30px; margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); max-width: 460px; }
+    .stat b { display: block; font-family: var(--font-head); font-size: 26px; line-height: 1; font-weight: 600; }
+    .stat span { font-size: 12.5px; color: var(--muted); font-weight: 600; }
+
+    .mosaic { position: relative; display: grid; grid-template-columns: 1.15fr 1fr; grid-template-rows: 1fr 1fr; gap: 14px; height: 560px; }
+    .mosaic figure { margin: 0; position: relative; border-radius: 26px; overflow: hidden; background: var(--bg-soft); box-shadow: var(--shadow); }
+    .mosaic figure:first-child { grid-row: span 2; }
+    .mosaic img { width: 100%; height: 100%; object-fit: cover; transition: transform .8s ease; }
+    .mosaic figure:hover img { transform: scale(1.04); }
+    .tag {
+      position: absolute; left: 12px; bottom: 12px;
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 12px 5px 5px; border-radius: 999px;
+      background: rgba(255,255,255,.94); backdrop-filter: blur(6px);
+      font-size: 12.5px; font-weight: 700; box-shadow: var(--shadow-sm);
+      white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis;
+    }
+    .tag img { width: 26px; height: 26px; border-radius: 50%; object-fit: contain; background: #fff; }
+    .float-card {
+      position: absolute; left: -28px; top: 34px; z-index: 2;
+      background: var(--card); border-radius: 18px; padding: 14px 16px; box-shadow: var(--shadow);
+      display: flex; align-items: center; gap: 12px; max-width: 270px;
+    }
+    .float-card .ico { width: 40px; height: 40px; border-radius: 12px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; flex: none; }
+    .float-card b { display: block; font-size: 14px; }
+    .float-card span { font-size: 12.5px; color: var(--muted); }
+
+    /* Sections */
+    section.block { padding: 84px 0; }
+    section.block.alt { background: var(--card); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 34px; flex-wrap: wrap; }
+    .kicker { font-size: 12.5px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin: 0 0 10px; }
+    h2 { font-family: var(--font-head); font-weight: 600; font-size: clamp(30px, 3.6vw, 44px); line-height: 1.08; letter-spacing: -0.02em; margin: 0; text-wrap: balance; }
+    .section-head p.sub { margin: 10px 0 0; color: var(--muted); font-size: 16.5px; max-width: 560px; }
+
+    /* Locations */
+    .loc-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+    .map-shell { isolation: isolate; position: sticky; top: calc(var(--header-h) + 20px); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--line); background: #e8e4dc; }
+    #map { height: 600px; width: 100%; }
+    .map-shell .leaflet-tile-pane { filter: saturate(0.55) contrast(0.96) brightness(1.04); }
+    .map-shell img.leaflet-tile { width: 256.5px !important; height: 256.5px !important; mix-blend-mode: normal !important; }
+    .leaflet-container { font-family: var(--font-body); background: #e8e4dc; }
+    .leaflet-control-attribution { font-size: 10px; background: rgba(255,255,255,.75) !important; }
+    .leaflet-bar { border: 0 !important; box-shadow: var(--shadow-sm) !important; border-radius: 12px !important; overflow: hidden; }
+    .leaflet-bar a { width: 34px !important; height: 34px !important; line-height: 34px !important; color: var(--ink) !important; }
+    .pin-icon { background: none; border: 0; overflow: visible; }
+    .pin { position: absolute; left: 0; top: 0; --b: 52px; --bx: 0px; --by: -40px; --len: 14px; --ang: 180deg; --c: var(--accent); cursor: pointer; }
+    .pin-dot { position: absolute; left: -6px; top: -6px; width: 12px; height: 12px; border-radius: 50%; background: var(--c); border: 2.5px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.3); }
+    .pin-stem { position: absolute; left: -1px; top: 0; width: 2px; height: var(--len); background: var(--c); transform-origin: 1px 0; transform: rotate(var(--ang)); }
+    .pin-bubble {
+      position: absolute; left: calc(var(--bx) - var(--b) / 2); top: calc(var(--by) - var(--b) / 2);
+      width: var(--b); height: var(--b); border-radius: 50%; background: #fff;
+      border: 3px solid var(--c); box-shadow: 0 6px 16px rgba(0,0,0,.22);
+      display: flex; align-items: center; justify-content: center; overflow: hidden;
+      transition: transform .2s ease; transform-origin: 50% 50%;
+    }
+    .pin-bubble img { width: 82%; height: 82%; object-fit: contain; }
+    .pin-bubble img.lg-round, .loc-logo img.lg-round, .logo-dot img.lg-round { width: 100%; height: 100%; object-fit: cover; }
+    .tag img.lg-round, .filter img.lg-round { object-fit: cover; padding: 0; }
+    .pin.active .pin-bubble, .pin:hover .pin-bubble { transform: scale(1.14); }
+    .leaflet-popup-content-wrapper { border-radius: 16px; box-shadow: var(--shadow); padding: 0; }
+    .leaflet-popup-content { margin: 14px 16px; min-width: 210px; font-size: 13.5px; line-height: 1.4; }
+    .pop b { display: block; font-size: 15px; margin-bottom: 2px; }
+    .pop span { color: var(--muted); display: block; margin-bottom: 10px; }
+    .pop .pop-actions { display: flex; gap: 8px; }
+    .pop .btn { padding: 8px 12px; font-size: 12.5px; }
+    .leaflet-container a.btn-accent { color: #fff; }
+    .leaflet-container a.btn-ghost { color: var(--ink); }
+
+    .loc-list { display: grid; gap: 14px; }
+    .loc-card {
+      display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 16px;
+      background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+      padding: 12px; box-shadow: var(--shadow-sm);
+      transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+    }
+    .loc-card:hover, .loc-card.active { border-color: color-mix(in srgb, var(--c) 55%, transparent); box-shadow: var(--shadow); transform: translateY(-2px); }
+    .loc-photo { position: relative; border-radius: 15px; overflow: hidden; background: var(--bg-soft); min-height: 150px; }
+    .loc-photo > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .loc-body { padding: 4px 4px 2px 0; display: flex; flex-direction: column; min-width: 0; }
+    .loc-title { display: flex; align-items: center; gap: 10px; }
+    .loc-logo { width: 38px; height: 38px; border-radius: 50%; background: #fff; border: 2px solid var(--c); display: flex; align-items: center; justify-content: center; overflow: hidden; flex: none; }
+    .loc-logo img { width: 80%; height: 80%; object-fit: contain; }
+    .loc-title h3 { margin: 0; font-size: 17px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; }
+    .loc-title small { display: block; color: var(--muted); font-size: 13px; font-weight: 600; }
+    .loc-addr { display: flex; gap: 6px; align-items: flex-start; color: var(--ink-2); font-size: 13.5px; margin: 10px 0 10px; }
+    .loc-addr .icon { width: 16px; height: 16px; margin-top: 2px; color: var(--c); }
+    .roles-mini { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .rchip { font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: var(--bg-soft); color: var(--ink-2); }
+    .loc-actions { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+    .link-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; font-weight: 700; color: var(--ink-2); text-decoration: none; padding: 9px 6px; }
+    .link-btn:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+    .link-btn .icon { width: 16px; height: 16px; }
+
+    /* Teams gallery */
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; }
+    .filter {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 7px 14px 7px 7px; border-radius: 999px; border: 1px solid var(--line-strong);
+      background: var(--card); font-weight: 700; font-size: 13.5px; cursor: pointer; transition: all .15s ease;
+    }
+    .filter.no-logo { padding-left: 14px; }
+    .filter img { width: 26px; height: 26px; border-radius: 50%; object-fit: contain; background: #fff; border: 1px solid var(--line); }
+    .filter.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 250px; grid-auto-flow: dense; gap: 14px; }
+    .shot {
+      position: relative; border-radius: 20px; overflow: hidden;
+      background: var(--bg-soft); cursor: zoom-in; display: block; width: 100%; height: 100%; border: 0; padding: 0;
+    }
+    .shot.tall { grid-row: span 2; }
+    .shot > img { width: 100%; height: 100%; object-fit: cover; transition: transform .6s ease; }
+    .shot:hover > img { transform: scale(1.035); }
+    .shot.hide { display: none; }
+
+    .lightbox { position: fixed; inset: 0; z-index: 3000; background: rgba(15, 12, 10, .92); display: none; align-items: center; justify-content: center; padding: 24px; }
+    .lightbox.open { display: flex; }
+    .lightbox img { max-width: min(1100px, 100%); max-height: 86vh; border-radius: 14px; object-fit: contain; box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+    .lb-btn { position: absolute; width: 46px; height: 46px; border-radius: 50%; border: 0; background: rgba(255,255,255,.14); color: #fff; display: grid; place-items: center; cursor: pointer; }
+    .lb-btn:hover { background: rgba(255,255,255,.26); }
+    .lb-close { top: 18px; right: 18px; }
+    .lb-prev { left: 18px; top: 50%; transform: translateY(-50%); }
+    .lb-next { right: 18px; top: 50%; transform: translateY(-50%); }
+    .lb-caption { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); }
+
+    /* Benefits */
+    .benefits { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .benefit { background: var(--bg); border: 1px solid var(--line); border-radius: 18px; padding: 20px; display: flex; gap: 14px; align-items: center; }
+    .benefit .ico { width: 44px; height: 44px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); color: var(--accent); display: grid; place-items: center; flex: none; }
+    .benefit b { font-size: 15px; font-weight: 700; line-height: 1.35; }
+
+    /* Form */
+    .apply-grid { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 48px; align-items: start; }
+    .apply-aside { position: sticky; top: calc(var(--header-h) + 28px); }
+    .apply-aside .lead { font-size: 16.5px; margin-top: 14px; }
+    .steps-legend { display: grid; gap: 12px; margin-top: 26px; }
+    .steps-legend div { display: flex; gap: 12px; align-items: center; font-weight: 700; color: var(--ink-2); font-size: 14.5px; }
+    .steps-legend i { font-style: normal; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--card); border: 1px solid var(--line-strong); font-size: 13px; font-weight: 800; }
+    .steps-legend div.done i { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .form-card { background: var(--card); border: 1px solid var(--line); border-radius: 28px; box-shadow: var(--shadow); padding: 34px; }
+    .step + .step { margin-top: 34px; padding-top: 30px; border-top: 1px dashed var(--line-strong); }
+    .step-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 16px; }
+    .step-num { font-family: var(--font-head); font-weight: 600; color: var(--accent); font-size: 15px; }
+    .step-head h3 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
+    .step-head p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+
+    .pick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .pick {
+      position: relative; display: flex; align-items: center; gap: 12px; text-align: left;
+      padding: 12px 44px 12px 12px; border-radius: 16px; border: 1.5px solid var(--line-strong);
+      background: var(--card); cursor: pointer; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+    }
+    .pick:hover { border-color: var(--ink-2); }
+    .pick .loc-logo { width: 44px; height: 44px; }
+    .pick b { display: block; font-size: 14.5px; line-height: 1.25; }
+    .pick small { display: block; color: var(--muted); font-size: 12.5px; font-weight: 600; }
+    .check {
+      position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+      width: 24px; height: 24px; border-radius: 50%; border: 1.5px solid var(--line-strong);
+      display: grid; place-items: center; color: transparent; transition: all .15s ease; background: #fff;
+    }
+    .check .icon { width: 14px; height: 14px; stroke-width: 3; }
+    .pick.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 6%, #fff); box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 16%, transparent); }
+    .pick.on .check { background: var(--c); border-color: var(--c); color: #fff; }
+
+    .role-groups { display: grid; gap: 12px; }
+    .role-group { border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px 16px; background: var(--bg); animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .role-group-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .role-group-head .loc-logo { width: 32px; height: 32px; }
+    .role-group-head b { font-size: 14.5px; }
+    .role-group-head small { color: var(--muted); font-weight: 600; font-size: 12.5px; margin-left: auto; }
+    .role-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+    .role-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      border: 1.5px solid var(--line-strong); background: var(--card); border-radius: 999px;
+      padding: 9px 15px; font-weight: 700; font-size: 14px; cursor: pointer; transition: all .15s ease;
+    }
+    .role-pill .icon { width: 15px; height: 15px; stroke-width: 2.6; display: none; }
+    .role-pill:hover { border-color: var(--ink-2); }
+    .role-pill.on { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .role-pill.on .icon { display: block; }
+    .empty-hint { display: flex; gap: 10px; align-items: center; padding: 16px; border-radius: 16px; background: var(--bg); border: 1px dashed var(--line-strong); color: var(--muted); font-size: 14px; font-weight: 600; }
+
+    .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: grid; gap: 6px; }
+    .field.full { grid-column: 1 / -1; }
+    .field label, .field .label { font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
+    .field label .opt { color: var(--muted); font-weight: 600; }
+    .input {
+      width: 100%; min-height: 50px; padding: 12px 15px; border-radius: 14px;
+      border: 1.5px solid var(--line-strong); background: #fff; font-size: 16px;
+      transition: border-color .15s ease, box-shadow .15s ease; outline: none;
+    }
+    .input:focus { border-color: var(--ink); box-shadow: 0 0 0 4px rgba(29,23,18,.08); }
+    .input.invalid { border-color: var(--err); box-shadow: 0 0 0 4px rgba(180,35,24,.08); }
+    .yesno { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 360px; }
+    .yesno button { min-height: 48px; border-radius: 14px; border: 1.5px solid var(--line-strong); background: #fff; font-weight: 700; cursor: pointer; transition: all .15s ease; }
+    .yesno button:hover { border-color: var(--ink-2); }
+    .yesno button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .reveal { margin-top: 10px; }
+    .reveal[hidden] { display: none; }
+
+    .drop {
+      position: relative; display: flex; align-items: center; gap: 14px;
+      padding: 16px; border-radius: 16px; border: 1.5px dashed var(--line-strong); background: var(--bg);
+      cursor: pointer; transition: border-color .15s ease, background .15s ease;
+    }
+    .drop:hover, .drop.drag { border-color: var(--ink-2); background: #fff; }
+    .drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+    .drop .ico { width: 44px; height: 44px; border-radius: 12px; background: #fff; border: 1px solid var(--line); display: grid; place-items: center; flex: none; color: var(--ink-2); }
+    .drop b { display: block; font-size: 14.5px; }
+    .drop small { color: var(--muted); font-size: 12.5px; font-weight: 600; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .drop.filled { border-style: solid; border-color: var(--ok); background: rgba(18,128,92,.05); }
+    .drop.filled .ico { color: var(--ok); }
+    .drop.invalid { border-color: var(--err); }
+
+    .consent { display: flex; gap: 12px; align-items: flex-start; font-size: 13.5px; color: var(--muted); cursor: pointer; margin-top: 4px; }
+    .consent input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .consent .box { width: 22px; height: 22px; border-radius: 7px; border: 1.5px solid var(--line-strong); background: #fff; flex: none; display: grid; place-items: center; color: transparent; margin-top: 1px; transition: all .15s ease; }
+    .consent .box .icon { width: 14px; height: 14px; stroke-width: 3; }
+    .consent input:checked + .box { background: var(--ink); border-color: var(--ink); color: #fff; }
+    .consent input:focus-visible + .box { box-shadow: 0 0 0 4px rgba(29,23,18,.12); }
+    .consent.invalid .box { border-color: var(--err); }
+
+    .submit-row { margin-top: 26px; display: grid; gap: 12px; }
+    .submit-row .btn { width: 100%; padding: 17px 22px; font-size: 16px; }
+    .submit-row .btn[disabled] { opacity: .65; cursor: progress; }
+    .form-error { display: none; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: rgba(180,35,24,.07); color: var(--err); font-weight: 700; font-size: 14px; }
+    .form-error.show { display: flex; }
+    .form-error .icon { width: 18px; height: 18px; margin-top: 1px; }
+    .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid rgba(255,255,255,.35); border-top-color: #fff; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .success { display: none; text-align: left; }
+    .success.show { display: block; animation: fadeIn .35s ease; }
+    .success-badge { width: 60px; height: 60px; border-radius: 50%; background: rgba(18,128,92,.12); color: var(--ok); display: grid; place-items: center; margin-bottom: 18px; }
+    .success-badge .icon { width: 30px; height: 30px; stroke-width: 2.6; }
+    .success h3 { font-family: var(--font-head); font-weight: 600; font-size: 30px; line-height: 1.1; margin: 0 0 8px; letter-spacing: -0.015em; }
+    .success > p { color: var(--muted); margin: 0 0 22px; }
+    .applied-list { display: grid; gap: 8px; margin-bottom: 22px; }
+    .applied-item { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 14px; background: var(--bg); border: 1px solid var(--line); }
+    .applied-item .loc-logo { width: 36px; height: 36px; }
+    .applied-item b { display: block; font-size: 14px; }
+    .applied-item small { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+    .callout { border-radius: 20px; padding: 20px; margin-bottom: 14px; }
+    .callout.dark { background: var(--ink); color: #fff; }
+    .callout.dark p { color: rgba(255,255,255,.75); }
+    .callout.light { background: var(--bg); border: 1px solid var(--line); }
+    .callout b.t { display: block; font-size: 17px; margin-bottom: 6px; line-height: 1.3; }
+    .callout p { margin: 0 0 14px; font-size: 14px; color: var(--muted); }
+    .callout .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .callout.dark .btn-ghost { background: transparent; color: #fff; border-color: rgba(255,255,255,.35); }
+    .countdown { font-family: var(--font-head); font-size: 44px; font-weight: 600; line-height: 1; margin-top: 6px; }
+    .code { font-family: var(--font-head); font-size: 34px; font-weight: 600; letter-spacing: .14em; margin: 4px 0 8px; }
+    .phone-link { font-size: 20px; font-weight: 800; text-decoration: none; display: inline-block; margin: 2px 0 12px; }
+
+    /* Footer */
+    footer { padding: 48px 0 110px; color: var(--muted); font-size: 13.5px; }
+    footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 20px; flex-wrap: wrap; }
+    footer .logos { display: flex; gap: 10px; }
+    footer .logos .loc-logo { width: 40px; height: 40px; border-color: var(--line-strong); }
+
+    .mobile-cta { display: none; }
+
+    @media (max-width: 1020px) {
+      .gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .shot.tall { grid-row: auto; }
+      .hero .wrap { grid-template-columns: 1fr; gap: 40px; }
+      .mosaic { height: 440px; }
+      .float-card { left: 14px; top: 14px; }
+      .loc-layout { grid-template-columns: 1fr; }
+      .map-shell { position: relative; top: 0; }
+      #map { height: 420px; }
+      .apply-grid { grid-template-columns: 1fr; gap: 28px; }
+      .apply-aside { position: static; }
+      .steps-legend { display: none; }
+      .benefits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 640px) {
+      :root { --header-h: 58px; }
+      .wrap { padding: 0 16px; }
+      .brandmark span { display: none; }
+      .brandmark b { font-size: 17px; }
+      .topbar .btn { display: none; }
+      .hero { padding: 28px 0 48px; }
+      h1 { margin-top: 18px; }
+      .lead { font-size: 16.5px; }
+      .hero-ctas .btn { flex: 1; }
+      .hero-logos { gap: 10px; margin-top: 28px; }
+      .hero-logos .logo-dot { width: 46px; height: 46px; }
+      .stats { justify-content: space-between; gap: 12px; }
+      .mosaic { height: 360px; gap: 10px; }
+      .mosaic figure { border-radius: 20px; }
+      .float-card { display: none; }
+      .mosaic .tag { font-size: 11.5px; left: 8px; bottom: 8px; max-width: calc(100% - 16px); }
+      section.block { padding: 60px 0; }
+      .section-head { margin-bottom: 24px; }
+      #map { height: 360px; }
+      .pin { --b: 40px; }
+      .pin-bubble { border-width: 2.5px; }
+      .shot .tag { padding: 4px; }
+      .shot .tag .t { display: none; }
+      .loc-card { grid-template-columns: 92px minmax(0, 1fr); gap: 12px; padding: 10px; }
+      .loc-photo { min-height: 120px; }
+      .loc-title h3 { font-size: 16px; }
+      .benefits { grid-template-columns: 1fr; gap: 10px; }
+      .benefit { padding: 14px 16px; }
+      .form-card { padding: 22px 16px; border-radius: 22px; }
+      .pick-grid, .fields { grid-template-columns: 1fr; }
+      .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 210px; gap: 10px; }
+      .shot { border-radius: 16px; }
+      .shot.tall { grid-row: auto; }
+      .shot .tag { left: 8px; bottom: 8px; font-size: 11.5px; }
+      .filters { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; scrollbar-width: none; }
+      .filters::-webkit-scrollbar { display: none; }
+      .filter { flex: none; }
+      .mobile-cta {
+        display: block; position: fixed; left: 0; right: 0; bottom: 0; z-index: 1200;
+        padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+        background: linear-gradient(to top, rgba(251,247,241,1) 60%, rgba(251,247,241,0));
+        transform: translateY(110%); transition: transform .25s ease;
+      }
+      .mobile-cta.show { transform: none; }
+      .mobile-cta .btn { width: 100%; padding: 16px; }
+      .lb-prev, .lb-next { top: auto; bottom: 18px; transform: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <div class="wrap">
+      <a class="brandmark" href="#top" id="brandmark"></a>
+      <div class="topbar-actions">
+        <div class="lang" role="group" aria-label="Language">
+          <button type="button" data-lang="es">ES</button>
+          <button type="button" data-lang="en">EN</button>
+        </div>
+        <a class="btn btn-dark btn-sm" href="#postulate" data-i18n="ctaApply"></a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="wrap">
+        <div>
+          <span class="eyebrow"><span class="pulse"></span><span data-i18n="hiringNow"></span></span>
+          <h1 id="headline"></h1>
+          <p class="lead" id="intro"></p>
+          <div class="hero-ctas">
+            <a class="btn btn-accent" href="#postulate"><span data-i18n="ctaApply"></span><svg class="icon"><use href="#i-arrow"/></svg></a>
+            <a class="btn btn-ghost" href="#locales"><svg class="icon"><use href="#i-map"/></svg><span data-i18n="ctaSeeLocations"></span></a>
+          </div>
+          <div class="hero-logos" id="hero-logos"></div>
+          <div class="stats" id="stats"></div>
+        </div>
+        <div class="mosaic" id="mosaic"></div>
+      </div>
+    </section>
+
+    <section class="block alt" id="locales">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker" data-i18n="locKicker"></p>
+            <h2 data-i18n="locTitle"></h2>
+            <p class="sub" data-i18n="locSub"></p>
+          </div>
+        </div>
+        <div class="loc-layout">
+          <div class="map-shell"><div id="map" role="region" aria-label="Map"></div></div>
+          <div class="loc-list" id="loc-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="equipos">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker" data-i18n="teamKicker"></p>
+            <h2 data-i18n="teamTitle"></h2>
+            <p class="sub" data-i18n="teamSub"></p>
+          </div>
+          <div class="filters" id="filters"></div>
+        </div>
+        <div class="gallery" id="gallery"></div>
+      </div>
+    </section>
+
+    <section class="block alt" id="beneficios">
+      <div class="wrap">
+        <div class="section-head">
+          <div>
+            <p class="kicker" data-i18n="perksKicker"></p>
+            <h2 data-i18n="perksTitle"></h2>
+          </div>
+        </div>
+        <div class="benefits" id="benefits"></div>
+      </div>
+    </section>
+
+    <section class="block" id="postulate">
+      <div class="wrap apply-grid">
+        <div class="apply-aside">
+          <p class="kicker" data-i18n="applyKicker"></p>
+          <h2 data-i18n="applyTitle"></h2>
+          <p class="lead" data-i18n="applySub"></p>
+          <div class="steps-legend" id="steps-legend">
+            <div data-step="1"><i>1</i><span data-i18n="step1"></span></div>
+            <div data-step="2"><i>2</i><span data-i18n="step2"></span></div>
+            <div data-step="3"><i>3</i><span data-i18n="step3"></span></div>
+          </div>
+        </div>
+        <div class="form-card">
+          <form id="apply-form" novalidate>
+            <div class="step" id="step-locations">
+              <div class="step-head">
+                <span class="step-num">01</span>
+                <div><h3 data-i18n="step1"></h3><p data-i18n="step1Hint"></p></div>
+              </div>
+              <div class="pick-grid" id="pick-grid"></div>
+            </div>
+            <div class="step" id="step-roles">
+              <div class="step-head">
+                <span class="step-num">02</span>
+                <div><h3 data-i18n="step2"></h3><p data-i18n="step2Hint"></p></div>
+              </div>
+              <div class="role-groups" id="role-groups"></div>
+            </div>
+            <div class="step" id="step-info">
+              <div class="step-head">
+                <span class="step-num">03</span>
+                <div><h3 data-i18n="step3"></h3><p data-i18n="step3Hint"></p></div>
+              </div>
+              <div class="fields">
+                <div class="field full">
+                  <label for="f-name" data-i18n="fName"></label>
+                  <input class="input" id="f-name" name="name" autocomplete="name" required />
+                </div>
+                <div class="field">
+                  <label for="f-phone" data-i18n="fPhone"></label>
+                  <input class="input" id="f-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(305) 555-0123" required />
+                </div>
+                <div class="field">
+                  <label for="f-email" data-i18n="fEmail"></label>
+                  <input class="input" id="f-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="tu@email.com" required />
+                </div>
+                <div class="field full" id="referral-field">
+                  <span class="label" data-i18n="fReferred"></span>
+                  <div class="yesno" id="referred">
+                    <button type="button" data-val="yes" data-i18n="yes"></button>
+                    <button type="button" data-val="no" data-i18n="no"></button>
+                  </div>
+                  <div class="reveal" id="referred-by-wrap" hidden>
+                    <input class="input" id="f-referred-by" autocomplete="off" />
+                  </div>
+                </div>
+                <div class="field full">
+                  <span class="label" id="resume-label"></span>
+                  <label class="drop" id="drop-resume">
+                    <input type="file" id="f-resume" accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain" />
+                    <span class="ico"><svg class="icon"><use href="#i-doc"/></svg></span>
+                    <span><b data-i18n="resumeCta"></b><small data-default-i18n="resumeHint"></small></span>
+                  </label>
+                </div>
+                <div class="field full">
+                  <span class="label"><span data-i18n="fPhoto"></span> <span class="opt" style="color:var(--muted);font-weight:600" data-i18n="optional"></span></span>
+                  <label class="drop" id="drop-photo">
+                    <input type="file" id="f-photo" accept="image/jpeg,image/png,image/webp" />
+                    <span class="ico"><svg class="icon"><use href="#i-camera"/></svg></span>
+                    <span><b data-i18n="photoCta"></b><small data-default-i18n="photoHint"></small></span>
+                  </label>
+                </div>
+                <div class="field full">
+                  <label class="consent" id="consent-wrap">
+                    <input type="checkbox" id="f-consent" />
+                    <span class="box"><svg class="icon"><use href="#i-check"/></svg></span>
+                    <span data-i18n="consent"></span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="submit-row">
+              <div class="form-error" id="form-error" role="alert"><svg class="icon"><use href="#i-alert"/></svg><span></span></div>
+              <button class="btn btn-accent" type="submit" id="submit-btn"></button>
+            </div>
+          </form>
+          <div class="success" id="success"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="logos" id="footer-logos"></div>
+      <div id="footer-text"></div>
+    </div>
+  </footer>
+
+  <div class="mobile-cta" id="mobile-cta"><a class="btn btn-accent" href="#postulate"><span data-i18n="ctaApply"></span><svg class="icon"><use href="#i-arrow"/></svg></a></div>
+
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <button class="lb-btn lb-close" type="button" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
+    <button class="lb-btn lb-prev" type="button" aria-label="Previous"><svg class="icon"><use href="#i-left"/></svg></button>
+    <img alt="" />
+    <button class="lb-btn lb-next" type="button" aria-label="Next"><svg class="icon"><use href="#i-right"/></svg></button>
+    <span class="tag lb-caption"></span>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+    <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></symbol>
+    <symbol id="i-route" viewBox="0 0 24 24"><path d="M3 11 21 3l-8 18-2-8-8-2z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5h.01"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+    <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 0-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></symbol>
+    <symbol id="i-meal" viewBox="0 0 24 24"><path d="M4 3v7a3 3 0 0 0 6 0V3M7 3v18M17 3c-2 0-3 2.5-3 6s1 4 3 4v8"/></symbol>
+    <symbol id="i-tag" viewBox="0 0 24 24"><path d="M3 12V4h8l10 10-8 8L3 12z"/><circle cx="7.5" cy="8.5" r="1.5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-growth" viewBox="0 0 24 24"><path d="m3 17 6-6 4 4 8-8"/><path d="M15 7h6v6"/></symbol>
+    <symbol id="i-team" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></symbol>
+  </svg>
+
+  <script id="careers-data" type="application/json">__CAREERS_DATA__</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script>
+  (function () {
+    'use strict';
+    var data = JSON.parse(document.getElementById('careers-data').textContent || '{}');
+    var locations = Array.isArray(data.locations) ? data.locations : [];
+    var teams = Array.isArray(data.teams) ? data.teams : [];
+    var limits = data.limits || {};
+
+    var I18N = {
+      es: {
+        tagline: 'Empleos', hiringNow: 'Estamos contratando ahora',
+        ctaApply: 'Postularme', ctaSeeLocations: 'Ver locales',
+        statLocations: 'locales', statRoles: 'puestos', statLang: 'español o inglés',
+        floatTitle: 'Una sola postulación', floatSub: 'Elegí varios locales y puestos a la vez',
+        locKicker: 'Nuestros locales', locTitle: 'Elegí dónde te queda mejor',
+        locSub: 'Todos en Miami Beach y MiMo. Mirá qué puestos busca cada local.',
+        applyHere: 'Postularme acá', directions: 'Cómo llegar', positions: 'puestos',
+        teamKicker: 'Los equipos', teamTitle: 'La gente detrás de cada local', teamSub: 'Así se trabaja en nuestros restaurantes.',
+        all: 'Todos',
+        perksKicker: 'Beneficios', perksTitle: 'Por qué sumarte',
+        applyKicker: 'Postulate', applyTitle: 'Te toma 2 minutos',
+        applySub: 'Elegí uno o más locales, marcá los puestos que te interesan y dejanos tus datos. Te contactamos por teléfono o SMS.',
+        step1: '¿Dónde querés trabajar?', step1Hint: 'Podés elegir más de un local.',
+        step2: '¿Qué puestos te interesan?', step2Hint: 'Marcá todos los que quieras en cada local.',
+        step3: 'Tus datos', step3Hint: 'Para poder contactarte.',
+        pickFirst: 'Primero elegí al menos un local arriba.',
+        fName: 'Nombre y apellido', fPhone: 'Teléfono', fEmail: 'Email',
+        fReferred: '¿Alguien te refirió?', yes: 'Sí', no: 'No', referredBy: '¿Quién te refirió? (nombre)',
+        fResume: 'Tu CV / resume', resumeCta: 'Subí tu CV', resumeHint: 'PDF o Word · hasta 8 MB',
+        fPhoto: 'Una foto tuya', optional: '(opcional)', photoCta: 'Subí una foto', photoHint: 'JPG o PNG',
+        consent: 'Al enviar este formulario, aceptás ser contactado por SMS o llamada telefónica sobre tu postulación.',
+        submit: 'Enviar postulación', submitMany: 'Enviar postulación · {n} locales', sending: 'Enviando...',
+        errLocation: 'Elegí al menos un local.', errRole: 'Elegí al menos un puesto para {loc}.',
+        errName: 'Escribí tu nombre y apellido.', errPhone: 'Revisá tu teléfono.', errEmail: 'Revisá tu email.',
+        errReferred: 'Contanos si alguien te refirió.', errReferredBy: 'Escribí el nombre de quien te refirió.',
+        errResume: 'Subí tu CV para continuar.', errResumeSize: 'El CV pesa demasiado (máx. {mb} MB).',
+        errPhotoSize: 'La foto pesa demasiado (máx. {mb} MB).', errConsent: 'Tenés que aceptar ser contactado.',
+        errGeneric: 'No pudimos enviar tu postulación. Probá de nuevo.',
+        okTitle: '¡Gracias, {name}!', okSub: 'Recibimos tu postulación. Estos son los locales y puestos que elegiste:',
+        screenTitle: '¿Querés hacer la entrevista inicial ahora?',
+        screenText: 'Si decís que sí, te llamamos en los próximos {s} segundos al {phone}. Dura unos minutos.',
+        screenYes: 'Sí, llámenme ahora', screenNo: 'Ahora no', screenWorking: 'Agendando...',
+        screenDoneTitle: '¡Listo! Te llamamos en unos segundos.',
+        screenDoneText: 'Tené el teléfono a mano y atendé la llamada al {phone}.',
+        screenFail: 'No pudimos agendar la llamada. Probá de nuevo o esperá nuestro contacto.', retry: 'Reintentar',
+        calling: 'Llamando...',
+        saveTitle: 'Guardá nuestro número para no perder la llamada', saveContact: 'Guardar contacto',
+        codeTitle: 'Tu código de entrevista',
+        codeHint: 'Si querés acelerar el proceso, llamanos cuando quieras y decí este código.',
+        footer: 'Miami Beach · MiMo'
+      },
+      en: {
+        tagline: 'Careers', hiringNow: 'We are hiring now',
+        ctaApply: 'Apply now', ctaSeeLocations: 'See locations',
+        statLocations: 'locations', statRoles: 'positions', statLang: 'English or Spanish',
+        floatTitle: 'One application', floatSub: 'Pick several locations and roles at once',
+        locKicker: 'Our locations', locTitle: 'Pick the spot that works for you',
+        locSub: 'All in Miami Beach and MiMo. See which positions each location is hiring for.',
+        applyHere: 'Apply here', directions: 'Directions', positions: 'positions',
+        teamKicker: 'The teams', teamTitle: 'The people behind every location', teamSub: 'This is what working with us looks like.',
+        all: 'All',
+        perksKicker: 'Perks', perksTitle: 'Why join us',
+        applyKicker: 'Apply', applyTitle: 'It takes 2 minutes',
+        applySub: 'Choose one or more locations, pick the roles you like and leave your details. We will reach out by phone or text.',
+        step1: 'Where do you want to work?', step1Hint: 'You can pick more than one location.',
+        step2: 'Which positions interest you?', step2Hint: 'Select as many as you like at each location.',
+        step3: 'Your details', step3Hint: 'So we can reach you.',
+        pickFirst: 'Pick at least one location above first.',
+        fName: 'Full name', fPhone: 'Phone', fEmail: 'Email',
+        fReferred: 'Did someone refer you?', yes: 'Yes', no: 'No', referredBy: 'Who referred you? (name)',
+        fResume: 'Your resume', resumeCta: 'Upload your resume', resumeHint: 'PDF or Word · up to 8 MB',
+        fPhoto: 'A photo of you', optional: '(optional)', photoCta: 'Upload a photo', photoHint: 'JPG or PNG',
+        consent: 'By submitting this form, you agree to be contacted via SMS or voice call about your application.',
+        submit: 'Send application', submitMany: 'Send application · {n} locations', sending: 'Sending...',
+        errLocation: 'Pick at least one location.', errRole: 'Pick at least one position for {loc}.',
+        errName: 'Enter your full name.', errPhone: 'Check your phone number.', errEmail: 'Check your email.',
+        errReferred: 'Tell us if someone referred you.', errReferredBy: 'Enter the name of who referred you.',
+        errResume: 'Upload your resume to continue.', errResumeSize: 'Your resume is too large (max {mb} MB).',
+        errPhotoSize: 'Your photo is too large (max {mb} MB).', errConsent: 'You need to agree to be contacted.',
+        errGeneric: 'We could not send your application. Please try again.',
+        okTitle: 'Thanks, {name}!', okSub: 'We got your application. These are the locations and positions you picked:',
+        screenTitle: 'Want to do your initial interview right now?',
+        screenText: 'If you say yes, we will call you within {s} seconds at {phone}. It takes a few minutes.',
+        screenYes: 'Yes, call me now', screenNo: 'Not now', screenWorking: 'Scheduling...',
+        screenDoneTitle: 'Done! We will call you in a few seconds.',
+        screenDoneText: 'Keep your phone handy and pick up the call at {phone}.',
+        screenFail: 'We could not schedule the call. Try again or wait for us to reach out.', retry: 'Retry',
+        calling: 'Calling...',
+        saveTitle: 'Save our number so you do not miss the call', saveContact: 'Save contact',
+        codeTitle: 'Your interview code',
+        codeHint: 'Want to speed things up? Call us anytime and share this code.',
+        footer: 'Miami Beach · MiMo'
+      }
+    };
+
+    // Friendlier labels for the raw role keys that the bot and the admin use.
+    var ROLE_LABELS = {
+      'cook': { es: 'Cocinero/a', en: 'Line cook' },
+      'prep cook': { es: 'Prep cook', en: 'Prep cook' },
+      'front / cashier': { es: 'Caja / Front', en: 'Front / Cashier' },
+      'dishwasher': { es: 'Lavaplatos', en: 'Dishwasher' },
+      'hostess': { es: 'Hostess', en: 'Host / Hostess' },
+      'server / runner': { es: 'Server / Runner', en: 'Server / Runner' },
+      'pizzero': { es: 'Pizzero/a', en: 'Pizza maker' },
+      'food truck': { es: 'Food truck', en: 'Food truck' },
+      'mantenimiento': { es: 'Mantenimiento', en: 'Maintenance' },
+      'barista': { es: 'Barista', en: 'Barista' }
+    };
+
+    var lang = pickInitialLang();
+    var state = { selected: [], roles: {}, referred: '', resumeFile: null, photoFile: null };
+    var after = { appId: '', code: '', slug: '', phone: '', name: '', screening: false, delay: 30, screenState: '', applied: [] };
+    var markers = {};
+    var map = null;
+    var countdownTimer = null;
+    var shots = [];
+    var lbIndex = 0;
+
+    function pickInitialLang() {
+      var q = new URLSearchParams(location.search).get('lang');
+      if (q === 'en' || q === 'es') return q;
+      try {
+        var saved = localStorage.getItem('careers_lang');
+        if (saved === 'en' || saved === 'es') return saved;
+      } catch (e) {}
+      return /^en\b/i.test(navigator.language || '') ? 'en' : 'es';
+    }
+    function T(key, vars) {
+      var s = (I18N[lang] && I18N[lang][key]) || I18N.es[key] || '';
+      if (vars) Object.keys(vars).forEach(function (k) { s = s.split('{' + k + '}').join(vars[k]); });
+      return s;
+    }
+    function tx(val) {
+      if (!val) return '';
+      if (typeof val === 'string') return val;
+      return val[lang] || val.es || val.en || '';
+    }
+    function roleLabel(role) {
+      var key = String(role.value || '').toLowerCase().trim();
+      if (ROLE_LABELS[key]) return ROLE_LABELS[key][lang];
+      var raw = tx(role.label) || role.value || '';
+      return raw.charAt(0).toUpperCase() + raw.slice(1);
+    }
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+    // Resized copies through an image CDN; the original URL is the fallback if the CDN fails.
+    function imgUrl(url, w) {
+      if (!url) return '';
+      return 'https://wsrv.nl/?url=' + encodeURIComponent(url) + '&w=' + w + '&output=webp&q=76&we';
+    }
+    function imgTag(url, w, alt, extra) {
+      if (!url) return '';
+      return '<img src="' + esc(imgUrl(url, w)) + '" data-orig="' + esc(url) + '" alt="' + esc(alt || '') + '" loading="lazy" decoding="async"' + (extra || '') + '>';
+    }
+    document.addEventListener('error', function (e) {
+      var t = e.target;
+      if (t && t.tagName === 'IMG' && t.dataset && t.dataset.orig && t.getAttribute('src') !== t.dataset.orig) {
+        t.src = t.dataset.orig;
+      }
+    }, true);
+    function logoImg(entity, w, extra) {
+      return imgTag(entity.logoUrl, w, entity.name || entity.brand || '', (entity.logoRound ? ' class="lg-round"' : '') + (extra || ''));
+    }
+    function logoBadge(loc, cls) {
+      return '<span class="loc-logo' + (cls ? ' ' + cls : '') + '" style="--c:' + esc(loc.color || '#1d1712') + '">' + logoImg(loc, 160) + '</span>';
+    }
+    function directionsUrl(loc) {
+      return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(loc.name + ', ' + loc.address);
+    }
+    function locByKey(key) {
+      for (var i = 0; i < locations.length; i += 1) if (locations[i].key === key) return locations[i];
+      return null;
+    }
+    function uniqueRoleCount() {
+      var seen = {};
+      locations.forEach(function (loc) { loc.roles.forEach(function (r) { seen[String(r.value).toLowerCase()] = 1; }); });
+      return Object.keys(seen).length;
+    }
+
+    /* ---------- Static text ---------- */
+    function renderText() {
+      document.documentElement.lang = lang;
+      document.querySelectorAll('[data-i18n]').forEach(function (el) { el.textContent = T(el.getAttribute('data-i18n')); });
+      document.querySelectorAll('[data-default-i18n]').forEach(function (el) {
+        if (!el.dataset.filled) el.textContent = T(el.getAttribute('data-default-i18n'));
+      });
+      document.querySelectorAll('.lang button').forEach(function (b) { b.classList.toggle('active', b.dataset.lang === lang); });
+      var mark = document.getElementById('brandmark');
+      mark.innerHTML = (data.logoUrl ? imgTag(data.logoUrl, 120, data.brand) : '') + '<b>' + esc(data.brand || '') + '</b><span>· ' + esc(T('tagline')) + '</span>';
+      var headline = tx(data.headline) || T('locTitle');
+      // Italicize the second sentence of the headline for a bit of editorial rhythm.
+      var parts = headline.split('. ');
+      document.getElementById('headline').innerHTML = parts.length > 1
+        ? esc(parts[0]) + '. <em>' + esc(parts.slice(1).join('. ')) + '</em>'
+        : esc(headline);
+      document.getElementById('intro').textContent = tx(data.intro);
+      document.getElementById('f-referred-by').placeholder = T('referredBy');
+      document.getElementById('resume-label').innerHTML = esc(T('fResume')) + (resumeRequired() ? '' : ' <span style="color:var(--muted);font-weight:600">' + esc(T('optional')) + '</span>');
+      document.getElementById('footer-text').textContent = '© ' + new Date().getFullYear() + ' ' + (data.brand || '') + ' · ' + T('footer');
+      updateSubmitLabel();
+    }
+
+    function renderHero() {
+      var logos = document.getElementById('hero-logos');
+      var html = '';
+      teams.forEach(function (team) {
+        html += '<span class="logo-dot" title="' + esc(team.brand) + '">' + logoImg(team, 160) + '</span>';
+      });
+      logos.innerHTML = html;
+      document.getElementById('footer-logos').innerHTML = teams.map(function (team) { return logoBadge(team); }).join('');
+      document.getElementById('stats').innerHTML =
+        '<div class="stat"><b>' + locations.length + '</b><span>' + esc(T('statLocations')) + '</span></div>' +
+        '<div class="stat"><b>' + uniqueRoleCount() + '</b><span>' + esc(T('statRoles')) + '</span></div>' +
+        '<div class="stat"><b>ES/EN</b><span>' + esc(T('statLang')) + '</span></div>';
+
+      var picks = teams.filter(function (t) { return t.photos.length; }).slice(0, 3);
+      var mosaic = document.getElementById('mosaic');
+      var m = '';
+      picks.forEach(function (team, idx) {
+        m += '<figure>' + imgTag(team.photos[0], idx === 0 ? 900 : 640, team.brand, idx === 0 ? ' fetchpriority="high" loading="eager"' : '') +
+          '<span class="tag">' + logoImg(team, 80) + esc(team.brand) + '</span></figure>';
+      });
+      m += '<div class="float-card"><span class="ico"><svg class="icon"><use href="#i-check"/></svg></span><div><b>' + esc(T('floatTitle')) + '</b><span>' + esc(T('floatSub')) + '</span></div></div>';
+      mosaic.innerHTML = m;
+    }
+
+    /* ---------- Locations + map ---------- */
+    function renderLocations() {
+      var list = document.getElementById('loc-list');
+      list.innerHTML = locations.map(function (loc) {
+        var chips = loc.roles.slice(0, 5).map(function (r) { return '<span class="rchip">' + esc(roleLabel(r)) + '</span>'; }).join('');
+        if (loc.roles.length > 5) chips += '<span class="rchip">+' + (loc.roles.length - 5) + '</span>';
+        return '<article class="loc-card" data-key="' + esc(loc.key) + '" style="--c:' + esc(loc.color) + '">' +
+          '<div class="loc-photo">' + imgTag(loc.heroUrl, 360, loc.name) + '</div>' +
+          '<div class="loc-body">' +
+            '<div class="loc-title">' + logoBadge(loc) + '<div><h3>' + esc(loc.name) + '</h3><small>' + esc(tx(loc.tagline) || loc.area) + '</small></div></div>' +
+            '<div class="loc-addr"><svg class="icon"><use href="#i-pin"/></svg><span>' + esc(loc.address) + '</span></div>' +
+            '<div class="roles-mini">' + chips + '</div>' +
+            '<div class="loc-actions">' +
+              '<button type="button" class="btn btn-dark btn-sm" data-apply="' + esc(loc.key) + '">' + esc(T('applyHere')) + '</button>' +
+              '<a class="link-btn" target="_blank" rel="noopener" href="' + esc(directionsUrl(loc)) + '"><svg class="icon"><use href="#i-route"/></svg>' + esc(T('directions')) + '</a>' +
+            '</div>' +
+          '</div></article>';
+      }).join('');
+      list.querySelectorAll('.loc-card').forEach(function (card) {
+        var key = card.dataset.key;
+        card.addEventListener('mouseenter', function () { setActivePin(key, true); });
+        card.addEventListener('mouseleave', function () { setActivePin(key, false); });
+      });
+    }
+
+    function popupHtml(loc) {
+      return '<div class="pop"><b>' + esc(loc.name) + '</b><span>' + esc(loc.address) + '</span>' +
+        '<div class="pop-actions"><a href="#postulate" class="btn btn-accent" data-apply="' + esc(loc.key) + '">' + esc(T('applyHere')) + '</a>' +
+        '<a class="btn btn-ghost" target="_blank" rel="noopener" href="' + esc(directionsUrl(loc)) + '">' + esc(T('directions')) + '</a></div></div>';
+    }
+
+    function initMap() {
+      if (!window.L) return;
+      var pts = locations.filter(function (l) { return isFinite(l.lat) && isFinite(l.lng); });
+      if (!pts.length) return;
+      var touch = matchMedia('(pointer: coarse)').matches;
+      map = L.map('map', { scrollWheelZoom: false, dragging: !touch, tap: false, zoomControl: true, attributionControl: true });
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+      }).addTo(map);
+      pts.forEach(function (loc) {
+        var icon = L.divIcon({
+          className: 'pin-icon',
+          iconSize: [0, 0],
+          html: '<div class="pin" style="--c:' + esc(loc.color) + '"><div class="pin-stem"></div><div class="pin-dot"></div><div class="pin-bubble">' + logoImg(loc, 140, ' loading="eager"') + '</div></div>'
+        });
+        var marker = L.marker([loc.lat, loc.lng], { icon: icon, title: loc.name, riseOnHover: true });
+        marker.bindPopup(popupHtml(loc), { offset: [0, -70], closeButton: false, autoPanPadding: [30, 30] });
+        marker.on('click', function () {
+          var card = document.querySelector('.loc-card[data-key="' + loc.key + '"]');
+          document.querySelectorAll('.loc-card.active').forEach(function (c) { c.classList.remove('active'); });
+          if (card) card.classList.add('active');
+        });
+        marker.addTo(map);
+        markers[loc.key] = marker;
+      });
+      var bounds = L.latLngBounds(pts.map(function (l) { return [l.lat, l.lng]; }));
+      map.fitBounds(bounds, { paddingTopLeft: [50, 120], paddingBottomRight: [50, 30], maxZoom: 15 });
+      var fitAll = function () { map.fitBounds(bounds, { paddingTopLeft: [50, 120], paddingBottomRight: [50, 30], maxZoom: 15 }); };
+      var resizeTimer = null;
+      map.on('zoomend viewreset', layoutPins);
+      map.on('resize', function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () { fitAll(); layoutPins(); }, 150);
+      });
+      map.on('popupopen', function (e) {
+        var b = e.popup._source && e.popup._source._bubble;
+        if (!b) return;
+        e.popup.options.offset = [b.dx, b.dy - b.b / 2 + 4];
+        e.popup.update();
+      });
+      setTimeout(function () { map.invalidateSize(); fitAll(); layoutPins(); }, 60);
+      layoutPins();
+    }
+
+    // Close locations (e.g. two spots a block apart) would stack their logo bubbles. Each bubble takes the first
+    // candidate spot (straight up first, then fanned out to the sides) that clears the other bubbles and dots,
+    // and a leader line links it back to its exact address.
+    function layoutPins() {
+      if (!map) return;
+      var B = window.innerWidth <= 640 ? 40 : 52;
+      var items = Object.keys(markers).map(function (key) {
+        return { key: key, p: map.latLngToLayerPoint(markers[key].getLatLng()) };
+      }).sort(function (a, b) { return b.p.y - a.p.y; });
+      var bubbles = [];
+      var baseY = -(14 + B / 2);
+      var side = B * 0.9;
+      var candidates = [];
+      for (var ring = 0; ring < 6; ring += 1) {
+        [0, -side, side, -2 * side, 2 * side].forEach(function (dx) { candidates.push([dx, baseY - ring * 14]); });
+      }
+      items.forEach(function (it) {
+        var pick = candidates[0];
+        for (var c = 0; c < candidates.length; c += 1) {
+          var cx = it.p.x + candidates[c][0];
+          var cy = it.p.y + candidates[c][1];
+          var hitBubble = bubbles.some(function (o) { return Math.hypot(o.x - cx, o.y - cy) < B + 6; });
+          var hitDot = items.some(function (o) { return o !== it && Math.hypot(o.p.x - cx, o.p.y - cy) < B / 2 + 8; });
+          if (!hitBubble && !hitDot) { pick = candidates[c]; break; }
+        }
+        bubbles.push({ x: it.p.x + pick[0], y: it.p.y + pick[1] });
+        var dx = pick[0];
+        var dy = pick[1];
+        var m = markers[it.key];
+        m._bubble = { dx: dx, dy: dy, b: B };
+        var pin = m.getElement() && m.getElement().querySelector('.pin');
+        if (!pin) return;
+        pin.style.setProperty('--bx', dx + 'px');
+        pin.style.setProperty('--by', dy + 'px');
+        pin.style.setProperty('--len', Math.round(Math.hypot(dx, dy)) + 'px');
+        pin.style.setProperty('--ang', (Math.atan2(-dx, dy) * 180 / Math.PI).toFixed(1) + 'deg');
+      });
+    }
+
+    function setActivePin(key, on) {
+      var m = markers[key];
+      var el = m && m.getElement();
+      var pin = el && el.querySelector('.pin');
+      if (pin) pin.classList.toggle('active', on);
+      if (m) m.setZIndexOffset(on ? 5000 : 0);
+    }
+
+    /* ---------- Teams gallery ---------- */
+    var activeFilter = 'all';
+    function renderTeams() {
+      var filters = document.getElementById('filters');
+      var fh = '<button type="button" class="filter no-logo' + (activeFilter === 'all' ? ' active' : '') + '" data-f="all">' + esc(T('all')) + '</button>';
+      teams.forEach(function (team) {
+        fh += '<button type="button" class="filter' + (activeFilter === team.page ? ' active' : '') + '" data-f="' + esc(team.page) + '">' + logoImg(team, 80) + esc(team.brand) + '</button>';
+      });
+      filters.innerHTML = fh;
+      filters.querySelectorAll('.filter').forEach(function (btn) {
+        btn.addEventListener('click', function () { activeFilter = btn.dataset.f; renderTeams(); });
+      });
+
+      // Interleave brands so the default view mixes teams instead of showing them in blocks.
+      shots = [];
+      var maxLen = 0;
+      teams.forEach(function (t) { maxLen = Math.max(maxLen, t.photos.length); });
+      for (var i = 0; i < maxLen; i += 1) {
+        teams.forEach(function (t) { if (t.photos[i]) shots.push({ url: t.photos[i], team: t }); });
+      }
+      var gallery = document.getElementById('gallery');
+      var visibleCount = shots.filter(function (s) { return activeFilter === 'all' || s.team.page === activeFilter; }).length;
+      // On the 4-column grid every third tile is tall; only when that packs into full rows with no holes.
+      var useTall = visibleCount >= 8 && visibleCount % 4 === 0;
+      var vi = 0;
+      gallery.innerHTML = shots.map(function (s, idx) {
+        var hidden = activeFilter !== 'all' && s.team.page !== activeFilter;
+        var tall = !hidden && useTall && vi % 3 === 0;
+        if (!hidden) vi += 1;
+        return '<button type="button" class="shot' + (hidden ? ' hide' : '') + (tall ? ' tall' : '') + '" data-idx="' + idx + '" aria-label="' + esc(s.team.brand) + '">' +
+          imgTag(s.url, 640, s.team.brand) + '<span class="tag">' + logoImg(s.team, 80) + '<span class="t">' + esc(s.team.brand) + '</span></span></button>';
+      }).join('');
+      gallery.querySelectorAll('.shot').forEach(function (btn) {
+        btn.addEventListener('click', function () { openLightbox(Number(btn.dataset.idx)); });
+      });
+    }
+
+    function visibleShots() {
+      return shots.map(function (s, i) { return i; }).filter(function (i) { return activeFilter === 'all' || shots[i].team.page === activeFilter; });
+    }
+    function openLightbox(idx) {
+      lbIndex = idx;
+      var lb = document.getElementById('lightbox');
+      var s = shots[idx];
+      var img = lb.querySelector('img');
+      img.src = imgUrl(s.url, 1600);
+      img.dataset.orig = s.url;
+      img.alt = s.team.brand;
+      lb.querySelector('.lb-caption').innerHTML = logoImg(s.team, 80) + esc(s.team.brand);
+      lb.classList.add('open');
+      lb.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+    }
+    function closeLightbox() {
+      var lb = document.getElementById('lightbox');
+      lb.classList.remove('open');
+      lb.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+    }
+    function stepLightbox(dir) {
+      var vis = visibleShots();
+      var pos = vis.indexOf(lbIndex);
+      if (pos < 0) return;
+      openLightbox(vis[(pos + dir + vis.length) % vis.length]);
+    }
+    function initLightbox() {
+      var lb = document.getElementById('lightbox');
+      lb.querySelector('.lb-close').addEventListener('click', closeLightbox);
+      lb.querySelector('.lb-prev').addEventListener('click', function () { stepLightbox(-1); });
+      lb.querySelector('.lb-next').addEventListener('click', function () { stepLightbox(1); });
+      lb.addEventListener('click', function (e) { if (e.target === lb) closeLightbox(); });
+      document.addEventListener('keydown', function (e) {
+        if (!lb.classList.contains('open')) return;
+        if (e.key === 'Escape') closeLightbox();
+        if (e.key === 'ArrowLeft') stepLightbox(-1);
+        if (e.key === 'ArrowRight') stepLightbox(1);
+      });
+    }
+
+    /* ---------- Benefits ---------- */
+    function renderBenefits() {
+      var icons = { meal: 'i-meal', tag: 'i-tag', clock: 'i-clock', growth: 'i-growth', team: 'i-team', spark: 'i-spark' };
+      var list = Array.isArray(data.benefits) ? data.benefits : [];
+      document.getElementById('beneficios').style.display = list.length ? '' : 'none';
+      document.getElementById('benefits').innerHTML = list.map(function (b) {
+        return '<div class="benefit"><span class="ico"><svg class="icon"><use href="#' + (icons[b.icon] || 'i-spark') + '"/></svg></span><b>' + esc(tx(b)) + '</b></div>';
+      }).join('');
+    }
+
+    /* ---------- Form ---------- */
+    function resumeRequired() {
+      var keys = state.selected.length ? state.selected : locations.map(function (l) { return l.key; });
+      return keys.some(function (k) { var l = locByKey(k); return l && l.resumeRequired; });
+    }
+
+    function renderPicks() {
+      var grid = document.getElementById('pick-grid');
+      grid.innerHTML = locations.map(function (loc) {
+        var on = state.selected.indexOf(loc.key) >= 0;
+        return '<button type="button" class="pick' + (on ? ' on' : '') + '" data-key="' + esc(loc.key) + '" aria-pressed="' + on + '" style="--c:' + esc(loc.color) + '">' +
+          logoBadge(loc) + '<span><b>' + esc(loc.name) + '</b><small>' + esc(loc.area) + ' · ' + loc.roles.length + ' ' + esc(T('positions')) + '</small></span>' +
+          '<span class="check"><svg class="icon"><use href="#i-check"/></svg></span></button>';
+      }).join('');
+      grid.querySelectorAll('.pick').forEach(function (btn) {
+        btn.addEventListener('click', function () { toggleLocation(btn.dataset.key); });
+      });
+    }
+
+    function toggleLocation(key, forceOn) {
+      var idx = state.selected.indexOf(key);
+      if (idx >= 0 && !forceOn) {
+        state.selected.splice(idx, 1);
+        delete state.roles[key];
+      } else if (idx < 0) {
+        state.selected.push(key);
+        state.roles[key] = state.roles[key] || [];
+        var loc = locByKey(key);
+        // A location with a single opening gets it pre-selected.
+        if (loc && loc.roles.length === 1) state.roles[key] = [loc.roles[0].value];
+      }
+      clearError();
+      renderPicks();
+      renderRoleGroups();
+      renderText();
+      updateLegend();
+    }
+
+    function renderRoleGroups() {
+      var wrap = document.getElementById('role-groups');
+      if (!state.selected.length) {
+        wrap.innerHTML = '<div class="empty-hint"><svg class="icon"><use href="#i-arrow"/></svg>' + esc(T('pickFirst')) + '</div>';
+        return;
+      }
+      wrap.innerHTML = state.selected.map(function (key) {
+        var loc = locByKey(key);
+        if (!loc) return '';
+        var chosen = state.roles[key] || [];
+        var pills = loc.roles.map(function (r) {
+          var on = chosen.indexOf(r.value) >= 0;
+          return '<button type="button" class="role-pill' + (on ? ' on' : '') + '" aria-pressed="' + on + '" data-key="' + esc(key) + '" data-role="' + esc(r.value) + '"><svg class="icon"><use href="#i-check"/></svg>' + esc(roleLabel(r)) + '</button>';
+        }).join('');
+        return '<div class="role-group" id="roles-' + esc(key) + '"><div class="role-group-head">' + logoBadge(loc) + '<b>' + esc(loc.name) + '</b><small>' + esc(loc.area) + '</small></div><div class="role-pills">' + pills + '</div></div>';
+      }).join('');
+      wrap.querySelectorAll('.role-pill').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var key = btn.dataset.key;
+          var role = btn.dataset.role;
+          var list = state.roles[key] || (state.roles[key] = []);
+          var i = list.indexOf(role);
+          if (i >= 0) list.splice(i, 1); else list.push(role);
+          btn.classList.toggle('on', i < 0);
+          btn.setAttribute('aria-pressed', String(i < 0));
+          clearError();
+          updateLegend();
+        });
+      });
+    }
+
+    function updateSubmitLabel() {
+      var btn = document.getElementById('submit-btn');
+      if (btn.dataset.busy) return;
+      var n = state.selected.length;
+      btn.textContent = n > 1 ? T('submitMany', { n: n }) : T('submit');
+    }
+
+    function updateLegend() {
+      var s1 = state.selected.length > 0;
+      var s2 = s1 && state.selected.every(function (k) { return (state.roles[k] || []).length > 0; });
+      var name = document.getElementById('f-name').value.trim();
+      var phone = document.getElementById('f-phone').value.replace(/\D/g, '');
+      var s3 = !!name && phone.length >= 7 && document.getElementById('f-consent').checked;
+      var flags = { 1: s1, 2: s2, 3: s3 };
+      document.querySelectorAll('#steps-legend [data-step]').forEach(function (el) {
+        el.classList.toggle('done', !!flags[el.dataset.step]);
+      });
+    }
+
+    function initReferral() {
+      var wrap = document.getElementById('referred');
+      wrap.querySelectorAll('button').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          state.referred = btn.dataset.val;
+          wrap.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === btn); });
+          var reveal = document.getElementById('referred-by-wrap');
+          reveal.hidden = state.referred !== 'yes';
+          if (state.referred === 'yes') document.getElementById('f-referred-by').focus();
+          clearError();
+        });
+      });
+    }
+
+    function initFile(inputId, dropId, kind) {
+      var input = document.getElementById(inputId);
+      var drop = document.getElementById(dropId);
+      var small = drop.querySelector('small');
+      input.addEventListener('change', function () {
+        var file = input.files && input.files[0] ? input.files[0] : null;
+        state[kind] = file;
+        drop.classList.toggle('filled', !!file);
+        drop.classList.remove('invalid');
+        if (file) {
+          small.dataset.filled = '1';
+          var size = file.size >= 1048576 ? (file.size / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(file.size / 1024)) + ' KB';
+          small.textContent = file.name + ' · ' + size;
+        } else {
+          delete small.dataset.filled;
+          small.textContent = T(small.getAttribute('data-default-i18n'));
+        }
+        clearError();
+      });
+      ['dragenter', 'dragover'].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.add('drag'); }); });
+      ['dragleave', 'drop'].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove('drag'); }); });
+    }
+
+    function showError(msg, focusEl) {
+      var box = document.getElementById('form-error');
+      box.querySelector('span').textContent = msg;
+      box.classList.add('show');
+      if (focusEl) {
+        focusEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        if (focusEl.focus && /INPUT|BUTTON/.test(focusEl.tagName)) setTimeout(function () { focusEl.focus({ preventScroll: true }); }, 350);
+      }
+    }
+    function clearError() {
+      document.getElementById('form-error').classList.remove('show');
+      document.querySelectorAll('.invalid').forEach(function (el) { el.classList.remove('invalid'); });
+    }
+
+    function readFileAsDataUrl(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { reject(new Error('file_read_failed')); };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function collectAttribution() {
+      var params = new URLSearchParams(location.search || '');
+      var out = {};
+      ['src', 'source', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'ref'].forEach(function (k) {
+        var v = (params.get(k) || '').trim();
+        if (v) out[k] = v;
+      });
+      return out;
+    }
+
+    function serverErrorText(code) {
+      var map = {
+        missing_location: T('errLocation'), missing_role: T('errRole', { loc: '' }).replace(' .', '.'),
+        missing_name: T('errName'), invalid_phone: T('errPhone'), invalid_email: T('errEmail'),
+        missing_referrer_name: T('errReferredBy'), resume_required: T('errResume'),
+        file_too_large: T('errResumeSize', { mb: Math.round((limits.resumeMaxBytes || 8388608) / 1048576) }),
+        missing_consent: T('errConsent')
+      };
+      return map[code] || T('errGeneric');
+    }
+
+    async function handleSubmit(ev) {
+      ev.preventDefault();
+      clearError();
+      var nameEl = document.getElementById('f-name');
+      var phoneEl = document.getElementById('f-phone');
+      var emailEl = document.getElementById('f-email');
+      var refByEl = document.getElementById('f-referred-by');
+      var consentEl = document.getElementById('f-consent');
+      var name = nameEl.value.trim();
+      var phone = phoneEl.value.trim();
+      var email = emailEl.value.trim();
+
+      if (!state.selected.length) return showError(T('errLocation'), document.getElementById('step-locations'));
+      for (var i = 0; i < state.selected.length; i += 1) {
+        var key = state.selected[i];
+        if (!(state.roles[key] || []).length) {
+          return showError(T('errRole', { loc: locByKey(key).name }), document.getElementById('roles-' + key));
+        }
+      }
+      if (!name) { nameEl.classList.add('invalid'); return showError(T('errName'), nameEl); }
+      if (phone.replace(/\D/g, '').length < 7) { phoneEl.classList.add('invalid'); return showError(T('errPhone'), phoneEl); }
+      if (!/.+@.+\..+/.test(email)) { emailEl.classList.add('invalid'); return showError(T('errEmail'), emailEl); }
+      if (!state.referred) return showError(T('errReferred'), document.getElementById('referral-field'));
+      if (state.referred === 'yes' && !refByEl.value.trim()) { refByEl.classList.add('invalid'); return showError(T('errReferredBy'), refByEl); }
+      var dropResume = document.getElementById('drop-resume');
+      if (resumeRequired() && !state.resumeFile) { dropResume.classList.add('invalid'); return showError(T('errResume'), dropResume); }
+      if (state.resumeFile && limits.resumeMaxBytes && state.resumeFile.size > limits.resumeMaxBytes) {
+        dropResume.classList.add('invalid');
+        return showError(T('errResumeSize', { mb: Math.round(limits.resumeMaxBytes / 1048576) }), dropResume);
+      }
+      if (state.photoFile && limits.photoMaxBytes && state.photoFile.size > limits.photoMaxBytes) {
+        var dropPhoto = document.getElementById('drop-photo');
+        dropPhoto.classList.add('invalid');
+        return showError(T('errPhotoSize', { mb: Math.round(limits.photoMaxBytes / 1048576) }), dropPhoto);
+      }
+      if (!consentEl.checked) { document.getElementById('consent-wrap').classList.add('invalid'); return showError(T('errConsent'), document.getElementById('consent-wrap')); }
+
+      var btn = document.getElementById('submit-btn');
+      btn.disabled = true;
+      btn.dataset.busy = '1';
+      btn.innerHTML = '<span class="spinner"></span>' + esc(T('sending'));
+      try {
+        var payload = Object.assign({
+          name: name,
+          phone: phone,
+          email: email,
+          lang: lang,
+          consent: true,
+          selections: state.selected.map(function (k) { return { location: k, roles: state.roles[k] || [] }; }),
+          answers: { __referred: state.referred, __referred_by: state.referred === 'yes' ? refByEl.value.trim() : '' },
+          resume_data_url: state.resumeFile ? await readFileAsDataUrl(state.resumeFile) : '',
+          resume_file_name: state.resumeFile ? state.resumeFile.name : '',
+          photo_data_url: state.photoFile ? await readFileAsDataUrl(state.photoFile) : '',
+          photo_file_name: state.photoFile ? state.photoFile.name : ''
+        }, collectAttribution());
+        var resp = await fetch('/careers/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        var out = await resp.json().catch(function () { return {}; });
+        if (!resp.ok) throw new Error(out.error || 'submit_failed');
+        after = {
+          appId: out.application_id || '',
+          code: out.application_code || '',
+          slug: out.screening_slug || '',
+          phone: phone,
+          name: name.split(/\s+/)[0],
+          screening: !!out.screening_available,
+          delay: Number(out.screening_delay_seconds) || 30,
+          screenState: '',
+          applied: state.selected.map(function (k) { return { loc: locByKey(k), roles: (state.roles[k] || []).slice() }; })
+        };
+        document.getElementById('apply-form').style.display = 'none';
+        renderSuccess();
+        document.getElementById('postulate').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (err) {
+        showError(serverErrorText(err && err.message));
+      } finally {
+        btn.disabled = false;
+        delete btn.dataset.busy;
+        updateSubmitLabel();
+      }
+    }
+
+    /* ---------- Success ---------- */
+    function contactPhoneLink() {
+      var raw = String(data.contactPhone || '').trim();
+      var cleaned = raw.replace(/[^\d+]/g, '');
+      if (!cleaned) return '';
+      return cleaned.charAt(0) === '+' ? cleaned : '+' + cleaned.replace(/\D/g, '');
+    }
+    function prettyPhone(p) {
+      var d = String(p || '').replace(/\D/g, '');
+      if (d.length === 11 && d.charAt(0) === '1') d = d.slice(1);
+      if (d.length === 10) return '(' + d.slice(0, 3) + ') ' + d.slice(3, 6) + '-' + d.slice(6);
+      return p;
+    }
+
+    function renderSuccess() {
+      var box = document.getElementById('success');
+      if (!after.appId) { box.classList.remove('show'); return; }
+      var html = '<div class="success-badge"><svg class="icon"><use href="#i-check"/></svg></div>' +
+        '<h3>' + esc(T('okTitle', { name: after.name })) + '</h3><p>' + esc(T('okSub')) + '</p><div class="applied-list">';
+      after.applied.forEach(function (a) {
+        if (!a.loc) return;
+        var roles = a.roles.map(function (v) {
+          var r = a.loc.roles.filter(function (x) { return x.value === v; })[0] || { value: v };
+          return roleLabel(r);
+        }).join(' · ');
+        html += '<div class="applied-item">' + logoBadge(a.loc) + '<div><b>' + esc(a.loc.name) + '</b><small>' + esc(roles) + '</small></div></div>';
+      });
+      html += '</div>';
+
+      if (after.screening && after.screenState !== 'declined') {
+        if (after.screenState === 'requested') {
+          html += '<div class="callout dark"><b class="t">' + esc(T('screenDoneTitle')) + '</b><p>' + esc(T('screenDoneText', { phone: prettyPhone(after.phone) })) + '</p><div class="countdown" id="countdown"></div></div>';
+        } else {
+          html += '<div class="callout dark"><b class="t">' + esc(T('screenTitle')) + '</b><p id="screen-text">' + esc(T('screenText', { s: after.delay, phone: prettyPhone(after.phone) })) + '</p>' +
+            '<div class="row"><button type="button" class="btn btn-accent" id="screen-yes"><svg class="icon"><use href="#i-phone"/></svg>' + esc(T('screenYes')) + '</button>' +
+            '<button type="button" class="btn btn-ghost" id="screen-no">' + esc(T('screenNo')) + '</button></div></div>';
+        }
+      }
+      var phoneLink = contactPhoneLink();
+      if (phoneLink) {
+        var cname = data.contactName || 'Yes! Hiring Team';
+        var vcard = ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + cname, 'N:;' + cname + ';;;', 'TEL;TYPE=CELL:' + phoneLink, 'END:VCARD'].join('\n');
+        html += '<div class="callout light"><b class="t">' + esc(T('saveTitle')) + '</b>' +
+          '<a class="phone-link" href="tel:' + esc(phoneLink) + '">' + esc(prettyPhone(phoneLink)) + '</a>' +
+          '<div class="row"><a class="btn btn-dark btn-sm" download="contact.vcf" href="data:text/vcard;charset=utf-8,' + encodeURIComponent(vcard) + '">' + esc(T('saveContact')) + ' · ' + esc(cname) + '</a></div></div>';
+      }
+      if (after.code) {
+        html += '<div class="callout light"><b class="t">' + esc(T('codeTitle')) + '</b><div class="code">' + esc(after.code) + '</div><p style="margin:0">' + esc(T('codeHint')) + '</p></div>';
+      }
+      box.innerHTML = html;
+      box.classList.add('show');
+      document.getElementById('steps-legend').style.display = 'none';
+
+      var yes = document.getElementById('screen-yes');
+      var no = document.getElementById('screen-no');
+      if (yes) yes.addEventListener('click', requestScreening);
+      if (no) no.addEventListener('click', function () { after.screenState = 'declined'; renderSuccess(); });
+      if (after.screenState === 'requested') startCountdown();
+    }
+
+    async function requestScreening() {
+      var yes = document.getElementById('screen-yes');
+      var no = document.getElementById('screen-no');
+      yes.disabled = true; no.disabled = true;
+      yes.innerHTML = '<span class="spinner"></span>' + esc(T('screenWorking'));
+      try {
+        var resp = await fetch('/apply/' + encodeURIComponent(after.slug) + '/screening-call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ application_id: after.appId })
+        });
+        var out = await resp.json().catch(function () { return {}; });
+        if (!resp.ok) throw new Error(out.error || 'screening_failed');
+        if (out.delay_seconds) after.delay = Number(out.delay_seconds) || after.delay;
+        after.screenState = 'requested';
+        after.callAt = Date.now() + after.delay * 1000;
+        renderSuccess();
+      } catch (err) {
+        yes.disabled = false; no.disabled = false;
+        yes.textContent = T('retry');
+        var txt = document.getElementById('screen-text');
+        if (txt) txt.textContent = T('screenFail');
+      }
+    }
+
+    function startCountdown() {
+      if (countdownTimer) clearInterval(countdownTimer);
+      var el = document.getElementById('countdown');
+      var paint = function () {
+        var left = Math.max(0, Math.round((after.callAt - Date.now()) / 1000));
+        if (!el) return;
+        el.textContent = left > 0 ? left + 's' : T('calling');
+        if (left <= 0) { clearInterval(countdownTimer); countdownTimer = null; }
+      };
+      paint();
+      countdownTimer = setInterval(paint, 1000);
+    }
+
+    /* ---------- Page chrome ---------- */
+    function initChrome() {
+      var topbar = document.getElementById('topbar');
+      var cta = document.getElementById('mobile-cta');
+      var heroCtas = document.querySelector('.hero-ctas');
+      var form = document.getElementById('postulate');
+      var heroVisible = true;
+      var formVisible = false;
+      var sync = function () { cta.classList.toggle('show', !heroVisible && !formVisible); };
+      if ('IntersectionObserver' in window) {
+        new IntersectionObserver(function (entries) { heroVisible = entries[0].isIntersecting; sync(); }).observe(heroCtas);
+        new IntersectionObserver(function (entries) { formVisible = entries[0].isIntersecting; sync(); }, { rootMargin: '0px 0px -20% 0px' }).observe(form);
+      }
+      window.addEventListener('scroll', function () { topbar.classList.toggle('scrolled', window.scrollY > 8); }, { passive: true });
+
+      document.addEventListener('click', function (e) {
+        var btn = e.target.closest && e.target.closest('[data-apply]');
+        if (!btn) return;
+        e.preventDefault();
+        var key = btn.getAttribute('data-apply');
+        if (map) map.closePopup();
+        if (state.selected.indexOf(key) < 0) toggleLocation(key, true);
+        var target = document.getElementById('roles-' + key) || document.getElementById('postulate');
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+
+      document.querySelectorAll('.lang button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          lang = b.dataset.lang;
+          try { localStorage.setItem('careers_lang', lang); } catch (e) {}
+          renderAll();
+        });
+      });
+      ['f-name', 'f-phone', 'f-email', 'f-referred-by'].forEach(function (id) {
+        document.getElementById(id).addEventListener('input', function (e) { e.target.classList.remove('invalid'); updateLegend(); });
+      });
+      document.getElementById('f-consent').addEventListener('change', function () { document.getElementById('consent-wrap').classList.remove('invalid'); updateLegend(); });
+      document.getElementById('apply-form').addEventListener('submit', handleSubmit);
+    }
+
+    function renderAll() {
+      renderText();
+      renderHero();
+      renderLocations();
+      renderTeams();
+      renderBenefits();
+      renderPicks();
+      renderRoleGroups();
+      renderSuccess();
+      if (map) Object.keys(markers).forEach(function (k) { markers[k].setPopupContent(popupHtml(locByKey(k))); });
+    }
+
+    // Preselect from a link like /careers?loc=campo so each brand can share its own pre-filled URL.
+    (function preselect() {
+      var q = new URLSearchParams(location.search).get('loc') || '';
+      q.split(',').map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (key) {
+        var loc = locByKey(key);
+        if (loc && state.selected.indexOf(key) < 0) {
+          state.selected.push(key);
+          state.roles[key] = loc.roles.length === 1 ? [loc.roles[0].value] : [];
+        }
+      });
+    })();
+
+    renderAll();
+    initReferral();
+    initFile('f-resume', 'drop-resume', 'resumeFile');
+    initFile('f-photo', 'drop-photo', 'photoFile');
+    initLightbox();
+    initChrome();
+    initMap();
+    updateLegend();
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+{
+  "brand": "Yes! Restaurants",
+  "title": {
+    "es": "Trabajá con nosotros",
+    "en": "Work with us"
+  },
+  "headline": {
+    "es": "Un equipo, varios locales. Elegí dónde sumarte.",
+    "en": "One team, several restaurants. Pick where you fit."
+  },
+  "intro": {
+    "es": "Postulate una sola vez y elegí en qué locales y en qué puestos querés trabajar. Te contactamos rápido, en español o en inglés.",
+    "en": "Apply once and choose which restaurants and positions you want. We reach out fast, in English or Spanish."
+  },
+  "logoUrl": "https://hrbot-files.nyc3.digitaloceanspaces.com/portal-assets/yes-cafe/Yes_CAFE_Logo_Redondo_para_stickers_transparentes4.png",
+  "benefits": [
+    {
+      "icon": "meal",
+      "es": "Comida para el staff",
+      "en": "Employee meals"
+    },
+    {
+      "icon": "tag",
+      "es": "Descuentos en todos los locales Yes!",
+      "en": "Discounts at every Yes! location"
+    },
+    {
+      "icon": "clock",
+      "es": "Horarios flexibles",
+      "en": "Flexible schedules"
+    },
+    {
+      "icon": "growth",
+      "es": "Crecimiento real dentro de la empresa",
+      "en": "Real room to grow inside the company"
+    },
+    {
+      "icon": "team",
+      "es": "Equipo que se ayuda",
+      "en": "A supportive, hands-on team"
+    },
+    {
+      "icon": "spark",
+      "es": "Entrenamiento desde el primer día",
+      "en": "Training from day one"
+    }
+  ],
+  "locations": [
+    {
+      "key": "campo",
+      "page": "campo",
+      "name": "New Campo Argentino",
+      "tagline": {
+        "es": "Steakhouse argentino · full service",
+        "en": "Argentine steakhouse · full service"
+      },
+      "area": "North Beach",
+      "address": "6954 Collins Ave, Miami Beach, FL 33141",
+      "lat": 25.8552819,
+      "lng": -80.1207234,
+      "color": "#3f7cc0",
+      "badgeUrl": "https://hrbot-files.nyc3.digitaloceanspaces.com/portal-assets/campo/stickers_new_campo_nuevos_2025_-_3_estrellas.png",
+      "badgeRound": true
+    },
+    {
+      "key": "yes_71",
+      "page": "yes-cafe",
+      "name": "Yes! Cafe 71st St",
+      "tagline": {
+        "es": "Café, brunch y cocina rápida",
+        "en": "Coffee, brunch and fast casual"
+      },
+      "area": "North Beach",
+      "address": "601 71st St, Miami Beach, FL 33141",
+      "lat": 25.8561681,
+      "lng": -80.1243119,
+      "color": "#e3066a"
+    },
+    {
+      "key": "mexi",
+      "page": "mexi",
+      "name": "Mexi Cafe",
+      "tagline": {
+        "es": "Cocina mexicana · fast casual",
+        "en": "Mexican kitchen · fast casual"
+      },
+      "area": "Miami Beach",
+      "address": "6300 Collins Ave, Miami Beach, FL 33141",
+      "lat": 25.8449611,
+      "lng": -80.1207692,
+      "color": "#12a173",
+      "badgeRound": true
+    },
+    {
+      "key": "yes_pizza",
+      "page": "yes-cafe",
+      "name": "Yes! Cafe & Pizza",
+      "tagline": {
+        "es": "Café y pizza · MiMo",
+        "en": "Coffee & pizza · MiMo"
+      },
+      "area": "MiMo · 79th St",
+      "address": "731 NE 79th St, Miami, FL 33138",
+      "lat": 25.8482207,
+      "lng": -80.1815773,
+      "color": "#c2185b"
+    }
+  ]
+}

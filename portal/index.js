@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const express = require("express");
 const { createPortalStore } = require("./store");
 const { renderApplyPage } = require("./templates");
+const { renderCareersPage } = require("./careers-template");
 const {
   randomToken,
   safeSlug,
@@ -288,6 +289,7 @@ function createPortalRouter(options = {}) {
   const placeScreeningCall = typeof options.placeScreeningCall === "function" ? options.placeScreeningCall : null;
   const screeningDelayMs = Math.max(0, Number(options.screeningDelayMs ?? SCREENING_CALL_DELAY_MS) || 0);
   const pendingScreening = new Map();
+  const careersConfigPath = options.careersConfigPath || path.join(__dirname, "..", "config", "careers.json");
 
   function purgePendingScreening() {
     const now = Date.now();
@@ -371,6 +373,274 @@ function createPortalRouter(options = {}) {
     return res.type("text/html").send(renderApplyPage(payload));
   }
 
+  // Parses and validates a submission for one portal page. Throws Error(code) on invalid input; no side effects.
+  function prepareSubmission({ page, body, requireQuestions = true, locationLabels = null }) {
+    const name = String(body.name || "").trim();
+    const email = String(body.email || "").trim();
+    const phone = normalizePhone(String(body.phone || "").trim());
+    const roleField = page.fields?.role || {};
+    const roleByLocation = page.fields?.roleByLocation || {};
+    const roleOptions = Array.isArray(roleField.options) ? roleField.options : [];
+    const roleMap = new Map();
+    const addRoleOption = (opt) => {
+      if (!opt) return;
+      if (typeof opt === "string") {
+        roleMap.set(opt, opt);
+        return;
+      }
+      const key = opt.key || opt.value || "";
+      if (!key) return;
+      const labelObj = opt.label || opt;
+      const label = typeof labelObj === "string"
+        ? labelObj
+        : (labelObj.es || labelObj.en || "");
+      roleMap.set(String(key), label || String(key));
+    };
+    roleOptions.forEach(addRoleOption);
+    Object.values(roleByLocation || {}).forEach((list) => {
+      if (!Array.isArray(list)) return;
+      list.forEach(addRoleOption);
+    });
+    const rawRoles = Array.isArray(body.roles)
+      ? body.roles
+      : (body.roles ? [body.roles] : []);
+    const roleValues = rawRoles.length ? rawRoles : (body.role ? [body.role] : []);
+    const roles = [];
+    roleValues.forEach((val) => {
+      const key = String(val || "").trim();
+      if (!key) return;
+      if (roles.some((r) => r.key === key)) return;
+      const label = roleMap.get(key) || key;
+      roles.push({ key, label });
+    });
+    const role = roles.length
+      ? roles[0].key
+      : String(body.role || page.role || "").trim();
+    const consent = body.consent === true || body.consent === "true" || body.consent === "on" || body.consent === 1;
+    const locationField = page.fields?.locations || {};
+    const rawLocations = Array.isArray(body.locations)
+      ? body.locations
+      : (body.locations ? [body.locations] : []);
+    const locations = [];
+    const locationOptions = Array.isArray(locationField.options) ? locationField.options : [];
+    const locationMap = new Map();
+    locationOptions.forEach((opt) => {
+      if (!opt) return;
+      if (typeof opt === "string") {
+        locationMap.set(opt, opt);
+        return;
+      }
+      const key = opt.key || opt.value || "";
+      if (!key) return;
+      const labelObj = opt.label || opt;
+      const label = typeof labelObj === "string"
+        ? labelObj
+        : (labelObj.es || labelObj.en || "");
+      locationMap.set(String(key), label || String(key));
+    });
+    rawLocations.forEach((val) => {
+      const key = String(val || "").trim();
+      if (!key) return;
+      const label = locationMap.get(key) || locationLabels?.[key] || key;
+      if (!locations.some((loc) => loc.key === key)) {
+        locations.push({ key, label });
+      }
+    });
+    const rawAnswers = body.answers && typeof body.answers === "object" ? body.answers : {};
+    const answers = {};
+    const trackingSource = resolvePortalTrackingSource(body, rawAnswers);
+
+    if (!name) throw new Error("missing_name");
+    if (!consent) throw new Error("missing_consent");
+    if (page.fields?.email?.required !== false && !/.+@.+\..+/.test(email)) {
+      throw new Error("invalid_email");
+    }
+    if (page.fields?.phone?.required !== false && phone.length < 7) {
+      throw new Error("invalid_phone");
+    }
+    if (locationField.required && locations.length === 0) {
+      throw new Error("missing_location");
+    }
+    if (roleField.required && !role) {
+      throw new Error("missing_role");
+    }
+
+    if (requireQuestions) {
+      for (const q of page.questions || []) {
+        if (!q || !q.required) continue;
+        const val = rawAnswers[q.id];
+        if (!val) throw new Error("missing_answer");
+      }
+    }
+    (page.questions || []).forEach((q) => {
+      if (!q || !q.id) return;
+      const val = rawAnswers[q.id];
+      answers[q.id] = typeof val === "string" ? val.trim() : String(val || "").trim();
+    });
+    if (rawAnswers.__utm && typeof rawAnswers.__utm === "object") {
+      answers.__utm = {
+        ...rawAnswers.__utm,
+        ...(trackingSource ? { source: trackingSource, utm_source: rawAnswers.__utm.utm_source || trackingSource } : {})
+      };
+    } else if (trackingSource) {
+      answers.__utm = { source: trackingSource, utm_source: trackingSource };
+    }
+    if (roles.length) {
+      answers.__roles = roles;
+    }
+    const referred = rawAnswers.__referred === "yes" ? "yes" : (rawAnswers.__referred === "no" ? "no" : "");
+    const referredBy = referred === "yes" ? String(rawAnswers.__referred_by || "").trim().slice(0, 120) : "";
+    if (referred === "yes" && !referredBy) {
+      throw new Error("missing_referrer_name");
+    }
+    if (referred) {
+      answers.__referred = referred;
+      answers.__referred_by = referredBy;
+    }
+    const langPref = body.lang === "en" ? "en" : "es";
+    return { name, email, phone, role, roles, consent, locations, answers, trackingSource, langPref };
+  }
+
+  async function saveSubmissionFiles({ body, relDir, appId, resumeRequired }) {
+    const resumeDataUrl = body.resume_data_url || "";
+    const resumeFileName = body.resume_file_name || "";
+    const photoDataUrl = body.photo_data_url || "";
+    const photoFileName = body.photo_file_name || "";
+    let resumeUrl = "";
+    let photoUrl = "";
+    if (resumeRequired && !resumeDataUrl) {
+      throw new Error("resume_required");
+    }
+    if (resumeDataUrl) {
+      const saved = await saveDataUrlFile({
+        dataUrl: resumeDataUrl,
+        uploadsDir,
+        relDir,
+        fileName: resumeFileName || `resume_${appId}.pdf`,
+        maxBytes: resumeMaxBytes,
+        allowedMime: RESUME_MIME,
+        uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+        publicUploadsBaseUrl
+      });
+      if (saved) resumeUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
+    }
+    if (photoDataUrl) {
+      const saved = await saveDataUrlFile({
+        dataUrl: photoDataUrl,
+        uploadsDir,
+        relDir,
+        fileName: photoFileName || `photo_${appId}.jpg`,
+        maxBytes: photoMaxBytes,
+        allowedMime: IMAGE_MIME,
+        uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
+        publicUploadsBaseUrl
+      });
+      if (saved) photoUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
+    }
+    return { resumeUrl, photoUrl };
+  }
+
+  // Records the application, the CV entry and the push notification; registers the screening offer when allowed.
+  async function commitSubmission({
+    page,
+    slug,
+    prepared,
+    appId,
+    applicationCode,
+    resumeUrl,
+    photoUrl,
+    createdAt,
+    offerScreening = true,
+    customQuestionLocations = null,
+    customQuestionRoles = null,
+    sourcePrefix = ""
+  }) {
+    const { name, email, phone, role, roles, consent, locations, answers, trackingSource, langPref } = prepared;
+    const customQuestion = buildPreferenceQuestion({
+      locations: customQuestionLocations || locations,
+      roles: customQuestionRoles || roles,
+      lang: langPref
+    });
+    const customQuestionMode = customQuestion ? "ai" : "";
+    const finalAnswers = { ...answers, apply_code: applicationCode, __apply_code: applicationCode };
+
+    const application = {
+      id: appId,
+      slug,
+      brand: page.brand || "",
+      source: trackingSource || "",
+      role,
+      roles,
+      name,
+      email,
+      phone,
+      application_code: applicationCode,
+      consent,
+      answers: finalAnswers,
+      locations,
+      resume_url: resumeUrl,
+      photo_url: photoUrl,
+      created_at: createdAt || new Date().toISOString()
+    };
+
+    await store.recordApplication(application);
+
+    const cvText = buildCvText(application, page);
+    const primaryLocation = locations[0] || {};
+    const cvBrand = locations.length === 1
+      ? (primaryLocation.key || primaryLocation.label || page.brand || "")
+      : (page.brand || primaryLocation.key || primaryLocation.label || "");
+    const sourceBase = sourcePrefix || `portal:${slug}`;
+    const cvSource = trackingSource ? `${sourceBase}:${trackingSource}` : sourceBase;
+    let cvId = "";
+    if (saveCvEntry) {
+      const savedCv = await saveCvEntry({
+        brand: cvBrand,
+        role: role || "",
+        applicant: name,
+        phone,
+        cv_text: cvText,
+        cv_url: resumeUrl,
+        cv_photo_url: photoUrl,
+        source: cvSource,
+        custom_question: customQuestion,
+        custom_question_mode: customQuestionMode
+      });
+      cvId = String(savedCv?.id || "");
+    }
+
+    const screeningAvailable = !!(offerScreening && placeScreeningCall && phone && phone.length >= 7 && page.screening?.enabled !== false);
+    if (screeningAvailable) {
+      purgePendingScreening();
+      pendingScreening.set(appId, {
+        slug,
+        requestedAt: 0,
+        expiresAt: Date.now() + SCREENING_OFFER_TTL_MS,
+        payload: {
+          to: phone,
+          brand: cvBrand,
+          role: role || "",
+          applicant: name,
+          cv_summary: cvText,
+          cv_text: cvText,
+          cv_id: cvId,
+          resume_url: resumeUrl,
+          source: cvSource,
+          custom_question: customQuestion,
+          custom_question_mode: customQuestionMode
+        }
+      });
+    }
+
+    if (notifyOnApplication) {
+      Promise.resolve(notifyOnApplication({ application, page })).catch((err) => {
+        logger.error("[portal] notify failed", err?.message || err);
+      });
+    }
+
+    return { application, screeningAvailable };
+  }
+
   router.use(uploadsBaseUrl, express.static(uploadsDir, { fallthrough: true }));
 
   router.get("/apply/:slug", async (req, res) => {
@@ -411,248 +681,24 @@ function createPortalRouter(options = {}) {
       }
 
       const body = req.body || {};
-      const name = String(body.name || "").trim();
-      const email = String(body.email || "").trim();
-      const phoneRaw = String(body.phone || "").trim();
-      const phone = normalizePhone(phoneRaw);
-      const roleField = page.fields?.role || {};
-      const roleByLocation = page.fields?.roleByLocation || {};
-      const roleOptions = Array.isArray(roleField.options) ? roleField.options : [];
-      const roleMap = new Map();
-      const addRoleOption = (opt) => {
-        if (!opt) return;
-        if (typeof opt === "string") {
-          roleMap.set(opt, opt);
-          return;
-        }
-        const key = opt.key || opt.value || "";
-        if (!key) return;
-        const labelObj = opt.label || opt;
-        const label = typeof labelObj === "string"
-          ? labelObj
-          : (labelObj.es || labelObj.en || "");
-        roleMap.set(String(key), label || String(key));
-      };
-      roleOptions.forEach(addRoleOption);
-      Object.values(roleByLocation || {}).forEach((list) => {
-        if (!Array.isArray(list)) return;
-        list.forEach(addRoleOption);
-      });
-      const rawRoles = Array.isArray(body.roles)
-        ? body.roles
-        : (body.roles ? [body.roles] : []);
-      const roleValues = rawRoles.length ? rawRoles : (body.role ? [body.role] : []);
-      const roles = [];
-      roleValues.forEach((val) => {
-        const key = String(val || "").trim();
-        if (!key) return;
-        if (roles.some((r) => r.key === key)) return;
-        const label = roleMap.get(key) || key;
-        roles.push({ key, label });
-      });
-      const role = roles.length
-        ? roles[0].key
-        : String(body.role || page.role || "").trim();
-      const consent = body.consent === true || body.consent === "true" || body.consent === "on" || body.consent === 1;
-      const locationField = page.fields?.locations || {};
-      const rawLocations = Array.isArray(body.locations)
-        ? body.locations
-        : (body.locations ? [body.locations] : []);
-      const locations = [];
-      const locationOptions = Array.isArray(locationField.options) ? locationField.options : [];
-      const locationMap = new Map();
-      locationOptions.forEach((opt) => {
-        if (!opt) return;
-        if (typeof opt === "string") {
-          locationMap.set(opt, opt);
-          return;
-        }
-        const key = opt.key || opt.value || "";
-        if (!key) return;
-        const labelObj = opt.label || opt;
-        const label = typeof labelObj === "string"
-          ? labelObj
-          : (labelObj.es || labelObj.en || "");
-        locationMap.set(String(key), label || String(key));
-      });
-      rawLocations.forEach((val) => {
-        const key = String(val || "").trim();
-        if (!key) return;
-        const label = locationMap.get(key) || key;
-        if (!locations.some((loc) => loc.key === key)) {
-          locations.push({ key, label });
-        }
-      });
-      const rawAnswers = body.answers && typeof body.answers === "object" ? body.answers : {};
-      const answers = {};
-      const trackingSource = resolvePortalTrackingSource(body, rawAnswers);
-
-      if (!name) return res.status(400).json({ error: "missing_name" });
-      if (!consent) return res.status(400).json({ error: "missing_consent" });
-      if (page.fields?.email?.required !== false && !/.+@.+\..+/.test(email)) {
-        return res.status(400).json({ error: "invalid_email" });
-      }
-      if (page.fields?.phone?.required !== false && phone.length < 7) {
-        return res.status(400).json({ error: "invalid_phone" });
-      }
-      if (locationField.required && locations.length === 0) {
-        return res.status(400).json({ error: "missing_location" });
-      }
-      if (roleField.required && !role) {
-        return res.status(400).json({ error: "missing_role" });
-      }
-
-      for (const q of page.questions || []) {
-        if (!q || !q.required) continue;
-        const val = rawAnswers[q.id];
-        if (!val) return res.status(400).json({ error: "missing_answer" });
-      }
-      (page.questions || []).forEach((q) => {
-        if (!q || !q.id) return;
-        const val = rawAnswers[q.id];
-        answers[q.id] = typeof val === "string" ? val.trim() : String(val || "").trim();
-      });
-      if (rawAnswers.__utm && typeof rawAnswers.__utm === "object") {
-        answers.__utm = {
-          ...rawAnswers.__utm,
-          ...(trackingSource ? { source: trackingSource, utm_source: rawAnswers.__utm.utm_source || trackingSource } : {})
-        };
-      } else if (trackingSource) {
-        answers.__utm = { source: trackingSource, utm_source: trackingSource };
-      }
-      if (roles.length) {
-        answers.__roles = roles;
-      }
-      const referred = rawAnswers.__referred === "yes" ? "yes" : (rawAnswers.__referred === "no" ? "no" : "");
-      const referredBy = referred === "yes" ? String(rawAnswers.__referred_by || "").trim().slice(0, 120) : "";
-      if (referred === "yes" && !referredBy) {
-        return res.status(400).json({ error: "missing_referrer_name" });
-      }
-      if (referred) {
-        answers.__referred = referred;
-        answers.__referred_by = referredBy;
-      }
-      const langPref = body.lang === "en" ? "en" : "es";
-      const customQuestion = buildPreferenceQuestion({ locations, roles, lang: langPref });
-      const customQuestionMode = customQuestion ? "ai" : "";
-
+      const prepared = prepareSubmission({ page, body });
       const appId = randomToken(10);
       const applicationCode = generateApplicationCode();
-      const appDir = path.posix.join("portal-apps", slug, appId);
-      let resumeUrl = "";
-      let photoUrl = "";
-
-      const resumeDataUrl = body.resume_data_url || "";
-      const resumeFileName = body.resume_file_name || "";
-      const photoDataUrl = body.photo_data_url || "";
-      const photoFileName = body.photo_file_name || "";
-
-      if (page.resume?.required && !resumeDataUrl) {
-        return res.status(400).json({ error: "resume_required" });
-      }
-
-      if (resumeDataUrl) {
-        const saved = await saveDataUrlFile({
-          dataUrl: resumeDataUrl,
-          uploadsDir,
-          relDir: appDir,
-          fileName: resumeFileName || `resume_${appId}.pdf`,
-          maxBytes: resumeMaxBytes,
-          allowedMime: RESUME_MIME,
-          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
-          publicUploadsBaseUrl
-        });
-        if (saved) resumeUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
-      }
-
-      if (photoDataUrl) {
-        const saved = await saveDataUrlFile({
-          dataUrl: photoDataUrl,
-          uploadsDir,
-          relDir: appDir,
-          fileName: photoFileName || `photo_${appId}.jpg`,
-          maxBytes: photoMaxBytes,
-          allowedMime: IMAGE_MIME,
-          uploadToSpaces: useSpacesUploads ? uploadToSpaces : null,
-          publicUploadsBaseUrl
-        });
-        if (saved) photoUrl = saved.url || `${publicUploadsBaseUrl}/${saved.relPath}`;
-      }
-      answers.apply_code = applicationCode;
-      answers.__apply_code = applicationCode;
-
-      const application = {
-        id: appId,
+      const { resumeUrl, photoUrl } = await saveSubmissionFiles({
+        body,
+        relDir: path.posix.join("portal-apps", slug, appId),
+        appId,
+        resumeRequired: !!page.resume?.required
+      });
+      const { screeningAvailable } = await commitSubmission({
+        page,
         slug,
-        brand: page.brand || "",
-        source: trackingSource || "",
-        role,
-        roles,
-        name,
-        email,
-        phone,
-        application_code: applicationCode,
-        consent,
-        answers,
-        locations,
-        resume_url: resumeUrl,
-        photo_url: photoUrl,
-        created_at: new Date().toISOString()
-      };
-
-      await store.recordApplication(application);
-
-      const cvText = buildCvText(application, page);
-      const primaryLocation = locations[0] || {};
-      const cvBrand = locations.length === 1
-        ? (primaryLocation.key || primaryLocation.label || page.brand || "")
-        : (page.brand || primaryLocation.key || primaryLocation.label || "");
-      const cvSource = trackingSource ? `portal:${slug}:${trackingSource}` : `portal:${slug}`;
-      let cvId = "";
-      if (saveCvEntry) {
-        const savedCv = await saveCvEntry({
-          brand: cvBrand,
-          role: role || "",
-          applicant: name,
-          phone,
-          cv_text: cvText,
-          cv_url: resumeUrl,
-          cv_photo_url: photoUrl,
-          source: cvSource,
-          custom_question: customQuestion,
-          custom_question_mode: customQuestionMode
-        });
-        cvId = String(savedCv?.id || "");
-      }
-
-      const screeningAvailable = !!(placeScreeningCall && phone && phone.length >= 7 && page.screening?.enabled !== false);
-      if (screeningAvailable) {
-        purgePendingScreening();
-        pendingScreening.set(appId, {
-          slug,
-          requestedAt: 0,
-          expiresAt: Date.now() + SCREENING_OFFER_TTL_MS,
-          payload: {
-            to: phone,
-            brand: cvBrand,
-            role: role || "",
-            applicant: name,
-            cv_summary: cvText,
-            cv_text: cvText,
-            cv_id: cvId,
-            resume_url: resumeUrl,
-            source: cvSource,
-            custom_question: customQuestion,
-            custom_question_mode: customQuestionMode
-          }
-        });
-      }
-
-      if (notifyOnApplication) {
-        Promise.resolve(notifyOnApplication({ application, page })).catch((err) => {
-          logger.error("[portal] notify failed", err?.message || err);
-        });
-      }
+        prepared,
+        appId,
+        applicationCode,
+        resumeUrl,
+        photoUrl
+      });
 
       return res.json({
         ok: true,
@@ -663,6 +709,229 @@ function createPortalRouter(options = {}) {
       });
     } catch (err) {
       logger.error("[portal] submit failed", err.message);
+      return res.status(400).json({ error: err.message || "submit_failed" });
+    }
+  });
+
+  function loadCareersConfig() {
+    try {
+      const raw = fs.readFileSync(careersConfigPath, "utf8");
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (err) {
+      logger.error("[portal] careers config unreadable", err?.message || err);
+      return null;
+    }
+  }
+
+  function careersOptionValue(opt) {
+    if (!opt) return "";
+    if (typeof opt === "string") return opt;
+    return String(opt.key || opt.value || opt.es || opt.en || "").trim();
+  }
+
+  function careersOptionLabel(opt) {
+    if (!opt) return { es: "", en: "" };
+    if (typeof opt === "string") return { es: opt, en: opt };
+    const src = opt.label || opt;
+    if (typeof src === "string") return { es: src, en: src };
+    const value = careersOptionValue(opt);
+    return { es: src.es || src.en || value, en: src.en || src.es || value };
+  }
+
+  // Builds the multi-location portal data from config/careers.json plus each brand's live portal page.
+  async function buildCareersPayload() {
+    const config = loadCareersConfig();
+    if (!config || !Array.isArray(config.locations)) return null;
+    const pageCache = new Map();
+    const getPageCached = async (slug) => {
+      if (!pageCache.has(slug)) pageCache.set(slug, await store.getPage(slug));
+      return pageCache.get(slug);
+    };
+    const locations = [];
+    const teams = [];
+    for (const loc of config.locations) {
+      if (!loc || !loc.key || !loc.page) continue;
+      const slug = safeSlug(loc.page);
+      const page = await getPageCached(slug);
+      if (!page || page.active === false) continue;
+      const key = String(loc.key).trim();
+      const pageLocations = Array.isArray(page.fields?.locations?.options) ? page.fields.locations.options : [];
+      const pageLoc = pageLocations.find((opt) => opt && careersOptionValue(opt) === key) || null;
+      const byLocation = page.fields?.roleByLocation?.[key];
+      const roleList = Array.isArray(byLocation) && byLocation.length
+        ? byLocation
+        : (Array.isArray(page.fields?.role?.options) ? page.fields.role.options : []);
+      const roles = [];
+      roleList.forEach((opt) => {
+        const value = careersOptionValue(opt);
+        if (!value || roles.some((r) => r.value === value)) return;
+        roles.push({ value, label: careersOptionLabel(opt) });
+      });
+      if (!roles.length) continue;
+      const gallery = Array.isArray(page.assets?.gallery) ? page.assets.gallery.filter(Boolean) : [];
+      locations.push({
+        key,
+        page: slug,
+        brand: page.brand || "",
+        name: loc.name || careersOptionLabel(pageLoc).es || page.brand || key,
+        tagline: loc.tagline || null,
+        area: loc.area || "",
+        address: loc.address || (typeof pageLoc?.address === "string" ? pageLoc.address : ""),
+        lat: Number(loc.lat),
+        lng: Number(loc.lng),
+        color: loc.color || page.theme?.colorPrimary || "",
+        logoUrl: loc.badgeUrl || page.assets?.logoUrl || "",
+        logoRound: !!loc.badgeRound,
+        heroUrl: loc.heroUrl || page.assets?.heroUrl || gallery[0] || "",
+        resumeRequired: !!page.resume?.required,
+        roles
+      });
+      if (!teams.some((team) => team.page === slug)) {
+        teams.push({
+          page: slug,
+          brand: page.brand || "",
+          logoUrl: loc.badgeUrl || page.assets?.logoUrl || "",
+          logoRound: !!loc.badgeRound,
+          color: loc.color || "",
+          photos: [page.assets?.heroUrl, ...gallery].filter(Boolean)
+        });
+      }
+    }
+    return {
+      brand: config.brand || "",
+      title: config.title || null,
+      headline: config.headline || null,
+      intro: config.intro || null,
+      logoUrl: config.logoUrl || "",
+      benefits: Array.isArray(config.benefits) ? config.benefits : [],
+      locations,
+      teams,
+      contactPhone,
+      contactName,
+      limits: { resumeMaxBytes, photoMaxBytes }
+    };
+  }
+
+  async function sendCareersPage(req, res) {
+    const payload = await buildCareersPayload();
+    if (!payload || !payload.locations.length) return res.status(404).send("not_found");
+    return res.type("text/html").send(renderCareersPage(payload));
+  }
+
+  router.get(["/careers", "/trabaja", "/jobs"], (req, res) => {
+    sendCareersPage(req, res).catch((err) => {
+      logger.error("[portal] careers page failed", err?.message || err);
+      res.status(500).send("error");
+    });
+  });
+
+  // Root of the jobs domain shows the portal to browsers only, so non-HTML probes keep their current 404.
+  router.get("/", (req, res, next) => {
+    if (!String(req.get("accept") || "").includes("text/html")) return next();
+    sendCareersPage(req, res).catch(next);
+  });
+
+  router.post("/careers/submit", async (req, res) => {
+    try {
+      const payload = await buildCareersPayload();
+      if (!payload) return res.status(404).json({ error: "not_found" });
+      const body = req.body || {};
+      const locationByKey = new Map(payload.locations.map((loc) => [loc.key, loc]));
+      const rawSelections = Array.isArray(body.selections) ? body.selections : [];
+      const selections = [];
+      rawSelections.forEach((sel) => {
+        const key = String(sel?.location || "").trim();
+        const loc = locationByKey.get(key);
+        if (!loc || selections.some((s) => s.loc.key === key)) return;
+        const allowed = new Set(loc.roles.map((r) => r.value));
+        const roles = (Array.isArray(sel.roles) ? sel.roles : [])
+          .map((r) => String(r || "").trim())
+          .filter((r, idx, arr) => r && allowed.has(r) && arr.indexOf(r) === idx);
+        selections.push({ loc, roles });
+      });
+      if (!selections.length) return res.status(400).json({ error: "missing_location" });
+      if (selections.some((s) => !s.roles.length)) return res.status(400).json({ error: "missing_role" });
+
+      // One application per brand page so each brand's managers, push alerts and filters keep working as today.
+      const groups = [];
+      selections.forEach((sel) => {
+        let group = groups.find((g) => g.slug === sel.loc.page);
+        if (!group) {
+          group = { slug: sel.loc.page, selections: [] };
+          groups.push(group);
+        }
+        group.selections.push(sel);
+      });
+
+      const trackedBody = { ...body };
+      if (!resolvePortalTrackingSource(body, body.answers || {})) trackedBody.source = "careers";
+      const locationLabels = {};
+      payload.locations.forEach((loc) => { locationLabels[loc.key] = loc.name; });
+
+      const prepared = [];
+      for (const group of groups) {
+        const page = await store.getPage(group.slug);
+        if (!page || page.active === false) return res.status(400).json({ error: "invalid_location" });
+        const roles = [];
+        group.selections.forEach((sel) => sel.roles.forEach((r) => { if (!roles.includes(r)) roles.push(r); }));
+        const groupBody = {
+          ...trackedBody,
+          locations: group.selections.map((sel) => sel.loc.key),
+          roles,
+          role: roles[0]
+        };
+        prepared.push({
+          group,
+          page,
+          data: prepareSubmission({ page, body: groupBody, requireQuestions: false, locationLabels })
+        });
+      }
+
+      const primaryAppId = randomToken(10);
+      const applicationCode = generateApplicationCode();
+      const { resumeUrl, photoUrl } = await saveSubmissionFiles({
+        body,
+        relDir: path.posix.join("portal-apps", "careers", primaryAppId),
+        appId: primaryAppId,
+        resumeRequired: selections.some((sel) => sel.loc.resumeRequired)
+      });
+
+      const allLocations = selections.map((sel) => ({ key: sel.loc.key, label: sel.loc.name }));
+      const allRoles = [];
+      selections.forEach((sel) => sel.roles.forEach((r) => { if (!allRoles.some((x) => x.key === r)) allRoles.push({ key: r, label: r }); }));
+      const now = Date.now();
+      let screeningAvailable = false;
+      // Record the secondary brands first so the primary application is the newest one for inbound code lookups.
+      for (let i = prepared.length - 1; i >= 0; i -= 1) {
+        const item = prepared[i];
+        const isPrimary = i === 0;
+        const result = await commitSubmission({
+          page: item.page,
+          slug: item.group.slug,
+          prepared: item.data,
+          appId: isPrimary ? primaryAppId : randomToken(10),
+          applicationCode,
+          resumeUrl,
+          photoUrl,
+          createdAt: new Date(now - i).toISOString(),
+          offerScreening: isPrimary,
+          customQuestionLocations: isPrimary ? allLocations : null,
+          customQuestionRoles: isPrimary ? allRoles : null
+        });
+        if (isPrimary) screeningAvailable = result.screeningAvailable;
+      }
+
+      return res.json({
+        ok: true,
+        application_id: primaryAppId,
+        application_code: applicationCode,
+        screening_slug: prepared[0].group.slug,
+        screening_available: screeningAvailable,
+        screening_delay_seconds: Math.round(screeningDelayMs / 1000)
+      });
+    } catch (err) {
+      logger.error("[portal] careers submit failed", err.message);
       return res.status(400).json({ error: err.message || "submit_failed" });
     }
   });
