@@ -216,7 +216,6 @@
       box-shadow: var(--shadow-sm); transition: box-shadow .2s ease, transform .2s ease, border-color .2s ease;
     }
     .job:hover { box-shadow: var(--shadow); transform: translateY(-2px); }
-    .job.urgent { border-color: rgba(220, 38, 38, .35); background: linear-gradient(180deg, #fff6f5 0%, #fff 55%); }
     .job.hide { display: none; }
     .job-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
     .job h3 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; }
@@ -242,6 +241,47 @@
     .eyebrow.hot .pulse { background: #dc2626; animation-name: pulseHot; }
     @keyframes pulseHot { 0% { box-shadow: 0 0 0 0 rgba(220,38,38,.45); } 70% { box-shadow: 0 0 0 9px rgba(220,38,38,0); } 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } }
     .rchip.hot { background: #fde2e1; color: #b42318; }
+    /* Urgent roles: hero box, stronger job cards, tinted form pills */
+    .btn-hot { background: #dc2626; color: #fff; border-color: #dc2626; box-shadow: 0 6px 16px -6px rgba(220,38,38,.55); }
+    .btn-hot:hover { background: #b91c1c; border-color: #b91c1c; }
+    .hot-box {
+      margin: 0 0 26px; max-width: 520px; border-radius: 20px; overflow: hidden;
+      background: var(--card); border: 1.5px solid rgba(220,38,38,.35);
+      box-shadow: 0 14px 34px -18px rgba(220,38,38,.45);
+    }
+    .hot-box[hidden] { display: none; }
+    .hot-box-head {
+      display: flex; align-items: center; gap: 9px; padding: 10px 16px;
+      background: #dc2626; color: #fff; font-size: 12.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .hot-box-head .dot { width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: blink 1.4s ease-in-out infinite; }
+    .hot-box-head small { margin-left: auto; font-size: 12px; font-weight: 700; letter-spacing: 0; text-transform: none; opacity: .9; }
+    .hot-row {
+      display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px;
+      background: none; border: 0; border-top: 1px solid var(--line); font: inherit; color: inherit; text-align: left; cursor: pointer;
+      transition: background .15s ease;
+    }
+    .hot-row:first-of-type { border-top: 0; }
+    .hot-row:hover { background: #fff6f5; }
+    .hot-row .loc-logo { width: 36px; height: 36px; flex: none; }
+    .hot-row .txt { min-width: 0; flex: 1; }
+    .hot-row b { display: block; font-size: 16px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.2; }
+    .hot-row span.where { display: block; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hot-row .go { flex: none; display: inline-flex; align-items: center; gap: 5px; padding: 8px 13px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 13px; font-weight: 800; }
+    .hot-row .go .icon { width: 15px; height: 15px; }
+    .hot-more { display: block; padding: 10px 16px; border-top: 1px solid var(--line); font-size: 13px; font-weight: 700; color: #b42318; text-decoration: none; }
+    .hot-more:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .job.urgent { border: 2px solid #dc2626; padding-top: 0; background: #fff; box-shadow: 0 16px 34px -20px rgba(220,38,38,.6); }
+    .job.urgent .job-flag {
+      margin: 0 -18px; padding: 8px 18px; background: #dc2626; color: #fff; border-radius: 17px 17px 0 0;
+      display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase;
+    }
+    .job.urgent .job-flag .dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: blink 1.4s ease-in-out infinite; }
+    .job.urgent h3 { font-size: 20px; }
+    .job.urgent .btn { align-self: stretch; justify-content: center; }
+    .role-pill.hot { border-color: rgba(220,38,38,.55); background: #fff6f5; }
+    .role-pill.hot:hover { border-color: #dc2626; }
+    .role-pill.hot.on { background: #dc2626; border-color: #dc2626; color: #fff; }
     .rchip.hot::before { content: "● "; font-size: 9px; vertical-align: 1px; }
     .role-pill .hot-tag { font-size: 10px; font-weight: 800; letter-spacing: .06em; padding: 2px 6px; border-radius: 999px; background: #dc2626; color: #fff; }
     .role-pill.on .hot-tag { background: #fff; color: #dc2626; }
@@ -465,6 +505,11 @@
       .benefits { grid-template-columns: 1fr; gap: 10px; }
       .jobs { grid-template-columns: 1fr; gap: 10px; }
       .job { padding: 16px; }
+      .job.urgent .job-flag { margin: 0 -16px; padding: 8px 16px; }
+      .hot-box { margin-bottom: 22px; }
+      .hot-row { padding: 11px 14px; gap: 10px; }
+      .hot-row .go span { display: none; }
+      .hot-row .go { padding: 8px 10px; }
       .benefit { padding: 14px 16px; }
       .form-card { padding: 22px 16px; border-radius: 22px; }
       .pick-grid, .fields { grid-template-columns: 1fr; }
@@ -508,6 +553,7 @@
           <span class="eyebrow" id="eyebrow"><span class="pulse"></span><span id="eyebrow-text"></span></span>
           <h1 id="headline"></h1>
           <p class="lead" id="intro"></p>
+          <div class="hot-box" id="hot-box" hidden></div>
           <div class="hero-ctas">
             <a class="btn btn-accent" href="#postulate"><span data-i18n="ctaApply"></span><svg class="icon"><use href="#i-arrow"/></svg></a>
             <a class="btn btn-ghost" href="#locales"><svg class="icon"><use href="#i-map"/></svg><span data-i18n="ctaSeeLocations"></span></a>
@@ -723,7 +769,7 @@
         tagline: 'Empleos', hiringNow: 'Estamos contratando ahora', hiringUrgent: 'Contratando urgente · {n} puestos', hiringUrgentOne: 'Contratando urgente · 1 puesto',
         jobsKicker: 'Puestos disponibles', jobsTitle: '¿Qué estamos buscando?',
         jobsSub: 'Todos los puestos abiertos, local por local. Los urgentes van primero.',
-        urgent: 'URGENTE', engReq: 'Inglés requerido', engNo: 'No hace falta inglés', physicalReq: 'Rol físico · de pie',
+        urgent: 'URGENTE', hotTitle: 'Buscamos ya', hotSub: 'Entrevista rápida', hotFlag: 'Urgente · buscamos ya', hotMore: 'Ver los {n} puestos urgentes', applyNow: 'Postularme ya', engReq: 'Inglés requerido', engNo: 'No hace falta inglés', physicalReq: 'Rol físico · de pie',
         showAll: 'Ver los {n} puestos', showLess: 'Ver menos', reqsFor: 'Requisitos · {role}',
         ctaApply: 'Postularme', ctaSeeLocations: 'Ver locales',
         statLocations: 'locales', statRoles: 'puestos', statLang: 'español o inglés',
@@ -769,7 +815,7 @@
         tagline: 'Careers', hiringNow: 'We are hiring now', hiringUrgent: 'Hiring urgently · {n} positions', hiringUrgentOne: 'Hiring urgently · 1 position',
         jobsKicker: 'Open positions', jobsTitle: 'Who we are looking for',
         jobsSub: 'Every open position, location by location. Urgent ones come first.',
-        urgent: 'URGENT', engReq: 'English required', engNo: 'No English needed', physicalReq: 'Physical role · on your feet',
+        urgent: 'URGENT', hotTitle: 'Hiring now', hotSub: 'Fast interview', hotFlag: 'Urgent · hiring now', hotMore: 'See all {n} urgent positions', applyNow: 'Apply now', engReq: 'English required', engNo: 'No English needed', physicalReq: 'Physical role · on your feet',
         showAll: 'See all {n} positions', showLess: 'Show less', reqsFor: 'Requirements · {role}',
         ctaApply: 'Apply now', ctaSeeLocations: 'See locations',
         statLocations: 'locations', statRoles: 'positions', statLang: 'English or Spanish',
@@ -958,6 +1004,7 @@
       });
       logos.innerHTML = html;
       document.getElementById('footer-logos').innerHTML = teams.map(function (team) { return logoBadge(team); }).join('');
+      renderHotBox();
       document.getElementById('stats').innerHTML =
         '<div class="stat"><b>' + locations.length + '</b><span>' + esc(T('statLocations')) + '</span></div>' +
         '<div class="stat"><b>' + uniqueRoleCount() + '</b><span>' + esc(T('statRoles')) + '</span></div>' +
@@ -979,6 +1026,23 @@
       });
       m += '<div class="float-card"><span class="ico"><svg class="icon"><use href="#i-check"/></svg></span><div><b>' + esc(T('floatTitle')) + '</b><span>' + esc(T('floatSub')) + '</span></div></div>';
       mosaic.innerHTML = m;
+    }
+
+    // Urgent roles get their own box above the hero buttons so they are the first thing candidates see.
+    var HOT_PREVIEW = 4;
+    function renderHotBox() {
+      var box = document.getElementById('hot-box');
+      var hot = allJobs().filter(function (j) { return j.role.urgent; });
+      if (!hot.length) { box.hidden = true; box.innerHTML = ''; return; }
+      var html = '<div class="hot-box-head"><span class="dot"></span>' + esc(T('hotTitle')) + '<small>' + esc(T('hotSub')) + '</small></div>';
+      hot.slice(0, HOT_PREVIEW).forEach(function (j) {
+        html += '<button type="button" class="hot-row" data-apply="' + esc(j.loc.key) + '" data-role="' + esc(j.role.value) + '">' +
+          logoBadge(j.loc) + '<span class="txt"><b>' + esc(roleLabel(j.role)) + '</b><span class="where">' + esc(j.loc.name) + ' · ' + esc(j.loc.area) + '</span></span>' +
+          '<span class="go"><span>' + esc(T('ctaApply')) + '</span><svg class="icon"><use href="#i-arrow"/></svg></span></button>';
+      });
+      if (hot.length > HOT_PREVIEW) html += '<a class="hot-more" href="#puestos">' + esc(T('hotMore', { n: hot.length })) + ' →</a>';
+      box.innerHTML = html;
+      box.hidden = false;
     }
 
     /* ---------- Locations + map ---------- */
@@ -1134,11 +1198,12 @@
       document.getElementById('jobs').innerHTML = jobs.map(function (j, idx) {
         var r = j.role;
         return '<article class="job' + (r.urgent ? ' urgent' : '') + (idx >= limit ? ' hide' : '') + '">' +
+          (r.urgent ? '<div class="job-flag"><span class="dot"></span>' + esc(T('hotFlag')) + '</div>' : '') +
           '<div class="job-head"><div><h3>' + esc(roleLabel(r)) + '</h3>' +
           '<div class="job-loc">' + logoBadge(j.loc) + '<span>' + esc(j.loc.name) + ' · ' + esc(j.loc.area) + '</span></div></div>' +
-          (r.urgent ? '<span class="urgent-badge">' + esc(T('urgent')) + '</span>' : '') + '</div>' +
+          '</div>' +
           reqTagsHtml(r) + reqListHtml(r) +
-          '<button type="button" class="btn ' + (r.urgent ? 'btn-accent' : 'btn-dark') + ' btn-sm" data-apply="' + esc(j.loc.key) + '" data-role="' + esc(r.value) + '">' + esc(T('ctaApply')) + '</button>' +
+          '<button type="button" class="btn ' + (r.urgent ? 'btn-hot' : 'btn-dark') + ' btn-sm" data-apply="' + esc(j.loc.key) + '" data-role="' + esc(r.value) + '">' + esc(T(r.urgent ? 'applyNow' : 'ctaApply')) + (r.urgent ? '<svg class="icon"><use href="#i-arrow"/></svg>' : '') + '</button>' +
           '</article>';
       }).join('');
       var more = document.getElementById('jobs-more');
@@ -1302,7 +1367,7 @@
         var chosen = state.roles[key] || [];
         var pills = sortedRoles(loc).map(function (r) {
           var on = chosen.indexOf(r.value) >= 0;
-          return '<button type="button" class="role-pill' + (on ? ' on' : '') + '" aria-pressed="' + on + '" data-key="' + esc(key) + '" data-role="' + esc(r.value) + '"><svg class="icon"><use href="#i-check"/></svg>' + esc(roleLabel(r)) + (r.urgent ? '<span class="hot-tag">' + esc(T('urgent')) + '</span>' : '') + '</button>';
+          return '<button type="button" class="role-pill' + (r.urgent ? ' hot' : '') + (on ? ' on' : '') + '" aria-pressed="' + on + '" data-key="' + esc(key) + '" data-role="' + esc(r.value) + '"><svg class="icon"><use href="#i-check"/></svg>' + esc(roleLabel(r)) + (r.urgent ? '<span class="hot-tag">' + esc(T('urgent')) + '</span>' : '') + '</button>';
         }).join('');
         return '<div class="role-group" id="roles-' + esc(key) + '"><div class="role-group-head">' + logoBadge(loc) + '<b>' + esc(loc.name) + '</b><small>' + esc(loc.area) + '</small></div><div class="role-pills">' + pills + '</div><div class="role-reqs">' + roleReqsHtml(loc, chosen) + '</div></div>';
       }).join('');
