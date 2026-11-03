@@ -914,8 +914,9 @@ function createPortalRouter(options = {}) {
         group.selections.push(sel);
       });
 
-      const trackedBody = { ...body };
-      if (!resolvePortalTrackingSource(body, body.answers || {})) trackedBody.source = "careers";
+      // Always tag as "careers" so the admin can tell this portal apart; a link tag (?src=craigslist) becomes "careers-craigslist".
+      const linkSource = resolvePortalTrackingSource(body, body.answers || {});
+      const trackedBody = { ...body, source: linkSource ? `careers-${linkSource}`.slice(0, 80) : "careers" };
       const locationLabels = {};
       payload.locations.forEach((loc) => { locationLabels[loc.key] = loc.name; });
 

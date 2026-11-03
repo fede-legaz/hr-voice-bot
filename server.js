@@ -22657,6 +22657,19 @@ app.get("/admin/ui", (req, res) => {
       return false;
     }
 
+    const SOURCE_TAG_NAMES = {
+      craigslist: 'Craigslist', indeed: 'Indeed', instagram: 'Instagram', ig: 'Instagram', facebook: 'Facebook', fb: 'Facebook',
+      tiktok: 'TikTok', whatsapp: 'WhatsApp', google: 'Google', linkedin: 'LinkedIn', ziprecruiter: 'ZipRecruiter', qr: 'QR'
+    };
+    // "craigslist" -> "Craigslist", "volante_71" -> "Volante 71".
+    function prettySourceTag(tag) {
+      const raw = String(tag || '').trim();
+      const known = SOURCE_TAG_NAMES[raw.toLowerCase()];
+      if (known) return known;
+      const words = raw.replace(/[-_]+/g, ' ').trim();
+      return words.charAt(0).toUpperCase() + words.slice(1);
+    }
+
     function isPortalSource(value) {
       return String(value || '').toLowerCase().trim().startsWith('portal:');
     }
@@ -26835,8 +26848,11 @@ app.get("/admin/ui", (req, res) => {
         candidateTd.appendChild(candidateWrap);
         tr.appendChild(candidateTd);
         const sourceLabel = (item.source || '').toString().trim();
-        // Applications from the multi-location portal (/careers) carry "portal:<brand>:careers".
-        const sourceText = /^portal:[^:]+:careers$/i.test(sourceLabel) ? 'Portal multi-local' : sourceLabel;
+        // Applications from the multi-location portal (/careers) carry "portal:<brand>:careers" or, with a link tag, "portal:<brand>:careers-<tag>".
+        const careersMatch = sourceLabel.match(/^portal:[^:]+:careers(?:-(.+))?$/i);
+        const sourceText = careersMatch
+          ? 'Portal multi-local' + (careersMatch[1] ? ' · ' + prettySourceTag(careersMatch[1]) : '')
+          : sourceLabel;
         addCell(sourceText || '—', 'Fuente', 'cell-compact', sourceLabel);
         const phoneTd = document.createElement('td');
         phoneTd.dataset.label = 'Teléfono';
