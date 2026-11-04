@@ -111,6 +111,7 @@
     h1 em { font-style: italic; color: var(--accent); font-weight: 500; }
     .lead { font-size: 18px; color: var(--muted); max-width: 520px; margin: 0 0 28px; text-wrap: pretty; }
     .hero-ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+    .hero-logos[hidden] { display: none; }
     .hero-logos { display: flex; align-items: center; gap: 14px; margin-top: 36px; flex-wrap: wrap; }
     .hero-logos .logo-dot { width: 56px; height: 56px; border-radius: 50%; background: #fff; box-shadow: var(--shadow-sm); border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; overflow: hidden; }
     .hero-logos .logo-dot img { width: 78%; height: 78%; object-fit: contain; }
@@ -336,6 +337,8 @@
     .steps-legend div.done i { background: var(--ink); color: #fff; border-color: var(--ink); }
     .form-card { background: var(--card); border: 1px solid var(--line); border-radius: 28px; box-shadow: var(--shadow); padding: 34px; }
     .step + .step { margin-top: 34px; padding-top: 30px; border-top: 1px dashed var(--line-strong); }
+    .step[hidden] { display: none; }
+    .step[hidden] + .step { margin-top: 0; padding-top: 0; border-top: 0; }
     .step-head { display: flex; gap: 12px; align-items: baseline; margin-bottom: 16px; }
     .step-num { font-family: var(--font-head); font-weight: 600; color: var(--accent); font-size: 15px; }
     .step-head h3 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -0.01em; }
@@ -859,6 +862,39 @@
       }
     };
 
+    // Single-brand pages (/join/:slug) reuse this page; tweak the copy that talks about "several locations".
+    var scope = data.scope || null;
+    var single = !!(scope && locations.length === 1);
+    if (scope) {
+      var SCOPE_COPY = {
+        es: {
+          floatTitle: 'Postulación en 2 minutos', floatSub: 'Podés marcar varios puestos a la vez',
+          locSub: 'Mirá dónde estamos y qué puestos estamos buscando.',
+          teamKicker: 'El equipo', teamTitle: 'La gente con la que vas a trabajar'
+        },
+        en: {
+          floatTitle: 'Apply in 2 minutes', floatSub: 'You can pick several positions at once',
+          locSub: 'See where we are and which positions we are hiring for.',
+          teamKicker: 'The team', teamTitle: 'The people you will work with'
+        }
+      };
+      var SINGLE_COPY = {
+        es: {
+          ctaSeeLocations: 'Cómo llegar', locKicker: 'Dónde estamos', locTitle: 'Te esperamos acá',
+          applySub: 'Marcá los puestos que te interesan y dejanos tus datos. Te contactamos por teléfono o SMS.',
+          step1: '¿Qué puestos te interesan?', step2: 'Tus datos', step2Hint: 'Podés marcar más de uno.'
+        },
+        en: {
+          ctaSeeLocations: 'Directions', locKicker: 'Where we are', locTitle: 'Come find us',
+          applySub: 'Pick the positions you like and leave your details. We will reach out by phone or text.',
+          step1: 'Which positions interest you?', step2: 'Your details', step2Hint: 'You can pick more than one.'
+        }
+      };
+      ['es', 'en'].forEach(function (l) {
+        Object.assign(I18N[l], SCOPE_COPY[l], single ? SINGLE_COPY[l] : {});
+      });
+    }
+
     // Friendlier labels for the raw role keys that the bot and the admin use.
     var ROLE_LABELS = {
       'cook': { es: 'Cocinero/a', en: 'Line cook' },
@@ -1002,11 +1038,13 @@
       teams.forEach(function (team) {
         html += '<span class="logo-dot" title="' + esc(team.brand) + '">' + logoImg(team, 160) + '</span>';
       });
-      logos.innerHTML = html;
+      // A single brand already shows its logo in the top bar, so the row of brand logos only makes sense with several.
+      logos.innerHTML = teams.length > 1 ? html : '';
+      logos.hidden = teams.length < 2;
       document.getElementById('footer-logos').innerHTML = teams.map(function (team) { return logoBadge(team); }).join('');
       renderHotBox();
       document.getElementById('stats').innerHTML =
-        '<div class="stat"><b>' + locations.length + '</b><span>' + esc(T('statLocations')) + '</span></div>' +
+        (single ? '' : '<div class="stat"><b>' + locations.length + '</b><span>' + esc(T('statLocations')) + '</span></div>') +
         '<div class="stat"><b>' + uniqueRoleCount() + '</b><span>' + esc(T('statRoles')) + '</span></div>' +
         '<div class="stat"><b>ES/EN</b><span>' + esc(T('statLang')) + '</span></div>';
 
@@ -1189,7 +1227,7 @@
       locations.forEach(function (loc) {
         fh += '<button type="button" class="filter' + (jobFilter === loc.key ? ' active' : '') + '" data-f="' + esc(loc.key) + '">' + logoImg(loc, 80) + esc(loc.name) + '</button>';
       });
-      filters.innerHTML = fh;
+      filters.innerHTML = locations.length > 1 ? fh : '';
       filters.querySelectorAll('.filter').forEach(function (btn) {
         btn.addEventListener('click', function () { jobFilter = btn.dataset.f; renderJobs(); });
       });
@@ -1227,7 +1265,7 @@
       teams.forEach(function (team) {
         fh += '<button type="button" class="filter' + (activeFilter === team.page ? ' active' : '') + '" data-f="' + esc(team.page) + '">' + logoImg(team, 80) + esc(team.brand) + '</button>';
       });
-      filters.innerHTML = fh;
+      filters.innerHTML = teams.length > 1 ? fh : '';
       filters.querySelectorAll('.filter').forEach(function (btn) {
         btn.addEventListener('click', function () { activeFilter = btn.dataset.f; renderTeams(); });
       });
@@ -1401,7 +1439,7 @@
       var name = document.getElementById('f-name').value.trim();
       var phone = document.getElementById('f-phone').value.replace(/\D/g, '');
       var s3 = !!name && phone.length >= 7 && document.getElementById('f-consent').checked;
-      var flags = { 1: s1, 2: s2, 3: s3 };
+      var flags = single ? { 1: s2, 2: s3 } : { 1: s1, 2: s2, 3: s3 };
       document.querySelectorAll('#steps-legend [data-step]').forEach(function (el) {
         el.classList.toggle('done', !!flags[el.dataset.step]);
       });
@@ -1474,6 +1512,7 @@
         var v = (params.get(k) || '').trim();
         if (v) out[k] = v;
       });
+      if (scope && scope.source && !out.src && !out.source && !out.utm_source) out.src = scope.source;
       return out;
     }
 
@@ -1541,7 +1580,8 @@
           resume_data_url: state.resumeFile ? await readFileAsDataUrl(state.resumeFile) : '',
           resume_file_name: state.resumeFile ? state.resumeFile.name : '',
           photo_data_url: state.photoFile ? await readFileAsDataUrl(state.photoFile) : '',
-          photo_file_name: state.photoFile ? state.photoFile.name : ''
+          photo_file_name: state.photoFile ? state.photoFile.name : '',
+          scope_page: scope ? scope.page : ''
         }, collectAttribution());
         var resp = await fetch('/careers/submit', {
           method: 'POST',
@@ -1742,6 +1782,23 @@
         }
       });
     })();
+
+    // One location: it is preselected and the "pick a location" step disappears (steps become 01 Positions, 02 Details).
+    if (single) {
+      var only = locations[0];
+      if (state.selected.indexOf(only.key) < 0) {
+        state.selected.push(only.key);
+        state.roles[only.key] = only.roles.length === 1 ? [only.roles[0].value] : [];
+      }
+      document.getElementById('step-locations').hidden = true;
+      document.querySelector('#step-roles .step-num').textContent = '01';
+      document.querySelector('#step-info .step-num').textContent = '02';
+      var legend = document.getElementById('steps-legend');
+      legend.querySelector('[data-step="3"]').remove();
+      // With SINGLE_COPY, step1 = "positions" and step2 = "your details".
+      document.querySelector('#step-roles h3').setAttribute('data-i18n', 'step1');
+      document.querySelector('#step-info h3').setAttribute('data-i18n', 'step2');
+    }
 
     renderAll();
     initReferral();

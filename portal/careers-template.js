@@ -9,7 +9,9 @@ const PAGE_SOURCE = fs.readFileSync(path.join(__dirname, "careers-page.html"), "
 
 function renderCareersPage(data) {
   const title = escapeHtml(
-    [data.title?.es || "Trabajá con nosotros", data.brand].filter(Boolean).join(" · ")
+    data.scope
+      ? (data.title?.es || data.brand || "")
+      : [data.title?.es || "Trabajá con nosotros", data.brand].filter(Boolean).join(" · ")
   );
   const description = escapeHtml(data.intro?.es || "");
   const favicon = escapeHtml(data.logoUrl || "");

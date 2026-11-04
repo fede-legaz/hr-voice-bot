@@ -371,6 +371,19 @@ function createPortalRouter(options = {}) {
     };
     const trackingDefaults = buildTrackingDefaults(opts.sourceKey || req.params?.sourceKey || "");
     if (trackingDefaults) payload.trackingDefaults = trackingDefaults;
+    // Brands listed in config/careers.json get the same design as /careers, limited to their own locations.
+    // Pages with custom questions (or ?classic=1) keep the older single-brand form, which knows how to ask them.
+    const hasQuestions = Array.isArray(page.questions) && page.questions.some((q) => q && q.id);
+    if (!hasQuestions && req.query?.classic !== "1") {
+      try {
+        const scoped = await buildCareersPayload({ scopePage: slug, sourceKey: trackingDefaults?.src || "" });
+        if (scoped && scoped.locations.length) {
+          return res.type("text/html").send(renderCareersPage(scoped));
+        }
+      } catch (err) {
+        logger.error("[portal] scoped careers page failed", err?.message || err);
+      }
+    }
     return res.type("text/html").send(renderApplyPage(payload));
   }
 
@@ -772,7 +785,8 @@ function createPortalRouter(options = {}) {
   }
 
   // Builds the multi-location portal data from config/careers.json plus each brand's live portal page.
-  async function buildCareersPayload() {
+  // With scopePage it builds a single-brand version (used by /join/:slug) that keeps locations hidden from /careers.
+  async function buildCareersPayload({ scopePage = "", sourceKey = "" } = {}) {
     const config = loadCareersConfig();
     if (!config || !Array.isArray(config.locations)) return null;
     const roleConfig = getRoleConfig();
@@ -786,11 +800,12 @@ function createPortalRouter(options = {}) {
     for (const loc of config.locations) {
       if (!loc || !loc.key || !loc.page) continue;
       const slug = safeSlug(loc.page);
+      if (scopePage && slug !== scopePage) continue;
       const page = await getPageCached(slug);
       if (!page || page.active === false) continue;
       const key = String(loc.key).trim();
       // Locations switched off with "Portal de empleo" in the admin brand card stay off the portal.
-      if (roleConfig?.[key]?._meta?.portalHidden === true) continue;
+      if (!scopePage && roleConfig?.[key]?._meta?.portalHidden === true) continue;
       const pageLocations = Array.isArray(page.fields?.locations?.options) ? page.fields.locations.options : [];
       const pageLoc = pageLocations.find((opt) => opt && careersOptionValue(opt) === key) || null;
       const byLocation = page.fields?.roleByLocation?.[key];
@@ -845,6 +860,33 @@ function createPortalRouter(options = {}) {
         });
       }
     }
+    if (scopePage) {
+      const page = await getPageCached(scopePage);
+      if (!page || !locations.length) return { locations: [] };
+      const brand = page.brand || locations[0].name || "";
+      const single = locations.length === 1;
+      return {
+        brand,
+        scope: { page: scopePage, source: sourceKey || "", single },
+        title: { es: `Trabajá en ${brand}`, en: `Work at ${brand}` },
+        headline: { es: `Trabajá en ${brand}. Sumate al equipo.`, en: `Work at ${brand}. Join the team.` },
+        intro: {
+          es: single
+            ? "Elegí los puestos que te interesan y dejanos tus datos. Te contactamos rápido, en español o en inglés."
+            : "Elegí el local y los puestos que te interesan y dejanos tus datos. Te contactamos rápido, en español o en inglés.",
+          en: single
+            ? "Pick the positions you like and leave your details. We reach out fast, in English or Spanish."
+            : "Pick the location and positions you like and leave your details. We reach out fast, in English or Spanish."
+        },
+        logoUrl: locations[0].logoUrl || page.assets?.logoUrl || config.logoUrl || "",
+        benefits: Array.isArray(config.benefits) ? config.benefits : [],
+        locations,
+        teams,
+        contactPhone,
+        contactName,
+        limits: { resumeMaxBytes, photoMaxBytes }
+      };
+    }
     return {
       brand: config.brand || "",
       title: config.title || null,
@@ -884,9 +926,11 @@ function createPortalRouter(options = {}) {
 
   router.post("/careers/submit", async (req, res) => {
     try {
-      const payload = await buildCareersPayload();
-      if (!payload) return res.status(404).json({ error: "not_found" });
       const body = req.body || {};
+      // Sent by the single-brand pages (/join/:slug), which only offer that brand's locations.
+      const scopePage = body.scope_page ? safeSlug(body.scope_page) : "";
+      const payload = await buildCareersPayload({ scopePage });
+      if (!payload) return res.status(404).json({ error: "not_found" });
       const locationByKey = new Map(payload.locations.map((loc) => [loc.key, loc]));
       const rawSelections = Array.isArray(body.selections) ? body.selections : [];
       const selections = [];
@@ -916,7 +960,11 @@ function createPortalRouter(options = {}) {
 
       // Always tag as "careers" so the admin can tell this portal apart; a link tag (?src=craigslist) becomes "careers-craigslist".
       const linkSource = resolvePortalTrackingSource(body, body.answers || {});
-      const trackedBody = { ...body, source: linkSource ? `careers-${linkSource}`.slice(0, 80) : "careers" };
+      // Brand pages keep their own tags (direct, indeed, qr-local...) exactly like before the redesign.
+      const trackedSource = scopePage
+        ? linkSource
+        : (linkSource ? `careers-${linkSource}`.slice(0, 80) : "careers");
+      const trackedBody = { ...body, source: trackedSource };
       const locationLabels = {};
       payload.locations.forEach((loc) => { locationLabels[loc.key] = loc.name; });
 
