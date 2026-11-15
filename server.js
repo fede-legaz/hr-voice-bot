@@ -22659,7 +22659,10 @@ app.get("/admin/ui", (req, res) => {
 
     const SOURCE_TAG_NAMES = {
       craigslist: 'Craigslist', indeed: 'Indeed', instagram: 'Instagram', ig: 'Instagram', facebook: 'Facebook', fb: 'Facebook',
-      tiktok: 'TikTok', whatsapp: 'WhatsApp', google: 'Google', linkedin: 'LinkedIn', ziprecruiter: 'ZipRecruiter', qr: 'QR'
+      tiktok: 'TikTok', whatsapp: 'WhatsApp', google: 'Google', linkedin: 'LinkedIn', ziprecruiter: 'ZipRecruiter', qr: 'QR',
+      'google-jobs': 'Google for Jobs', chatgpt: 'ChatGPT', perplexity: 'Perplexity', claude: 'Claude', gemini: 'Gemini',
+      copilot: 'Copilot', bing: 'Bing', yahoo: 'Yahoo', duckduckgo: 'DuckDuckGo', x: 'X (Twitter)', youtube: 'YouTube',
+      reddit: 'Reddit', nextdoor: 'Nextdoor', 'qr-local': 'QR local', direct: 'Directo'
     };
     // "craigslist" -> "Craigslist", "volante_71" -> "Volante 71".
     function prettySourceTag(tag) {
@@ -26850,9 +26853,13 @@ app.get("/admin/ui", (req, res) => {
         const sourceLabel = (item.source || '').toString().trim();
         // Applications from the multi-location portal (/careers) carry "portal:<brand>:careers" or, with a link tag, "portal:<brand>:careers-<tag>".
         const careersMatch = sourceLabel.match(/^portal:[^:]+:careers(?:-(.+))?$/i);
+        // Brand pages (/join/<brand>, /jobs/...) carry "portal:<brand>" or "portal:<brand>:<tag>" (tag = link tag or referring site).
+        const brandPortalMatch = careersMatch ? null : sourceLabel.match(/^portal:([^:]+)(?::(.+))?$/i);
         const sourceText = careersMatch
           ? 'Portal multi-local' + (careersMatch[1] ? ' · ' + prettySourceTag(careersMatch[1]) : '')
-          : sourceLabel;
+          : (brandPortalMatch
+            ? 'Portal ' + brandPortalMatch[1] + (brandPortalMatch[2] ? ' · ' + prettySourceTag(brandPortalMatch[2]) : '')
+            : sourceLabel);
         addCell(sourceText || '—', 'Fuente', 'cell-compact', sourceLabel);
         const phoneTd = document.createElement('td');
         phoneTd.dataset.label = 'Teléfono';

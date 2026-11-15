@@ -1545,15 +1545,84 @@
       });
     }
 
-    function collectAttribution() {
+    // Where the candidate came from. An explicit link tag (?src=craigslist, /join/campo/indeed, ?utm_source=...) wins;
+    // otherwise the referring site (Google, ChatGPT, Facebook...) is used. The first visit is remembered for 30 days
+    // so someone who lands from Google, leaves and comes back typing the URL still counts as Google.
+    var ATTR_KEY = 'yes_jobs_attr';
+    var ATTR_TTL = 30 * 24 * 3600 * 1000;
+    var REFERRER_TAGS = [
+      [/(^|\.)gemini\.google\./, 'gemini'], [/(^|\.)google\./, 'google'], [/(^|\.)bing\.com$/, 'bing'],
+      [/(^|\.)(chatgpt\.com|openai\.com)$/, 'chatgpt'], [/(^|\.)perplexity\.ai$/, 'perplexity'], [/(^|\.)claude\.ai$/, 'claude'],
+      [/(^|\.)copilot\.microsoft\.com$/, 'copilot'], [/(^|\.)duckduckgo\.com$/, 'duckduckgo'], [/(^|\.)yahoo\.com$/, 'yahoo'],
+      [/(^|\.)(facebook\.com|fb\.com|fb\.me)$/, 'facebook'], [/(^|\.)instagram\.com$/, 'instagram'], [/(^|\.)(t\.co|x\.com|twitter\.com)$/, 'x'],
+      [/(^|\.)(linkedin\.com|lnkd\.in)$/, 'linkedin'], [/(^|\.)indeed\.com$/, 'indeed'], [/(^|\.)craigslist\.org$/, 'craigslist'],
+      [/(^|\.)tiktok\.com$/, 'tiktok'], [/(^|\.)(youtube\.com|youtu\.be)$/, 'youtube'], [/(^|\.)reddit\.com$/, 'reddit'],
+      [/(^|\.)(whatsapp\.com|wa\.me)$/, 'whatsapp'], [/(^|\.)nextdoor\.com$/, 'nextdoor'], [/(^|\.)ziprecruiter\.com$/, 'ziprecruiter']
+    ];
+    function tagFromHost(host) {
+      host = String(host || '').toLowerCase().replace(/^www\./, '');
+      if (!host) return '';
+      for (var i = 0; i < REFERRER_TAGS.length; i += 1) if (REFERRER_TAGS[i][0].test(host)) return REFERRER_TAGS[i][1];
+      return host.replace(/\.(com|org|net|us|io|ai)$/, '').replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+    }
+    // "google_jobs_apply" (added by Google for Jobs) -> "google-jobs", "chatgpt.com" -> "chatgpt".
+    function tagFromUtm(value) {
+      var v = String(value || '').toLowerCase().trim();
+      if (!v) return '';
+      if (v.indexOf('google_jobs') === 0 || v.indexOf('google-jobs') === 0) return 'google-jobs';
+      if (/[.]/.test(v)) return tagFromHost(v);
+      return v.replace(/[^a-z0-9_-]+/g, '-').slice(0, 40);
+    }
+    function readStoredAttr() {
+      try {
+        var raw = JSON.parse(localStorage.getItem(ATTR_KEY) || 'null');
+        if (raw && raw.src && Date.now() - (raw.ts || 0) < ATTR_TTL) return raw;
+      } catch (e) {}
+      return null;
+    }
+    var attribution = (function captureAttribution() {
       var params = new URLSearchParams(location.search || '');
-      var out = {};
+      var utm = {};
       ['src', 'source', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'ref'].forEach(function (k) {
         var v = (params.get(k) || '').trim();
-        if (v) out[k] = v;
+        if (v) utm[k] = v;
       });
-      if (scope && scope.source && !out.src && !out.source && !out.utm_source) out.src = scope.source;
+      var refHost = '';
+      try { refHost = document.referrer ? new URL(document.referrer).hostname : ''; } catch (e) {}
+      if (refHost && refHost === location.hostname) refHost = '';
+      var explicit = utm.src || utm.source || (scope && scope.source) || tagFromUtm(utm.utm_source);
+      var visit = {
+        src: explicit || tagFromHost(refHost),
+        referrer: refHost,
+        landing: location.pathname,
+        campaign: utm.utm_campaign || '',
+        medium: utm.utm_medium || '',
+        ts: Date.now()
+      };
+      var stored = readStoredAttr();
+      // A tagged link always updates the record; an untagged visit only fills it when nothing is remembered.
+      var chosen = explicit ? visit : (stored || visit);
+      if (chosen.src && chosen !== stored) {
+        try { localStorage.setItem(ATTR_KEY, JSON.stringify(chosen)); } catch (e) {}
+      }
+      return { utm: utm, first: chosen };
+    })();
+
+    function collectAttribution() {
+      var out = {};
+      Object.keys(attribution.utm).forEach(function (k) { out[k] = attribution.utm[k]; });
+      var first = attribution.first || {};
+      if (first.src) out.src = first.src;
+      if (out.source && first.src) out.source = first.src;
       return out;
+    }
+
+    function attributionDetails() {
+      var first = attribution.first || {};
+      var d = {};
+      ['referrer', 'landing', 'campaign', 'medium'].forEach(function (k) { if (first[k]) d[k] = String(first[k]).slice(0, 120); });
+      if (first.ts) d.first_visit = new Date(first.ts).toISOString();
+      return d;
     }
 
     function serverErrorText(code) {
@@ -1616,7 +1685,7 @@
           lang: lang,
           consent: true,
           selections: state.selected.map(function (k) { return { location: k, roles: state.roles[k] || [] }; }),
-          answers: { __referred: state.referred, __referred_by: state.referred === 'yes' ? refByEl.value.trim() : '' },
+          answers: { __referred: state.referred, __referred_by: state.referred === 'yes' ? refByEl.value.trim() : '', __utm: attributionDetails() },
           resume_data_url: state.resumeFile ? await readFileAsDataUrl(state.resumeFile) : '',
           resume_file_name: state.resumeFile ? state.resumeFile.name : '',
           photo_data_url: state.photoFile ? await readFileAsDataUrl(state.photoFile) : '',
