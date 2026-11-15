@@ -7,6 +7,7 @@ const express = require("express");
 const { createPortalStore } = require("./store");
 const { renderApplyPage } = require("./templates");
 const { renderCareersPage } = require("./careers-template");
+const seo = require("./seo");
 const {
   randomToken,
   safeSlug,
@@ -378,7 +379,9 @@ function createPortalRouter(options = {}) {
       try {
         const scoped = await buildCareersPayload({ scopePage: slug, sourceKey: trackingDefaults?.src || "" });
         if (scoped && scoped.locations.length) {
-          return res.type("text/html").send(renderCareersPage(scoped));
+          // Tracking links (/join/campo/indeed) all point search engines at the clean /join/campo URL.
+          const pageSeo = seo.buildPageSeo({ kind: "brand", payload: scoped, baseUrl: seoBaseUrl(req), path: `/join/${slug}` });
+          return res.type("text/html").send(renderCareersPage(scoped, pageSeo));
         }
       } catch (err) {
         logger.error("[portal] scoped careers page failed", err?.message || err);
@@ -805,7 +808,8 @@ function createPortalRouter(options = {}) {
       if (!page || page.active === false) continue;
       const key = String(loc.key).trim();
       // Locations switched off with "Portal de empleo" in the admin brand card stay off the portal.
-      if (!scopePage && roleConfig?.[key]?._meta?.portalHidden === true) continue;
+      const portalHidden = roleConfig?.[key]?._meta?.portalHidden === true;
+      if (!scopePage && portalHidden) continue;
       const pageLocations = Array.isArray(page.fields?.locations?.options) ? page.fields.locations.options : [];
       const pageLoc = pageLocations.find((opt) => opt && careersOptionValue(opt) === key) || null;
       const byLocation = page.fields?.roleByLocation?.[key];
@@ -847,6 +851,9 @@ function createPortalRouter(options = {}) {
         logoRound: !!loc.badgeRound,
         heroUrl: loc.heroUrl || page.assets?.heroUrl || gallery[0] || "",
         resumeRequired: !!page.resume?.required,
+        // Hidden locations still show on their own /join page but are not advertised to search engines.
+        portalHidden,
+        updatedAt: page.updated_at || page.created_at || "",
         roles
       });
       if (!teams.some((team) => team.page === slug)) {
@@ -905,11 +912,99 @@ function createPortalRouter(options = {}) {
   async function sendCareersPage(req, res) {
     const payload = await buildCareersPayload();
     if (!payload || !payload.locations.length) return res.status(404).send("not_found");
-    return res.type("text/html").send(renderCareersPage(payload));
+    // /, /careers, /trabaja and /jobs are the same page; search engines get "/" as the one URL to index.
+    const pageSeo = seo.buildPageSeo({ kind: "home", payload, baseUrl: seoBaseUrl(req), path: "/" });
+    return res.type("text/html").send(renderCareersPage(payload, pageSeo));
+  }
+
+  function seoBaseUrl(req) {
+    const resolved = resolvePortalPublicBaseUrl(req);
+    if (resolved) return resolved;
+    return `${req.protocol || "http"}://${req.get("host") || "localhost"}`.replace(/\/+$/, "");
+  }
+
+  // Locations from config/careers.json grouped by brand page, each with its scoped payload (hidden ones included).
+  async function buildAllBrandPayloads() {
+    const config = loadCareersConfig();
+    const slugs = [];
+    (config?.locations || []).forEach((loc) => {
+      const slug = loc?.page ? safeSlug(loc.page) : "";
+      if (slug && !slugs.includes(slug)) slugs.push(slug);
+    });
+    const out = [];
+    for (const slug of slugs) {
+      const payload = await buildCareersPayload({ scopePage: slug });
+      if (payload && payload.locations.length) out.push({ slug, payload });
+    }
+    return out;
+  }
+
+  // One page per open job (/jobs/new-campo-argentino/line-cook): the leaf page Google for Jobs needs.
+  async function sendJobPage(req, res, next) {
+    const locSlug = String(req.params.location || "").toLowerCase();
+    const roleSlug = String(req.params.role || "").toLowerCase();
+    const brands = await buildAllBrandPayloads();
+    for (const { slug, payload } of brands) {
+      const loc = payload.locations.find((l) => seo.locationSlug(l) === locSlug);
+      if (!loc) continue;
+      const baseUrl = seoBaseUrl(req);
+      const role = loc.portalHidden ? null : loc.roles.find((r) => seo.roleInfo(r).slug === roleSlug);
+      if (!role) {
+        // Closed or unknown position: show the brand's open jobs, tell search engines this job is gone.
+        const goneSeo = seo.buildPageSeo({ kind: "brand", payload, baseUrl, path: `/join/${slug}`, gone: true });
+        return res.status(410).type("text/html").send(renderCareersPage(payload, goneSeo));
+      }
+      const focusJob = seo.collectJobs(payload).find((j) => j.loc.key === loc.key && j.role.value === role.value);
+      const pagePayload = { ...payload, focus: { loc: loc.key, role: role.value } };
+      const pageSeo = seo.buildPageSeo({ kind: "job", payload, baseUrl, path: focusJob.path, focusJob });
+      return res.type("text/html").send(renderCareersPage(pagePayload, pageSeo));
+    }
+    return next();
   }
 
   // Brand assets that live in the repo (e.g. the Yes! logo) rather than in uploaded portal pages.
   router.use("/careers/assets", express.static(path.join(__dirname, "assets"), { maxAge: "7d", fallthrough: false }));
+
+  router.get("/jobs/:location/:role", (req, res, next) => {
+    sendJobPage(req, res, next).catch((err) => {
+      logger.error("[portal] job page failed", err?.message || err);
+      res.status(500).send("error");
+    });
+  });
+
+  router.get("/robots.txt", (req, res) => {
+    res.type("text/plain").set("Cache-Control", "public, max-age=3600").send(seo.robotsTxt(seoBaseUrl(req)));
+  });
+
+  router.get("/sitemap.xml", async (req, res) => {
+    try {
+      const all = await buildCareersPayload();
+      const brands = await buildAllBrandPayloads();
+      const lastmods = (all?.locations || []).map((l) => l.updatedAt).filter(Boolean).sort();
+      const entries = [{ path: "/", lastmod: lastmods[lastmods.length - 1] || "", priority: "1.0" }];
+      brands.forEach(({ slug, payload }) => {
+        entries.push({ path: `/join/${slug}`, lastmod: payload.locations[0]?.updatedAt || "", priority: "0.9" });
+        seo.collectJobs(payload).forEach((job) => {
+          entries.push({ path: job.path, lastmod: job.loc.updatedAt || "", priority: job.role.urgent ? "0.9" : "0.8" });
+        });
+      });
+      res.type("application/xml").set("Cache-Control", "public, max-age=3600").send(seo.sitemapXml(seoBaseUrl(req), entries));
+    } catch (err) {
+      logger.error("[portal] sitemap failed", err?.message || err);
+      res.status(500).send("error");
+    }
+  });
+
+  router.get("/llms.txt", async (req, res) => {
+    try {
+      const payload = await buildCareersPayload();
+      if (!payload || !payload.locations.length) return res.status(404).send("not_found");
+      res.type("text/plain; charset=utf-8").set("Cache-Control", "public, max-age=3600").send(seo.llmsTxt(seoBaseUrl(req), payload));
+    } catch (err) {
+      logger.error("[portal] llms.txt failed", err?.message || err);
+      res.status(500).send("error");
+    }
+  });
 
   router.get(["/careers", "/trabaja", "/jobs"], (req, res) => {
     sendCareersPage(req, res).catch((err) => {
