@@ -998,6 +998,29 @@ function trimSignaturePngBuffer(buf, opts) {
   }
 }
 
+// True only when the data URL is an image that actually contains a drawn signature.
+// A blank canvas exports a valid (fully transparent) PNG, so "non-empty string" is not enough.
+function signatureDataUrlHasInk(dataUrl, minInkPixels = 60) {
+  const parsed = parseDataUrl(String(dataUrl || "").trim());
+  if (!parsed || !parsed.buffer || !parsed.buffer.length) return false;
+  if (!String(parsed.mime || "").startsWith("image/")) return false;
+  if (!PNG || !isPngBuffer(parsed.buffer)) return parsed.buffer.length > 1024;
+  try {
+    const { width, height, data } = PNG.sync.read(parsed.buffer);
+    let ink = 0;
+    for (let i = 0; i < width * height * 4; i += 4) {
+      const a = data[i + 3];
+      if (a <= 12) continue;
+      if (a >= 250 && data[i] >= 245 && data[i + 1] >= 245 && data[i + 2] >= 245) continue;
+      ink += 1;
+      if (ink >= minInkPixels) return true;
+    }
+    return false;
+  } catch (err) {
+    return false;
+  }
+}
+
 function resolveAddress(brand, providedAddress) {
   const bKey = brandKey(brand);
   const brandEntry = roleConfig?.[bKey];
@@ -9077,6 +9100,9 @@ function renderOnboardingPageHtml(token) {
           title: 'Onboarding de ingreso',
           loading: 'Cargando información…',
           subtitle: 'Completá tus documentos obligatorios.',
+          focusSubtitle: 'Necesitamos que completes y firmes de nuevo este documento: {doc}.',
+          focusDocsTitle: 'Documento a completar',
+          focusSeeAll: 'Ver todo mi onboarding',
           labelCandidate: 'Candidato',
           labelRole: 'Local / puesto',
           labelPhone: 'Teléfono',
@@ -9137,6 +9163,9 @@ function renderOnboardingPageHtml(token) {
           title: 'Onboarding',
           loading: 'Loading information…',
           subtitle: 'Please complete your required documents.',
+          focusSubtitle: 'We need you to complete and sign this document again: {doc}.',
+          focusDocsTitle: 'Document to complete',
+          focusSeeAll: 'See my full onboarding',
           labelCandidate: 'Candidate',
           labelRole: 'Location / role',
           labelPhone: 'Phone',
@@ -9250,6 +9279,19 @@ function renderOnboardingPageHtml(token) {
       let policySignaturePad = null;
       let formSignatureExisting = '';
       let policyDocKey = 'policy_renuncia';
+      // Single-document link: /onboard/<token>?doc=i9 shows (and opens) only that document.
+      let FOCUS_DOC = '';
+      try {
+        FOCUS_DOC = normalizeDocKey(new URLSearchParams(window.location.search || '').get('doc') || '');
+      } catch (err) {}
+      let focusOpenFn = null;
+      let focusAutoOpened = false;
+
+      function getFocusDoc() {
+        if (!FOCUS_DOC) return null;
+        const list = (state.profile && Array.isArray(state.profile.doc_types)) ? state.profile.doc_types : [];
+        return list.find((doc) => doc && normalizeDocKey(doc.key) === FOCUS_DOC) || null;
+      }
 
       function setText(id, value) {
         const el = document.getElementById(id);
@@ -9347,28 +9389,77 @@ function renderOnboardingPageHtml(token) {
       function initSignaturePad(canvas, clearBtn, statusEl) {
         if (!canvas) return null;
         const ctx = canvas.getContext('2d');
+        // Minimum drawn length (in screen px) to count as a real signature, so a tap or a dot is not accepted.
+        const MIN_INK = 40;
         let drawing = false;
-        let hasStroke = false;
+        let strokes = [];
+        let current = null;
+        let loadedImg = null;
+        let inkLength = 0;
+        let cssW = 0;
+        let cssH = 0;
         let lastInputType = '';
         let lastInputAt = 0;
 
-        const resize = () => {
-          const rect = canvas.getBoundingClientRect();
-          const ratio = window.devicePixelRatio || 1;
-          canvas.width = Math.max(1, Math.floor(rect.width * ratio));
-          canvas.height = Math.max(1, Math.floor(rect.height * ratio));
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.scale(ratio, ratio);
+        const applyStyle = () => {
           ctx.lineWidth = 2;
           ctx.lineCap = 'round';
           ctx.lineJoin = 'round';
           ctx.strokeStyle = '#0f5563';
         };
 
+        // Strokes are kept in memory and repainted, so resizing the canvas (rotating the phone,
+        // the keyboard or the browser bar showing/hiding) never wipes the signature.
+        const redraw = () => {
+          ctx.save();
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.restore();
+          if (loadedImg && cssW && cssH) ctx.drawImage(loadedImg, 0, 0, cssW, cssH);
+          strokes.forEach((stroke) => {
+            if (!stroke.length) return;
+            ctx.beginPath();
+            stroke.forEach((p, idx) => {
+              const x = p.x * cssW;
+              const y = p.y * cssH;
+              if (idx === 0) ctx.moveTo(x, y);
+              else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+          });
+        };
+
+        const resize = () => {
+          const rect = canvas.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) return;
+          const ratio = window.devicePixelRatio || 1;
+          const w = Math.max(1, Math.floor(rect.width * ratio));
+          const h = Math.max(1, Math.floor(rect.height * ratio));
+          if (cssW && canvas.width === w && canvas.height === h) return;
+          cssW = rect.width;
+          cssH = rect.height;
+          canvas.width = w;
+          canvas.height = h;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.scale(ratio, ratio);
+          applyStyle();
+          redraw();
+        };
+
+        const reset = () => {
+          strokes = [];
+          current = null;
+          loadedImg = null;
+          inkLength = 0;
+          drawing = false;
+          redraw();
+        };
+
         const getPos = (event) => {
           const rect = canvas.getBoundingClientRect();
-          const clientX = event.touches ? event.touches[0].clientX : event.clientX;
-          const clientY = event.touches ? event.touches[0].clientY : event.clientY;
+          const touch = event.touches && event.touches[0];
+          const clientX = touch ? touch.clientX : event.clientX;
+          const clientY = touch ? touch.clientY : event.clientY;
           return { x: clientX - rect.left, y: clientY - rect.top };
         };
 
@@ -9381,25 +9472,35 @@ function renderOnboardingPageHtml(token) {
           if (lastInputType && lastInputType !== inputType && now - lastInputAt < 120) return;
           lastInputType = inputType;
           lastInputAt = now;
+          resize();
+          if (!cssW || !cssH) return;
           drawing = true;
-          hasStroke = true;
           const pos = getPos(event);
-          ctx.beginPath();
-          ctx.moveTo(pos.x, pos.y);
+          current = [{ x: pos.x / cssW, y: pos.y / cssH }];
+          strokes.push(current);
+          if (statusEl) statusEl.textContent = '';
           if (event.pointerId && canvas.setPointerCapture) {
             try { canvas.setPointerCapture(event.pointerId); } catch (err) {}
           }
         };
         const move = (event) => {
-          if (!drawing) return;
+          if (!drawing || !current) return;
           if (event.cancelable) event.preventDefault();
           const pos = getPos(event);
+          const prev = current[current.length - 1];
+          const px = prev.x * cssW;
+          const py = prev.y * cssH;
+          inkLength += Math.sqrt((pos.x - px) * (pos.x - px) + (pos.y - py) * (pos.y - py));
+          current.push({ x: pos.x / cssW, y: pos.y / cssH });
+          ctx.beginPath();
+          ctx.moveTo(px, py);
           ctx.lineTo(pos.x, pos.y);
           ctx.stroke();
         };
         const end = (event) => {
           if (event.cancelable) event.preventDefault();
           drawing = false;
+          current = null;
           lastInputType = '';
           if (event.pointerId && canvas.releasePointerCapture) {
             try { canvas.releasePointerCapture(event.pointerId); } catch (err) {}
@@ -9424,27 +9525,26 @@ function renderOnboardingPageHtml(token) {
 
         if (clearBtn) {
           clearBtn.onclick = () => {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            hasStroke = false;
+            reset();
             if (statusEl) statusEl.textContent = '';
           };
         }
         resize();
         window.addEventListener('resize', resize);
+        const hasInk = () => !!loadedImg || inkLength >= MIN_INK;
         return {
-          clear: () => {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            hasStroke = false;
-          },
-          isEmpty: () => !hasStroke,
-          getDataUrl: () => (hasStroke ? canvas.toDataURL('image/png') : ''),
+          clear: reset,
+          isEmpty: () => !hasInk(),
+          getDataUrl: () => (hasInk() ? canvas.toDataURL('image/png') : ''),
           loadDataUrl: (dataUrl) => {
             if (!dataUrl) return;
             const img = new Image();
             img.onload = () => {
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(img, 0, 0, canvas.width / (window.devicePixelRatio || 1), canvas.height / (window.devicePixelRatio || 1));
-              hasStroke = true;
+              strokes = [];
+              inkLength = 0;
+              loadedImg = img;
+              resize();
+              redraw();
             };
             img.src = dataUrl;
           },
@@ -10149,6 +10249,16 @@ function renderOnboardingPageHtml(token) {
         setText('onboard-instructions-text', pickLang(p.instructions, p.instructions_en));
         setText('onboard-role-notes', pickLang(p.role_notes, p.role_notes_en));
         setText('onboard-policy-title', pickLang(p.policy_title || 'Política', p.policy_title_en));
+        const focusDoc = getFocusDoc();
+        if (focusDoc) {
+          const focusIsPolicy = focusDoc.mode === 'policy';
+          summaryEl.style.display = 'none';
+          instructionsEl.style.display = 'none';
+          docsCardEl.style.display = focusIsPolicy ? 'none' : 'grid';
+          policyCardEl.style.display = focusIsPolicy ? 'grid' : 'none';
+          subEl.textContent = t('focusSubtitle').replace('{doc}', focusDoc.label || focusDoc.key || '');
+          setText('onboard-docs-title', t('focusDocsTitle'));
+        }
         const policyTextEl = document.getElementById('onboard-policy-text');
         if (policyTextEl) policyTextEl.textContent = pickLang(p.policy_text, p.policy_text_en);
         if (p.policy_ack) {
@@ -10170,7 +10280,10 @@ function renderOnboardingPageHtml(token) {
       function renderDocs() {
         docsEl.innerHTML = '';
         const p = state.profile || {};
-        const docTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
+        const allDocTypes = Array.isArray(p.doc_types) ? p.doc_types : [];
+        const focusDoc = getFocusDoc();
+        const docTypes = focusDoc ? [focusDoc] : allDocTypes;
+        focusOpenFn = null;
         docTypes.forEach((doc) => {
           const row = document.createElement('div');
           row.className = 'doc-row';
@@ -10224,12 +10337,14 @@ function renderOnboardingPageHtml(token) {
             btn.type = 'button';
             btn.textContent = latest ? t('docEdit') : t('docComplete');
             btn.onclick = () => openFormModal(doc.key, latest?.doc_data || {});
+            if (focusDoc) focusOpenFn = btn.onclick;
             actions.appendChild(btn);
           } else if (mode === 'pdf') {
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.textContent = latest ? t('docEditPdf') : t('docCompletePdf');
             btn.onclick = () => openPdfModal(doc.key, latest?.doc_data || {});
+            if (focusDoc) focusOpenFn = btn.onclick;
             actions.appendChild(btn);
           } else if (mode === 'policy') {
             const note = document.createElement('div');
@@ -10269,6 +10384,14 @@ function renderOnboardingPageHtml(token) {
           row.appendChild(actions);
           docsEl.appendChild(row);
         });
+        if (focusDoc) {
+          const all = document.createElement('a');
+          all.href = window.location.pathname;
+          all.textContent = t('focusSeeAll');
+          all.style.fontSize = '13px';
+          all.style.justifySelf = 'start';
+          docsEl.appendChild(all);
+        }
       }
 
       async function uploadDoc(docType, fileName, dataUrl) {
@@ -10302,6 +10425,10 @@ function renderOnboardingPageHtml(token) {
         state.profile = data.profile || {};
         state.docs = data.docs || [];
         renderProfile();
+        if (focusOpenFn && !focusAutoOpened) {
+          focusAutoOpened = true;
+          focusOpenFn();
+        }
       }
 
       if (ackBtnEl) {
@@ -10896,6 +11023,12 @@ app.post("/onboard/:token/form", async (req, res) => {
     if (!docData || typeof docData !== "object") {
       return res.status(400).json({ error: "missing_doc_data" });
     }
+    if (!signatureDataUrlHasInk(docData.signature_data_url || docData.signatureDataUrl)) {
+      return res.status(400).json({
+        error: "signature_missing",
+        detail: "Falta la firma dibujada. / Signature is missing."
+      });
+    }
     await insertOnboardingDoc({
       profileId: profile.id,
       cvId: profile.cv_id || "",
@@ -10956,6 +11089,12 @@ app.post("/onboard/:token/pdf", async (req, res) => {
     const rawFields = req.body?.fields || req.body?.doc_fields || {};
     const signatureName = String(req.body?.signature_name || req.body?.signatureName || "").trim();
     const signatureDataUrl = String(req.body?.signature_data_url || req.body?.signatureDataUrl || "").trim();
+    if (!signatureName || !signatureDataUrlHasInk(signatureDataUrl)) {
+      return res.status(400).json({
+        error: "signature_missing",
+        detail: "Falta la firma dibujada. / Signature is missing."
+      });
+    }
     const keepFirstPage = ["i9", "w4", "w9"].includes(normalizeKey(docType));
     const mappedFields = await mapPdfFieldsIfNeeded({ docType, fields: rawFields, templateUrl });
     const signatureFieldName = mappedFields?.__signature_field || "";
@@ -27511,6 +27650,29 @@ app.get("/admin/ui", (req, res) => {
             del.textContent = 'Eliminar';
             del.onclick = () => deleteOnboardingDoc(latest.id);
             actions.appendChild(del);
+          }
+          const baseLink = (onboardingLinkEl?.value || '').trim();
+          if (baseLink && doc.key) {
+            const copy = document.createElement('button');
+            copy.type = 'button';
+            copy.className = 'secondary btn-compact';
+            copy.textContent = 'Copiar link';
+            copy.title = 'Link para que el empleado complete solo este documento';
+            copy.onclick = async () => {
+              const docLink = baseLink + (baseLink.includes('?') ? '&' : '?') + 'doc=' + encodeURIComponent(doc.key);
+              const docName = doc.label || doc.key;
+              try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  await navigator.clipboard.writeText(docLink);
+                } else {
+                  window.prompt('Copiá este link:', docLink);
+                }
+                setOnboardingDocStatus('Link de ' + docName + ' copiado. Abre solo ese documento; la clave son los últimos 4 dígitos de su teléfono.');
+              } catch (err) {
+                window.prompt('Copiá este link:', docLink);
+              }
+            };
+            actions.appendChild(copy);
           }
         }
         row.appendChild(info);
